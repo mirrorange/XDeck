@@ -10,7 +10,10 @@ use crate::rpc::types::{JsonRpcRequest, JsonRpcResponse};
 
 /// Handler function type for JSON-RPC methods.
 pub type RpcHandler = Arc<
-    dyn Fn(Option<Value>, RequestContext) -> futures_util::future::BoxFuture<'static, Result<Value, AppError>>
+    dyn Fn(
+            Option<Value>,
+            RequestContext,
+        ) -> futures_util::future::BoxFuture<'static, Result<Value, AppError>>
         + Send
         + Sync,
 >;

@@ -87,15 +87,13 @@ impl AuthService {
             return Err(AppError::SetupRequired);
         }
 
-        let row: Option<(String, String, String)> = sqlx::query_as(
-            "SELECT id, password_hash, role FROM users WHERE username = ?1",
-        )
-        .bind(username)
-        .fetch_optional(pool)
-        .await?;
+        let row: Option<(String, String, String)> =
+            sqlx::query_as("SELECT id, password_hash, role FROM users WHERE username = ?1")
+                .bind(username)
+                .fetch_optional(pool)
+                .await?;
 
-        let (user_id, stored_hash, role) =
-            row.ok_or(AppError::InvalidCredentials)?;
+        let (user_id, stored_hash, role) = row.ok_or(AppError::InvalidCredentials)?;
 
         // Verify password
         verify_password(password, &stored_hash)?;
@@ -121,12 +119,7 @@ impl AuthService {
     }
 
     /// Generate a JWT token for the given user.
-    fn generate_jwt(
-        &self,
-        user_id: &str,
-        username: &str,
-        role: &str,
-    ) -> Result<String, AppError> {
+    fn generate_jwt(&self, user_id: &str, username: &str, role: &str) -> Result<String, AppError> {
         let now = Utc::now();
         let expiration = now + chrono::Duration::hours(24);
 
@@ -231,10 +224,7 @@ mod tests {
         assert_eq!(claims.role, "admin");
 
         // Login with wrong password fails
-        assert!(auth
-            .login(&pool, "admin", "wrongpassword")
-            .await
-            .is_err());
+        assert!(auth.login(&pool, "admin", "wrongpassword").await.is_err());
     }
 
     #[tokio::test]

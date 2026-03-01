@@ -2,11 +2,7 @@ mod websocket;
 
 use std::sync::Arc;
 
-use axum::{
-    Router,
-    routing::get,
-    response::Json,
-};
+use axum::{response::Json, routing::get, Router};
 use sqlx::SqlitePool;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -56,10 +52,7 @@ impl AppState {
     }
 
     /// Build the JSON-RPC router with all method handlers registered.
-    fn build_rpc_router(
-        auth: Arc<AuthService>,
-        process_mgr: Arc<ProcessManager>,
-    ) -> RpcRouter {
+    fn build_rpc_router(auth: Arc<AuthService>, process_mgr: Arc<ProcessManager>) -> RpcRouter {
         let mut router = RpcRouter::new();
 
         // === System methods ===
@@ -76,8 +69,8 @@ impl AppState {
 
         // system.status — on-demand metrics
         router.register("system.status", |_params, _ctx| async {
-            use crate::services::system_monitor::SystemMonitor;
             use crate::services::event_bus::EventBus;
+            use crate::services::system_monitor::SystemMonitor;
 
             let dummy_bus = std::sync::Arc::new(EventBus::new(1));
             let dummy_pool = crate::db::connect_in_memory().await.unwrap();
@@ -117,8 +110,7 @@ impl AppState {
         router.register("auth.login", move |params, ctx| {
             let auth = auth_login.clone();
             async move {
-                let params =
-                    params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
+                let params = params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
                 let username = params["username"]
                     .as_str()
                     .ok_or_else(|| AppError::BadRequest("Missing username".into()))?;
@@ -144,8 +136,7 @@ impl AppState {
         router.register("process.get", move |params, _ctx| {
             let pm = pm.clone();
             async move {
-                let params =
-                    params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
+                let params = params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
                 let id = params["id"]
                     .as_str()
                     .ok_or_else(|| AppError::BadRequest("Missing id".into()))?;
@@ -158,8 +149,7 @@ impl AppState {
         router.register("process.create", move |params, _ctx| {
             let pm = pm.clone();
             async move {
-                let params =
-                    params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
+                let params = params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
                 let req: crate::services::process_manager::CreateProcessRequest =
                     serde_json::from_value(params)
                         .map_err(|e| AppError::BadRequest(format!("Invalid params: {}", e)))?;
@@ -172,8 +162,7 @@ impl AppState {
         router.register("process.start", move |params, _ctx| {
             let pm = pm.clone();
             async move {
-                let params =
-                    params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
+                let params = params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
                 let id = params["id"]
                     .as_str()
                     .ok_or_else(|| AppError::BadRequest("Missing id".into()))?;
@@ -186,8 +175,7 @@ impl AppState {
         router.register("process.stop", move |params, _ctx| {
             let pm = pm.clone();
             async move {
-                let params =
-                    params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
+                let params = params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
                 let id = params["id"]
                     .as_str()
                     .ok_or_else(|| AppError::BadRequest("Missing id".into()))?;
@@ -200,8 +188,7 @@ impl AppState {
         router.register("process.restart", move |params, _ctx| {
             let pm = pm.clone();
             async move {
-                let params =
-                    params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
+                let params = params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
                 let id = params["id"]
                     .as_str()
                     .ok_or_else(|| AppError::BadRequest("Missing id".into()))?;
@@ -214,8 +201,7 @@ impl AppState {
         router.register("process.delete", move |params, _ctx| {
             let pm = pm.clone();
             async move {
-                let params =
-                    params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
+                let params = params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
                 let id = params["id"]
                     .as_str()
                     .ok_or_else(|| AppError::BadRequest("Missing id".into()))?;

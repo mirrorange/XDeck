@@ -31,10 +31,7 @@ impl EventBus {
         let topic = topic.into();
         debug!("EventBus publish: {}", topic);
         // It's OK if there are no subscribers
-        let _ = self.sender.send(Event {
-            topic,
-            payload,
-        });
+        let _ = self.sender.send(Event { topic, payload });
     }
 
     /// Subscribe to all events. Returns a receiver.

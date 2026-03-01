@@ -1,4 +1,4 @@
-pub mod event_bus;
 pub mod auth;
-pub mod system_monitor;
+pub mod event_bus;
 pub mod process_manager;
+pub mod system_monitor;

@@ -132,7 +132,8 @@ mod tests {
 
     #[test]
     fn test_parse_notification() {
-        let json = r#"{"jsonrpc":"2.0","method":"event.subscribe","params":{"topics":["process.*"]}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","method":"event.subscribe","params":{"topics":["process.*"]}}"#;
         let req: JsonRpcRequest = serde_json::from_str(json).unwrap();
         assert!(req.is_notification());
     }

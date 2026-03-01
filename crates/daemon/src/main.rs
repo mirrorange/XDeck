@@ -61,10 +61,7 @@ async fn main() -> Result<()> {
     let app_state = api::AppState::new(config.clone(), pool);
 
     // Start system monitor
-    let monitor = SystemMonitor::new(
-        app_state.event_bus.clone(),
-        app_state.pool.clone(),
-    );
+    let monitor = SystemMonitor::new(app_state.event_bus.clone(), app_state.pool.clone());
     tokio::spawn(monitor.start_monitoring(Duration::from_secs(2)));
     info!("System monitor started");
 
@@ -76,8 +73,8 @@ async fn main() -> Result<()> {
     // Build and start the server
     let app = api::build_router(app_state);
 
-    let listener = tokio::net::TcpListener::bind(format!("{}:{}", config.bind, config.port))
-        .await?;
+    let listener =
+        tokio::net::TcpListener::bind(format!("{}:{}", config.bind, config.port)).await?;
     info!("Server started successfully");
 
     axum::serve(listener, app).await?;
