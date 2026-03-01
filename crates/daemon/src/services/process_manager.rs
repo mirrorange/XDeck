@@ -1,17 +1,16 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
-use crate::db::Database;
 use crate::error::AppError;
 use crate::services::event_bus::SharedEventBus;
 
@@ -140,22 +139,22 @@ struct RunningProcess {
 pub struct ProcessManager {
     /// Runtime state of all processes
     processes: RwLock<HashMap<String, Mutex<RunningProcess>>>,
-    db: Arc<Database>,
+    pool: SqlitePool,
     event_bus: SharedEventBus,
 }
 
 impl ProcessManager {
-    pub fn new(db: Arc<Database>, event_bus: SharedEventBus) -> Arc<Self> {
+    pub fn new(pool: SqlitePool, event_bus: SharedEventBus) -> Arc<Self> {
         Arc::new(Self {
             processes: RwLock::new(HashMap::new()),
-            db,
+            pool,
             event_bus,
         })
     }
 
     /// Restore processes on daemon startup.
     pub async fn restore_processes(self: &Arc<Self>) -> anyhow::Result<()> {
-        let definitions = self.load_all_definitions()?;
+        let definitions = self.load_all_definitions().await?;
         let auto_start_defs: Vec<_> = definitions
             .into_iter()
             .filter(|d| d.auto_start)
@@ -213,7 +212,7 @@ impl ProcessManager {
         };
 
         // Store in database
-        self.save_definition(&definition)?;
+        self.save_definition(&definition).await?;
 
         // Register in runtime state
         {
@@ -259,7 +258,8 @@ impl ProcessManager {
     /// Internal: Actually spawn the child process and set up monitoring.
     async fn start_process_internal(self: &Arc<Self>, id: &str) -> Result<(), AppError> {
         let def = self
-            .load_definition(id)?
+            .load_definition(id)
+            .await?
             .ok_or_else(|| AppError::NotFound(format!("Process {} not found", id)))?;
 
         let procs = self.processes.read().await;
@@ -414,7 +414,7 @@ impl ProcessManager {
             info!("Process {} exited with code: {:?}", id, exit_code);
 
             // Load definition for restart policy
-            let def = match self.load_definition(&id) {
+            let def = match self.load_definition(&id).await {
                 Ok(Some(d)) => d,
                 _ => return,
             };
@@ -646,10 +646,10 @@ impl ProcessManager {
         }
 
         // Remove from database
-        self.db.with_conn(|conn| {
-            conn.execute("DELETE FROM processes WHERE id = ?1", [id])?;
-            Ok(())
-        })?;
+        sqlx::query("DELETE FROM processes WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
 
         info!("Deleted process: {}", id);
         Ok(())
@@ -657,7 +657,7 @@ impl ProcessManager {
 
     /// List all processes with their current status.
     pub async fn list_processes(&self) -> Result<Vec<ProcessInfo>, AppError> {
-        let definitions = self.load_all_definitions()?;
+        let definitions = self.load_all_definitions().await?;
         let procs = self.processes.read().await;
 
         let mut result = Vec::new();
@@ -692,7 +692,8 @@ impl ProcessManager {
     /// Get a single process by ID.
     pub async fn get_process(&self, id: &str) -> Result<ProcessInfo, AppError> {
         let def = self
-            .load_definition(id)?
+            .load_definition(id)
+            .await?
             .ok_or_else(|| AppError::NotFound(format!("Process {} not found", id)))?;
 
         let procs = self.processes.read().await;
@@ -722,83 +723,85 @@ impl ProcessManager {
 
     // ── Database Operations ─────────────────────────────────────
 
-    fn save_definition(&self, def: &ProcessDefinition) -> Result<(), AppError> {
+    async fn save_definition(&self, def: &ProcessDefinition) -> Result<(), AppError> {
         let args_json = serde_json::to_string(&def.args).unwrap();
         let env_json = serde_json::to_string(&def.env).unwrap();
         let policy_json = serde_json::to_string(&def.restart_policy).unwrap();
 
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO processes (id, name, command, args, cwd, env, restart_policy, auto_start, group_name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                rusqlite::params![
-                    def.id, def.name, def.command, args_json, def.cwd,
-                    env_json, policy_json, def.auto_start as i32,
-                    def.group_name, def.created_at, def.updated_at,
-                ],
-            )?;
-            Ok(())
-        })?;
+        sqlx::query(
+            "INSERT OR REPLACE INTO processes (id, name, command, args, cwd, env, restart_policy, auto_start, group_name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        )
+        .bind(&def.id)
+        .bind(&def.name)
+        .bind(&def.command)
+        .bind(&args_json)
+        .bind(&def.cwd)
+        .bind(&env_json)
+        .bind(&policy_json)
+        .bind(def.auto_start as i32)
+        .bind(&def.group_name)
+        .bind(&def.created_at)
+        .bind(&def.updated_at)
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
-    fn load_definition(&self, id: &str) -> Result<Option<ProcessDefinition>, AppError> {
-        self.db
-            .with_conn(|conn| {
-                let result = conn.query_row(
-                    "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, created_at, updated_at FROM processes WHERE id = ?1",
-                    [id],
-                    |row| {
-                        Ok(ProcessDefinition {
-                            id: row.get(0)?,
-                            name: row.get(1)?,
-                            command: row.get(2)?,
-                            args: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default(),
-                            cwd: row.get(4)?,
-                            env: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
-                            restart_policy: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
-                            auto_start: row.get::<_, i32>(7)? != 0,
-                            group_name: row.get(8)?,
-                            created_at: row.get(9)?,
-                            updated_at: row.get(10)?,
-                        })
-                    },
-                );
-                match result {
-                    Ok(def) => Ok(Some(def)),
-                    Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                    Err(e) => Err(e.into()),
-                }
-            })
-            .map_err(|e| AppError::Internal(e.to_string()))
+    async fn load_definition(&self, id: &str) -> Result<Option<ProcessDefinition>, AppError> {
+        let row: Option<(
+            String, String, String, String, String,
+            String, String, i32, Option<String>, String, String,
+        )> = sqlx::query_as(
+            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, created_at, updated_at FROM processes WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|r| ProcessDefinition {
+            id: r.0,
+            name: r.1,
+            command: r.2,
+            args: serde_json::from_str(&r.3).unwrap_or_default(),
+            cwd: r.4,
+            env: serde_json::from_str(&r.5).unwrap_or_default(),
+            restart_policy: serde_json::from_str(&r.6).unwrap_or_default(),
+            auto_start: r.7 != 0,
+            group_name: r.8,
+            created_at: r.9,
+            updated_at: r.10,
+        }))
     }
 
-    fn load_all_definitions(&self) -> Result<Vec<ProcessDefinition>, AppError> {
-        self.db
-            .with_conn(|conn| {
-                let mut stmt = conn.prepare(
-                    "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, created_at, updated_at FROM processes ORDER BY created_at",
-                )?;
-                let defs = stmt
-                    .query_map([], |row| {
-                        Ok(ProcessDefinition {
-                            id: row.get(0)?,
-                            name: row.get(1)?,
-                            command: row.get(2)?,
-                            args: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default(),
-                            cwd: row.get(4)?,
-                            env: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
-                            restart_policy: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
-                            auto_start: row.get::<_, i32>(7)? != 0,
-                            group_name: row.get(8)?,
-                            created_at: row.get(9)?,
-                            updated_at: row.get(10)?,
-                        })
-                    })?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                Ok(defs)
+    async fn load_all_definitions(&self) -> Result<Vec<ProcessDefinition>, AppError> {
+        let rows: Vec<(
+            String, String, String, String, String,
+            String, String, i32, Option<String>, String, String,
+        )> = sqlx::query_as(
+            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, created_at, updated_at FROM processes ORDER BY created_at",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let defs = rows
+            .into_iter()
+            .map(|r| ProcessDefinition {
+                id: r.0,
+                name: r.1,
+                command: r.2,
+                args: serde_json::from_str(&r.3).unwrap_or_default(),
+                cwd: r.4,
+                env: serde_json::from_str(&r.5).unwrap_or_default(),
+                restart_policy: serde_json::from_str(&r.6).unwrap_or_default(),
+                auto_start: r.7 != 0,
+                group_name: r.8,
+                created_at: r.9,
+                updated_at: r.10,
             })
-            .map_err(|e| AppError::Internal(e.to_string()))
+            .collect();
+
+        Ok(defs)
     }
 }
 
@@ -807,17 +810,17 @@ mod tests {
     use super::*;
     use crate::services::event_bus::EventBus;
 
-    fn test_pm() -> (Arc<ProcessManager>, Arc<Database>) {
-        let db = Arc::new(Database::new_in_memory().unwrap());
-        db.run_migrations().unwrap();
+    async fn test_pm() -> (Arc<ProcessManager>, SqlitePool) {
+        let pool = crate::db::connect_in_memory().await.unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
         let event_bus = Arc::new(EventBus::default());
-        let pm = ProcessManager::new(db.clone(), event_bus);
-        (pm, db)
+        let pm = ProcessManager::new(pool.clone(), event_bus);
+        (pm, pool)
     }
 
     #[tokio::test]
     async fn test_create_process() {
-        let (pm, _db) = test_pm();
+        let (pm, _pool) = test_pm().await;
 
         let info = pm
             .create_process(CreateProcessRequest {
@@ -839,7 +842,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_start_and_stop_process() {
-        let (pm, _db) = test_pm();
+        let (pm, _pool) = test_pm().await;
 
         let info = pm
             .create_process(CreateProcessRequest {
@@ -879,7 +882,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_processes() {
-        let (pm, _db) = test_pm();
+        let (pm, _pool) = test_pm().await;
 
         pm.create_process(CreateProcessRequest {
             name: "proc-1".to_string(),
@@ -913,7 +916,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_process() {
-        let (pm, _db) = test_pm();
+        let (pm, _pool) = test_pm().await;
 
         let info = pm
             .create_process(CreateProcessRequest {

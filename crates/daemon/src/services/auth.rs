@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
@@ -8,9 +6,9 @@ use argon2::{
 use chrono::Utc;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::db::Database;
 use crate::error::AppError;
 
 /// JWT Claims structure.
@@ -39,21 +37,21 @@ impl AuthService {
     }
 
     /// Check if initial setup has been completed (admin user exists).
-    pub fn is_setup_complete(db: &Database) -> Result<bool> {
-        db.with_conn(|conn| {
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM users",
-                [],
-                |row| row.get(0),
-            )?;
-            Ok(count > 0)
-        })
+    pub async fn is_setup_complete(pool: &SqlitePool) -> Result<bool> {
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+            .fetch_one(pool)
+            .await?;
+        Ok(count.0 > 0)
     }
 
     /// Create the initial admin user (first-time setup).
-    pub fn setup_admin(db: &Database, username: &str, password: &str) -> Result<(), AppError> {
+    pub async fn setup_admin(
+        pool: &SqlitePool,
+        username: &str,
+        password: &str,
+    ) -> Result<(), AppError> {
         // Check if already set up
-        if Self::is_setup_complete(db)? {
+        if Self::is_setup_complete(pool).await? {
             return Err(AppError::AlreadyExists(
                 "Admin user already exists".to_string(),
             ));
@@ -63,44 +61,41 @@ impl AuthService {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
-        db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                rusqlite::params![id, username, password_hash, "admin", now, now],
-            )?;
-            Ok(())
-        })?;
+        sqlx::query(
+            "INSERT INTO users (id, username, password_hash, role, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(&id)
+        .bind(username)
+        .bind(&password_hash)
+        .bind("admin")
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
 
         Ok(())
     }
 
     /// Authenticate with username and password, returns a JWT token.
-    pub fn login(
+    pub async fn login(
         &self,
-        db: &Database,
+        pool: &SqlitePool,
         username: &str,
         password: &str,
     ) -> Result<String, AppError> {
-        if !Self::is_setup_complete(db)? {
+        if !Self::is_setup_complete(pool).await? {
             return Err(AppError::SetupRequired);
         }
 
-        let (user_id, stored_hash, role): (String, String, String) = db
-            .with_conn(|conn| {
-                let result = conn.query_row(
-                    "SELECT id, password_hash, role FROM users WHERE username = ?1",
-                    [username],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                        ))
-                    },
-                )?;
-                Ok(result)
-            })
-            .map_err(|_| AppError::InvalidCredentials)?;
+        let row: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT id, password_hash, role FROM users WHERE username = ?1",
+        )
+        .bind(username)
+        .fetch_optional(pool)
+        .await?;
+
+        let (user_id, stored_hash, role) =
+            row.ok_or(AppError::InvalidCredentials)?;
 
         // Verify password
         verify_password(password, &stored_hash)?;
@@ -188,10 +183,10 @@ fn verify_password(password: &str, hash: &str) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
-    fn test_db() -> Arc<Database> {
-        let db = Arc::new(Database::new_in_memory().unwrap());
-        db.run_migrations().unwrap();
-        db
+    async fn test_pool() -> SqlitePool {
+        let pool = crate::db::connect_in_memory().await.unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
+        pool
     }
 
     #[test]
@@ -201,29 +196,33 @@ mod tests {
         assert!(verify_password("wrong_password", &hash).is_err());
     }
 
-    #[test]
-    fn test_setup_and_login() {
-        let db = test_db();
+    #[tokio::test]
+    async fn test_setup_and_login() {
+        let pool = test_pool().await;
         let auth = AuthService::new("test-secret-key-12345".to_string());
 
         // Not set up yet
-        assert!(!AuthService::is_setup_complete(&db).unwrap());
+        assert!(!AuthService::is_setup_complete(&pool).await.unwrap());
         assert!(matches!(
-            auth.login(&db, "admin", "mypassword"),
+            auth.login(&pool, "admin", "mypassword").await,
             Err(AppError::SetupRequired)
         ));
 
         // Setup admin
-        AuthService::setup_admin(&db, "admin", "mypassword").unwrap();
+        AuthService::setup_admin(&pool, "admin", "mypassword")
+            .await
+            .unwrap();
 
         // Now set up
-        assert!(AuthService::is_setup_complete(&db).unwrap());
+        assert!(AuthService::is_setup_complete(&pool).await.unwrap());
 
         // Can't setup again
-        assert!(AuthService::setup_admin(&db, "admin2", "pass").is_err());
+        assert!(AuthService::setup_admin(&pool, "admin2", "pass")
+            .await
+            .is_err());
 
         // Login succeeds
-        let token = auth.login(&db, "admin", "mypassword").unwrap();
+        let token = auth.login(&pool, "admin", "mypassword").await.unwrap();
         assert!(!token.is_empty());
 
         // Verify token
@@ -232,17 +231,22 @@ mod tests {
         assert_eq!(claims.role, "admin");
 
         // Login with wrong password fails
-        assert!(auth.login(&db, "admin", "wrongpassword").is_err());
+        assert!(auth
+            .login(&pool, "admin", "wrongpassword")
+            .await
+            .is_err());
     }
 
-    #[test]
-    fn test_jwt_verification() {
+    #[tokio::test]
+    async fn test_jwt_verification() {
         let auth = AuthService::new("test-secret".to_string());
         let auth2 = AuthService::new("different-secret".to_string());
-        let db = test_db();
-        AuthService::setup_admin(&db, "admin", "pass").unwrap();
+        let pool = test_pool().await;
+        AuthService::setup_admin(&pool, "admin", "pass")
+            .await
+            .unwrap();
 
-        let token = auth.login(&db, "admin", "pass").unwrap();
+        let token = auth.login(&pool, "admin", "pass").await.unwrap();
 
         // Valid token
         assert!(auth.verify_token(&token).is_ok());

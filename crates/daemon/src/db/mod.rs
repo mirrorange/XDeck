@@ -1,60 +1,44 @@
-mod migrations;
-
 use anyhow::Result;
-use rusqlite::Connection;
+use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use sqlx::SqlitePool;
 use std::path::Path;
-use std::sync::Mutex;
+use std::str::FromStr;
 use tracing::info;
 
-/// Database wrapper providing thread-safe access to SQLite.
-pub struct Database {
-    conn: Mutex<Connection>,
+/// Create a new SQLite connection pool at the given path.
+pub async fn connect(path: &Path) -> Result<SqlitePool> {
+    let url = format!("sqlite:{}", path.display());
+    let options = SqliteConnectOptions::from_str(&url)?
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .foreign_keys(true)
+        .create_if_missing(true);
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect_with(options)
+        .await?;
+
+    Ok(pool)
 }
 
-impl std::fmt::Debug for Database {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Database").finish()
-    }
+/// Create an in-memory SQLite pool (for testing).
+pub async fn connect_in_memory() -> Result<SqlitePool> {
+    let options = SqliteConnectOptions::from_str("sqlite::memory:")?
+        .journal_mode(SqliteJournalMode::Wal)
+        .foreign_keys(true);
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+
+    Ok(pool)
 }
 
-impl Database {
-    /// Create a new database connection at the given path.
-    pub fn new(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path)?;
-        Self::configure(conn)
-    }
-
-    /// Create an in-memory database (for testing).
-    pub fn new_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()?;
-        Self::configure(conn)
-    }
-
-    fn configure(conn: Connection) -> Result<Self> {
-        // Enable WAL mode for better concurrent read performance
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
-        // Enable foreign keys
-        conn.execute_batch("PRAGMA foreign_keys=ON;")?;
-
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
-    }
-
-    /// Run all pending migrations.
-    pub fn run_migrations(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        migrations::run_all(&conn)?;
-        info!("Database migrations completed");
-        Ok(())
-    }
-
-    /// Execute a closure with a reference to the database connection.
-    pub fn with_conn<F, T>(&self, f: F) -> Result<T>
-    where
-        F: FnOnce(&Connection) -> Result<T>,
-    {
-        let conn = self.conn.lock().unwrap();
-        f(&conn)
-    }
+/// Run all embedded migrations.
+pub async fn run_migrations(pool: &SqlitePool) -> Result<()> {
+    sqlx::migrate!("./migrations").run(pool).await?;
+    info!("Database migrations completed");
+    Ok(())
 }

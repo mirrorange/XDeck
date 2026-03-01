@@ -2,11 +2,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use sqlx::SqlitePool;
 use sysinfo::{Disks, Networks, System};
 use tokio::sync::Mutex;
 use tracing::{debug, error};
 
-use crate::db::Database;
 use crate::services::event_bus::SharedEventBus;
 
 /// System status snapshot.
@@ -48,18 +48,18 @@ pub struct NetworkInterface {
 pub struct SystemMonitor {
     sys: Mutex<System>,
     event_bus: SharedEventBus,
-    db: Arc<Database>,
+    pool: SqlitePool,
 }
 
 impl SystemMonitor {
-    pub fn new(event_bus: SharedEventBus, db: Arc<Database>) -> Arc<Self> {
+    pub fn new(event_bus: SharedEventBus, pool: SqlitePool) -> Arc<Self> {
         let mut sys = System::new_all();
         sys.refresh_all();
 
         Arc::new(Self {
             sys: Mutex::new(sys),
             event_bus,
-            db,
+            pool,
         })
     }
 
@@ -150,10 +150,10 @@ impl SystemMonitor {
             // Store in DB at lower frequency (every ~60s)
             tick_count += 1;
             if tick_count % store_interval == 0 {
-                if let Err(e) = self.store_metrics(&metrics) {
+                if let Err(e) = self.store_metrics(&metrics).await {
                     error!("Failed to store system metrics: {}", e);
                 }
-                if let Err(e) = self.cleanup_old_metrics() {
+                if let Err(e) = self.cleanup_old_metrics().await {
                     error!("Failed to cleanup old metrics: {}", e);
                 }
             }
@@ -166,34 +166,41 @@ impl SystemMonitor {
     }
 
     /// Store a metrics snapshot in SQLite.
-    fn store_metrics(&self, metrics: &SystemStatus) -> anyhow::Result<()> {
+    async fn store_metrics(&self, metrics: &SystemStatus) -> anyhow::Result<()> {
         let timestamp = chrono::Utc::now().to_rfc3339();
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO system_metrics (timestamp, cpu_usage, memory_used, disk_read, disk_write, net_rx, net_tx) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![
-                    timestamp,
-                    metrics.cpu_usage,
-                    metrics.memory_used as i64,
-                    0i64,
-                    0i64,
-                    metrics.network_interfaces.iter().map(|n| n.rx_bytes).sum::<u64>() as i64,
-                    metrics.network_interfaces.iter().map(|n| n.tx_bytes).sum::<u64>() as i64,
-                ],
-            )?;
-            Ok(())
-        })
+        let net_rx = metrics
+            .network_interfaces
+            .iter()
+            .map(|n| n.rx_bytes)
+            .sum::<u64>() as i64;
+        let net_tx = metrics
+            .network_interfaces
+            .iter()
+            .map(|n| n.tx_bytes)
+            .sum::<u64>() as i64;
+
+        sqlx::query(
+            "INSERT OR REPLACE INTO system_metrics (timestamp, cpu_usage, memory_used, disk_read, disk_write, net_rx, net_tx) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .bind(&timestamp)
+        .bind(metrics.cpu_usage)
+        .bind(metrics.memory_used as i64)
+        .bind(0i64)
+        .bind(0i64)
+        .bind(net_rx)
+        .bind(net_tx)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 
     /// Clean up metrics older than 24 hours.
-    fn cleanup_old_metrics(&self) -> anyhow::Result<()> {
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "DELETE FROM system_metrics WHERE timestamp < datetime('now', '-24 hours')",
-                [],
-            )?;
-            Ok(())
-        })
+    async fn cleanup_old_metrics(&self) -> anyhow::Result<()> {
+        sqlx::query("DELETE FROM system_metrics WHERE timestamp < datetime('now', '-24 hours')")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 
@@ -204,10 +211,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_collect_metrics() {
-        let db = Arc::new(Database::new_in_memory().unwrap());
-        db.run_migrations().unwrap();
+        let pool = crate::db::connect_in_memory().await.unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
         let event_bus = Arc::new(EventBus::default());
-        let monitor = SystemMonitor::new(event_bus, db);
+        let monitor = SystemMonitor::new(event_bus, pool);
 
         let metrics = monitor.collect_metrics().await;
 
@@ -218,20 +225,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_store_metrics() {
-        let db = Arc::new(Database::new_in_memory().unwrap());
-        db.run_migrations().unwrap();
+        let pool = crate::db::connect_in_memory().await.unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
         let event_bus = Arc::new(EventBus::default());
-        let monitor = SystemMonitor::new(event_bus, db.clone());
+        let monitor = SystemMonitor::new(event_bus, pool.clone());
 
         let metrics = monitor.collect_metrics().await;
-        monitor.store_metrics(&metrics).unwrap();
+        monitor.store_metrics(&metrics).await.unwrap();
 
-        let count: i64 = db
-            .with_conn(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM system_metrics", [], |row| row.get(0))
-                    .map_err(|e| e.into())
-            })
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM system_metrics")
+            .fetch_one(&pool)
+            .await
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count.0, 1);
     }
 }

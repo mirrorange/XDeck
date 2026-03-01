@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::Value;
+use sqlx::SqlitePool;
 use tracing::{debug, warn};
 
-use crate::db::Database;
 use crate::error::{error_codes, AppError};
 use crate::rpc::types::{JsonRpcRequest, JsonRpcResponse};
 
@@ -22,8 +22,8 @@ pub struct RequestContext {
     pub user_id: Option<String>,
     /// Client IP address
     pub ip_address: Option<String>,
-    /// Database handle
-    pub db: Arc<Database>,
+    /// Database pool handle
+    pub pool: SqlitePool,
 }
 
 /// JSON-RPC 2.0 method router.
@@ -115,12 +115,12 @@ impl RpcRouter {
 mod tests {
     use super::*;
 
-    fn test_ctx() -> RequestContext {
-        let db = Arc::new(Database::new_in_memory().unwrap());
+    async fn test_ctx() -> RequestContext {
+        let pool = crate::db::connect_in_memory().await.unwrap();
         RequestContext {
             user_id: None,
             ip_address: None,
-            db,
+            pool,
         }
     }
 
@@ -138,7 +138,7 @@ mod tests {
             params: None,
         };
 
-        let resp = router.dispatch(req, test_ctx()).await.unwrap();
+        let resp = router.dispatch(req, test_ctx().await).await.unwrap();
         assert!(resp.result.is_some());
         assert!(resp.error.is_none());
     }
@@ -154,7 +154,7 @@ mod tests {
             params: None,
         };
 
-        let resp = router.dispatch(req, test_ctx()).await.unwrap();
+        let resp = router.dispatch(req, test_ctx().await).await.unwrap();
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, error_codes::METHOD_NOT_FOUND);
     }
@@ -170,8 +170,7 @@ mod tests {
             params: None,
         };
 
-        let resp = router.dispatch(req, test_ctx()).await;
+        let resp = router.dispatch(req, test_ctx().await).await;
         assert!(resp.is_none());
     }
 }
-

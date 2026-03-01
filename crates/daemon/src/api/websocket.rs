@@ -65,7 +65,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
 
     // Task: Process incoming messages from the client
     let rpc_router = state.rpc_router.clone();
-    let db = state.db.clone();
+    let pool = state.pool.clone();
     let response_tx = tx.clone();
 
     while let Some(msg) = ws_receiver.next().await {
@@ -101,7 +101,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                 let ctx = RequestContext {
                     user_id: None, // TODO: implement session tracking
                     ip_address: None,
-                    db: db.clone(),
+                    pool: pool.clone(),
                 };
 
                 if let Some(response) = rpc_router.dispatch(request, ctx).await {

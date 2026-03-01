@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::Parser;
-use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info};
 
@@ -12,7 +11,6 @@ mod rpc;
 mod services;
 
 use config::AppConfig;
-use db::Database;
 use services::system_monitor::SystemMonitor;
 
 /// XDeck Daemon - Lightweight service management panel
@@ -55,17 +53,17 @@ async fn main() -> Result<()> {
     info!("Listening on {}:{}", config.bind, config.port);
 
     // Initialize database
-    let db = Database::new(&config.data_dir.join("xdeck.db"))?;
-    db.run_migrations()?;
+    let pool = db::connect(&config.data_dir.join("xdeck.db")).await?;
+    db::run_migrations(&pool).await?;
     info!("Database initialized");
 
     // Build app state
-    let app_state = api::AppState::new(config.clone(), db);
+    let app_state = api::AppState::new(config.clone(), pool);
 
     // Start system monitor
     let monitor = SystemMonitor::new(
         app_state.event_bus.clone(),
-        app_state.db.clone(),
+        app_state.pool.clone(),
     );
     tokio::spawn(monitor.start_monitoring(Duration::from_secs(2)));
     info!("System monitor started");

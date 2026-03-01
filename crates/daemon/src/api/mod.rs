@@ -7,11 +7,11 @@ use axum::{
     routing::get,
     response::Json,
 };
+use sqlx::SqlitePool;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::AppConfig;
-use crate::db::Database;
 use crate::error::AppError;
 use crate::rpc::router::RpcRouter;
 use crate::services::auth::AuthService;
@@ -22,7 +22,7 @@ use crate::services::process_manager::ProcessManager;
 #[derive(Clone)]
 pub struct AppState {
     pub config: AppConfig,
-    pub db: Arc<Database>,
+    pub pool: SqlitePool,
     pub rpc_router: Arc<RpcRouter>,
     pub event_bus: SharedEventBus,
     pub auth_service: Arc<AuthService>,
@@ -30,9 +30,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: AppConfig, db: Database) -> Self {
-        let db = Arc::new(db);
-
+    pub fn new(config: AppConfig, pool: SqlitePool) -> Self {
         // Determine JWT secret
         let jwt_secret = config
             .jwt_secret
@@ -41,7 +39,7 @@ impl AppState {
 
         let auth_service = Arc::new(AuthService::new(jwt_secret));
         let event_bus = Arc::new(EventBus::default());
-        let process_manager = ProcessManager::new(db.clone(), event_bus.clone());
+        let process_manager = ProcessManager::new(pool.clone(), event_bus.clone());
         let rpc_router = Arc::new(Self::build_rpc_router(
             auth_service.clone(),
             process_manager.clone(),
@@ -49,7 +47,7 @@ impl AppState {
 
         Self {
             config,
-            db,
+            pool,
             rpc_router,
             event_bus,
             auth_service,
@@ -82,15 +80,16 @@ impl AppState {
             use crate::services::event_bus::EventBus;
 
             let dummy_bus = std::sync::Arc::new(EventBus::new(1));
-            let dummy_db = std::sync::Arc::new(crate::db::Database::new_in_memory().unwrap());
-            let monitor = SystemMonitor::new(dummy_bus, dummy_db);
+            let dummy_pool = crate::db::connect_in_memory().await.unwrap();
+            let monitor = SystemMonitor::new(dummy_bus, dummy_pool);
             let status = monitor.collect_metrics().await;
             Ok(serde_json::to_value(&status).unwrap())
         });
 
         // === Auth methods ===
         router.register("auth.setup_status", |_params, ctx| async move {
-            let is_setup = AuthService::is_setup_complete(&ctx.db)
+            let is_setup = AuthService::is_setup_complete(&ctx.pool)
+                .await
                 .map_err(|e| AppError::Internal(e.to_string()))?;
             Ok(serde_json::json!({ "setup_complete": is_setup }))
         });
@@ -110,7 +109,7 @@ impl AppState {
                 ));
             }
 
-            AuthService::setup_admin(&ctx.db, username, password)?;
+            AuthService::setup_admin(&ctx.pool, username, password).await?;
             Ok(serde_json::json!({"success": true}))
         });
 
@@ -126,7 +125,7 @@ impl AppState {
                 let password = params["password"]
                     .as_str()
                     .ok_or_else(|| AppError::BadRequest("Missing password".into()))?;
-                let token = auth.login(&ctx.db, username, password)?;
+                let token = auth.login(&ctx.pool, username, password).await?;
                 Ok(serde_json::json!({ "token": token }))
             }
         });
