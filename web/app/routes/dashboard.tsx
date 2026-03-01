@@ -164,19 +164,24 @@ export default function DashboardPage() {
                 </div>
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold tabular-nums">
-                  {status ? formatSpeed(totalRxSpeed + totalTxSpeed) : "—"}
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <div className="flex items-center gap-1">
-                    <ArrowDown className="size-3 text-emerald-500" />
-                    <span className="text-muted-foreground">RX</span>
-                    <span className="ml-auto font-medium tabular-nums">{formatSpeed(totalRxSpeed)}</span>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <ArrowDown className="size-3.5 text-emerald-500" />
+                      <span>Download</span>
+                    </div>
+                    <p className="text-xl font-bold tabular-nums">
+                      {status ? formatSpeed(totalRxSpeed) : "—"}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-1">
-                    <ArrowUp className="size-3 text-emerald-500" />
-                    <span className="text-muted-foreground">TX</span>
-                    <span className="ml-auto font-medium tabular-nums">{formatSpeed(totalTxSpeed)}</span>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <ArrowUp className="size-3.5 text-emerald-500" />
+                      <span>Upload</span>
+                    </div>
+                    <p className="text-xl font-bold tabular-nums">
+                      {status ? formatSpeed(totalTxSpeed) : "—"}
+                    </p>
                   </div>
                 </div>
               </CardContent>
