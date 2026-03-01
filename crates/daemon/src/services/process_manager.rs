@@ -155,10 +155,7 @@ impl ProcessManager {
     /// Restore processes on daemon startup.
     pub async fn restore_processes(self: &Arc<Self>) -> anyhow::Result<()> {
         let definitions = self.load_all_definitions().await?;
-        let auto_start_defs: Vec<_> = definitions
-            .into_iter()
-            .filter(|d| d.auto_start)
-            .collect();
+        let auto_start_defs: Vec<_> = definitions.into_iter().filter(|d| d.auto_start).collect();
 
         info!("Restoring {} auto-start processes", auto_start_defs.len());
 
@@ -398,12 +395,10 @@ impl ProcessManager {
                 result = child.wait() => result.ok(),
                 _ = &mut cancel_rx => {
                     debug!("Supervisor cancelled for process {}", id);
-                    // Try to put the child back if it's still alive
-                    let procs = self.processes.read().await;
-                    if let Some(proc_mutex) = procs.get(&id) {
-                        let mut proc = proc_mutex.lock().await;
-                        proc.child = Some(child);
-                    }
+                    // Stop requests can arrive while the supervisor owns `child`.
+                    // In that case, the supervisor must terminate and reap it.
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
                     return;
                 }
             };
@@ -447,14 +442,16 @@ impl ProcessManager {
 
                 let policy = &def.restart_policy;
                 match policy.strategy {
-                    RestartStrategy::Always => {
-                        policy.max_retries.map_or(true, |max| proc.restart_count < max)
-                    }
+                    RestartStrategy::Always => policy
+                        .max_retries
+                        .map_or(true, |max| proc.restart_count < max),
                     RestartStrategy::OnFailure => {
                         if success {
                             false
                         } else {
-                            policy.max_retries.map_or(true, |max| proc.restart_count < max)
+                            policy
+                                .max_retries
+                                .map_or(true, |max| proc.restart_count < max)
                         }
                     }
                     RestartStrategy::Never => false,
@@ -810,6 +807,16 @@ mod tests {
     use super::*;
     use crate::services::event_bus::EventBus;
 
+    #[cfg(unix)]
+    fn process_exists(pid: u32) -> bool {
+        std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("kill -0 {} 2>/dev/null", pid))
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
     async fn test_pm() -> (Arc<ProcessManager>, SqlitePool) {
         let pool = crate::db::connect_in_memory().await.unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
@@ -870,6 +877,8 @@ mod tests {
         let proc = pm.get_process(&id).await.unwrap();
         assert_eq!(proc.status, ProcessStatus::Running);
         assert!(proc.pid.is_some());
+        #[cfg(unix)]
+        let pid = proc.pid.unwrap();
 
         // Stop
         pm.stop_process(&id).await.unwrap();
@@ -878,6 +887,22 @@ mod tests {
         let proc = pm.get_process(&id).await.unwrap();
         assert_eq!(proc.status, ProcessStatus::Stopped);
         assert!(proc.pid.is_none());
+
+        #[cfg(unix)]
+        {
+            // Give the runtime a moment to deliver cancellation and reap.
+            for _ in 0..20 {
+                if !process_exists(pid) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            assert!(
+                !process_exists(pid),
+                "process {} should be terminated after stop_process",
+                pid
+            );
+        }
     }
 
     #[tokio::test]
