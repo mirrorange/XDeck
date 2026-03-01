@@ -343,6 +343,7 @@ export default function DashboardPage() {
                       <div className="space-y-3">
                         {status.network_interfaces
                           .filter((n) => n.rx_bytes > 0 || n.tx_bytes > 0)
+                          .sort((a, b) => (b.rx_bytes + b.tx_bytes) - (a.rx_bytes + a.tx_bytes))
                           .map((iface) => (
                             <div
                               key={iface.name}
