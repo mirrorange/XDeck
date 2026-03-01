@@ -17,6 +17,8 @@ export interface NetworkInterface {
   name: string;
   rx_bytes: number;
   tx_bytes: number;
+  rx_speed: number;
+  tx_speed: number;
 }
 
 export interface SystemStatus {
@@ -26,6 +28,8 @@ export interface SystemStatus {
   memory_used: number;
   memory_usage_percent: number;
   disk_partitions: DiskPartition[];
+  disk_read_speed: number;
+  disk_write_speed: number;
   network_interfaces: NetworkInterface[];
   uptime: number;
   load_average: [number, number, number];

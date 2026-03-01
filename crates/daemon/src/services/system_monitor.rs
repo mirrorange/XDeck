@@ -18,6 +18,8 @@ pub struct SystemStatus {
     pub memory_used: u64,
     pub memory_usage_percent: f32,
     pub disk_partitions: Vec<DiskPartition>,
+    pub disk_read_speed: u64,
+    pub disk_write_speed: u64,
     pub network_interfaces: Vec<NetworkInterface>,
     pub uptime: u64,
     pub load_average: [f64; 3],
@@ -42,11 +44,23 @@ pub struct NetworkInterface {
     pub name: String,
     pub rx_bytes: u64,
     pub tx_bytes: u64,
+    /// Receive speed in bytes per second (delta since last refresh).
+    pub rx_speed: u64,
+    /// Transmit speed in bytes per second (delta since last refresh).
+    pub tx_speed: u64,
+}
+
+/// Internal state for computing deltas between refresh cycles.
+struct MonitorState {
+    sys: System,
+    networks: Networks,
+    /// How many seconds between each refresh cycle, used to convert deltas to per-second rates.
+    interval_secs: u64,
 }
 
 /// SystemMonitor collects system metrics and publishes them via EventBus.
 pub struct SystemMonitor {
-    sys: Mutex<System>,
+    state: Mutex<MonitorState>,
     event_bus: SharedEventBus,
     pool: SqlitePool,
 }
@@ -56,8 +70,15 @@ impl SystemMonitor {
         let mut sys = System::new_all();
         sys.refresh_all();
 
+        // Initial refresh so subsequent calls get meaningful deltas.
+        let networks = Networks::new_with_refreshed_list();
+
         Arc::new(Self {
-            sys: Mutex::new(sys),
+            state: Mutex::new(MonitorState {
+                sys,
+                networks,
+                interval_secs: 5, // default, updated when start_monitoring is called
+            }),
             event_bus,
             pool,
         })
@@ -65,13 +86,18 @@ impl SystemMonitor {
 
     /// Collect current system metrics.
     pub async fn collect_metrics(&self) -> SystemStatus {
-        let mut sys = self.sys.lock().await;
-        sys.refresh_all();
+        let mut state = self.state.lock().await;
+        state.sys.refresh_all();
 
-        let cpu_usage = sys.global_cpu_usage();
-        let cpu_cores = sys.cpus().len();
-        let memory_total = sys.total_memory();
-        let memory_used = sys.used_memory();
+        // Refresh networks to get delta values (received/transmitted since last refresh).
+        state.networks.refresh(true);
+
+        let interval = state.interval_secs.max(1);
+
+        let cpu_usage = state.sys.global_cpu_usage();
+        let cpu_cores = state.sys.cpus().len();
+        let memory_total = state.sys.total_memory();
+        let memory_used = state.sys.used_memory();
         let memory_usage_percent = if memory_total > 0 {
             (memory_used as f32 / memory_total as f32) * 100.0
         } else {
@@ -103,14 +129,28 @@ impl SystemMonitor {
             })
             .collect();
 
-        // Collect network info using the separate Networks type
-        let networks = Networks::new_with_refreshed_list();
-        let network_interfaces: Vec<NetworkInterface> = networks
+        // Compute disk I/O speed from process-level stats.
+        // sysinfo provides per-process disk_usage() which gives delta read/write bytes.
+        let mut disk_read: u64 = 0;
+        let mut disk_write: u64 = 0;
+        for (_pid, process) in state.sys.processes() {
+            let du = process.disk_usage();
+            disk_read += du.read_bytes;
+            disk_write += du.written_bytes;
+        }
+        let disk_read_speed = disk_read / interval;
+        let disk_write_speed = disk_write / interval;
+
+        // Collect network info with speed (delta since last refresh).
+        let network_interfaces: Vec<NetworkInterface> = state
+            .networks
             .iter()
             .map(|(name, data)| NetworkInterface {
                 name: name.clone(),
                 rx_bytes: data.total_received(),
                 tx_bytes: data.total_transmitted(),
+                rx_speed: data.received() / interval,
+                tx_speed: data.transmitted() / interval,
             })
             .collect();
 
@@ -123,6 +163,8 @@ impl SystemMonitor {
             memory_used,
             memory_usage_percent,
             disk_partitions,
+            disk_read_speed,
+            disk_write_speed,
             network_interfaces,
             uptime: System::uptime(),
             load_average: [load_avg.one, load_avg.five, load_avg.fifteen],
@@ -134,6 +176,12 @@ impl SystemMonitor {
 
     /// Start the background monitoring loop.
     pub async fn start_monitoring(self: Arc<Self>, interval: Duration) {
+        // Update the interval_secs so speed calculations are correct.
+        {
+            let mut state = self.state.lock().await;
+            state.interval_secs = interval.as_secs().max(1);
+        }
+
         let mut tick_count = 0u64;
         let store_interval = 60 / interval.as_secs().max(1);
 
@@ -159,8 +207,13 @@ impl SystemMonitor {
             }
 
             debug!(
-                "System metrics: CPU={:.1}%, MEM={:.1}%",
-                metrics.cpu_usage, metrics.memory_usage_percent
+                "System metrics: CPU={:.1}%, MEM={:.1}%, NET_RX={}/s, NET_TX={}/s, DISK_R={}/s, DISK_W={}/s",
+                metrics.cpu_usage,
+                metrics.memory_usage_percent,
+                metrics.network_interfaces.iter().map(|n| n.rx_speed).sum::<u64>(),
+                metrics.network_interfaces.iter().map(|n| n.tx_speed).sum::<u64>(),
+                metrics.disk_read_speed,
+                metrics.disk_write_speed,
             );
         }
     }
@@ -185,8 +238,8 @@ impl SystemMonitor {
         .bind(&timestamp)
         .bind(metrics.cpu_usage)
         .bind(metrics.memory_used as i64)
-        .bind(0i64)
-        .bind(0i64)
+        .bind(metrics.disk_read_speed as i64)
+        .bind(metrics.disk_write_speed as i64)
         .bind(net_rx)
         .bind(net_tx)
         .execute(&self.pool)
@@ -221,6 +274,13 @@ mod tests {
         assert!(metrics.cpu_cores > 0);
         assert!(metrics.memory_total > 0);
         assert!(!metrics.hostname.is_empty());
+        // New fields should be present (can be 0 on first collect)
+        let _disk_read = metrics.disk_read_speed;
+        let _disk_write = metrics.disk_write_speed;
+        for iface in &metrics.network_interfaces {
+            let _rx = iface.rx_speed;
+            let _tx = iface.tx_speed;
+        }
     }
 
     #[tokio::test]

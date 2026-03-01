@@ -26,3 +26,12 @@ export function formatDuration(startedAt: string): string {
   const diff = Math.floor((now - start) / 1000);
   return formatUptime(diff);
 }
+
+export function formatSpeed(bytesPerSec: number, decimals = 1): string {
+  if (bytesPerSec === 0) return "0 B/s";
+  const k = 1024;
+  const sizes = ["B/s", "KB/s", "MB/s", "GB/s"];
+  const i = Math.floor(Math.log(bytesPerSec) / Math.log(k));
+  const idx = Math.min(i, sizes.length - 1);
+  return `${parseFloat((bytesPerSec / Math.pow(k, idx)).toFixed(decimals))} ${sizes[idx]}`;
+}
