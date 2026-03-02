@@ -37,6 +37,7 @@ sysinfo.workspace = true
 # Utilities
 uuid.workspace = true
 chrono.workspace = true
+nutype.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

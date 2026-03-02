@@ -1,4 +1,20 @@
+use serde::Serialize;
 use thiserror::Error;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ValidationIssue {
+    pub field: String,
+    pub message: String,
+}
+
+impl ValidationIssue {
+    pub fn new(field: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            field: field.into(),
+            message: message.into(),
+        }
+    }
+}
 
 /// Application-level error types.
 #[derive(Error, Debug)]
@@ -26,6 +42,12 @@ pub enum AppError {
 
     #[error("Bad request: {0}")]
     BadRequest(String),
+
+    #[error("Bad request: {message}")]
+    BadRequestWithDetails {
+        message: String,
+        details: Vec<ValidationIssue>,
+    },
 
     #[error("Internal error: {0}")]
     Internal(String),
@@ -70,6 +92,16 @@ pub mod error_codes {
 }
 
 impl AppError {
+    pub fn bad_request_with_details(
+        message: impl Into<String>,
+        details: Vec<ValidationIssue>,
+    ) -> Self {
+        Self::BadRequestWithDetails {
+            message: message.into(),
+            details,
+        }
+    }
+
     /// Map error to JSON-RPC error code.
     pub fn error_code(&self) -> i64 {
         match self {
@@ -81,8 +113,19 @@ impl AppError {
             AppError::NotFound(_) => error_codes::METHOD_NOT_FOUND,
             AppError::AlreadyExists(_) => error_codes::INVALID_PARAMS,
             AppError::BadRequest(_) => error_codes::INVALID_PARAMS,
+            AppError::BadRequestWithDetails { .. } => error_codes::INVALID_PARAMS,
             AppError::Internal(_) => error_codes::INTERNAL_ERROR,
             AppError::Other(_) => error_codes::INTERNAL_ERROR,
+        }
+    }
+
+    /// Optional structured payload for JSON-RPC error.data.
+    pub fn error_data(&self) -> Option<serde_json::Value> {
+        match self {
+            AppError::BadRequestWithDetails { details, .. } => {
+                Some(serde_json::json!({ "details": details }))
+            }
+            _ => None,
         }
     }
 }

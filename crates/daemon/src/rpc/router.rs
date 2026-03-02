@@ -104,7 +104,13 @@ impl RpcRouter {
 
         Some(match result {
             Ok(value) => JsonRpcResponse::success(id, value),
-            Err(err) => JsonRpcResponse::error(id, err.error_code(), err.to_string()),
+            Err(err) => {
+                if let Some(data) = err.error_data() {
+                    JsonRpcResponse::error_with_data(id, err.error_code(), err.to_string(), data)
+                } else {
+                    JsonRpcResponse::error(id, err.error_code(), err.to_string())
+                }
+            }
         })
     }
 
@@ -175,5 +181,41 @@ mod tests {
 
         let resp = router.dispatch(req, test_ctx().await).await;
         assert!(resp.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_bad_request_with_details() {
+        let mut router = RpcRouter::new();
+        router.register("process.create", |_params, _ctx| async move {
+            Err(AppError::bad_request_with_details(
+                "Invalid process.create params",
+                vec![
+                    crate::error::ValidationIssue::new("name", "must not be empty"),
+                    crate::error::ValidationIssue::new(
+                        "restart_policy.delay_ms",
+                        "must be greater than 0",
+                    ),
+                ],
+            ))
+        });
+
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::String("1".to_string())),
+            method: "process.create".to_string(),
+            params: Some(serde_json::json!({})),
+        };
+
+        let resp = router.dispatch(req, test_ctx().await).await.unwrap();
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(err.data.is_some());
+        assert!(err
+            .data
+            .as_ref()
+            .unwrap()
+            .get("details")
+            .and_then(|v| v.as_array())
+            .is_some());
     }
 }

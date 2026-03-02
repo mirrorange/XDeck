@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use nutype::nutype;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -12,7 +13,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::error::AppError;
+use crate::error::{AppError, ValidationIssue};
 use crate::services::event_bus::SharedEventBus;
 
 // ── Data Structures ─────────────────────────────────────────────
@@ -158,6 +159,271 @@ fn default_true() -> bool {
     true
 }
 
+#[nutype(
+    sanitize(trim),
+    validate(not_empty, len_char_max = 128),
+    derive(Debug, Clone, PartialEq, Eq, AsRef, Deref)
+)]
+struct ProcessName(String);
+
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Clone, PartialEq, Eq, AsRef, Deref)
+)]
+struct ProcessCommand(String);
+
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Clone, PartialEq, Eq, AsRef, Deref)
+)]
+struct ProcessCwd(String);
+
+#[nutype(
+    sanitize(trim),
+    validate(not_empty),
+    derive(Debug, Clone, PartialEq, Eq, AsRef, Deref)
+)]
+struct ProcessId(String);
+
+#[nutype(
+    validate(greater_or_equal = 1),
+    derive(Debug, Clone, Copy, PartialEq, Eq)
+)]
+struct RestartDelayMs(u64);
+
+#[nutype(
+    validate(finite, greater_or_equal = 1.0),
+    derive(Debug, Clone, Copy, PartialEq)
+)]
+struct RestartBackoffMultiplier(f64);
+
+#[nutype(
+    validate(greater_or_equal = 1024),
+    derive(Debug, Clone, Copy, PartialEq, Eq)
+)]
+struct LogMaxFileSize(u64);
+
+#[nutype(
+    validate(greater_or_equal = 1),
+    derive(Debug, Clone, Copy, PartialEq, Eq)
+)]
+struct LogMaxFiles(u32);
+
+#[nutype(
+    validate(greater_or_equal = 1, less_or_equal = 5000),
+    derive(Debug, Clone, Copy, PartialEq, Eq)
+)]
+struct LogTailLines(usize);
+
+#[derive(Debug, Clone, Copy)]
+enum LogStream {
+    Stdout,
+    Stderr,
+    All,
+}
+
+impl LogStream {
+    fn parse(value: &str) -> Result<Self, &'static str> {
+        match value.trim() {
+            "stdout" => Ok(Self::Stdout),
+            "stderr" => Ok(Self::Stderr),
+            "all" => Ok(Self::All),
+            _ => Err("must be one of stdout|stderr|all"),
+        }
+    }
+
+    fn as_slices(self) -> &'static [&'static str] {
+        match self {
+            Self::Stdout => &["stdout"],
+            Self::Stderr => &["stderr"],
+            Self::All => &["stdout", "stderr"],
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ParsedCreateProcessRequest {
+    name: String,
+    command: String,
+    args: Vec<String>,
+    cwd: String,
+    env: HashMap<String, String>,
+    restart_policy: RestartPolicy,
+    auto_start: bool,
+    group_name: Option<String>,
+    log_config: ProcessLogConfig,
+    run_as: Option<String>,
+}
+
+impl ParsedCreateProcessRequest {
+    fn parse(raw: CreateProcessRequest) -> Result<Self, AppError> {
+        let CreateProcessRequest {
+            name,
+            command,
+            args,
+            cwd,
+            env,
+            restart_policy,
+            auto_start,
+            group_name,
+            log_config,
+            run_as,
+        } = raw;
+
+        let mut issues = Vec::new();
+
+        let name = match ProcessName::try_new(name) {
+            Ok(name) => Some(name.into_inner()),
+            Err(_) => {
+                issues.push(ValidationIssue::new("name", "must not be empty"));
+                None
+            }
+        };
+
+        let command = match ProcessCommand::try_new(command) {
+            Ok(command) => Some(command.into_inner()),
+            Err(_) => {
+                issues.push(ValidationIssue::new("command", "must not be empty"));
+                None
+            }
+        };
+
+        // Command must be resolvable either as absolute path or via PATH.
+        if let Some(command) = command.as_deref() {
+            let command_path = Path::new(command);
+            if command_path.is_absolute() {
+                if !command_path.exists() {
+                    issues.push(ValidationIssue::new(
+                        "command",
+                        format!("command not found: {}", command),
+                    ));
+                }
+            } else if which::which(command).is_err() {
+                issues.push(ValidationIssue::new(
+                    "command",
+                    format!("command not found in PATH: {}", command),
+                ));
+            }
+        }
+
+        // Empty cwd is normalized to current directory for backward compatibility.
+        let cwd_raw = if cwd.trim().is_empty() {
+            ".".to_string()
+        } else {
+            cwd
+        };
+        let cwd = match ProcessCwd::try_new(cwd_raw) {
+            Ok(cwd) => Some(cwd.into_inner()),
+            Err(_) => {
+                issues.push(ValidationIssue::new("cwd", "must not be empty"));
+                None
+            }
+        };
+        if let Some(cwd) = cwd.as_deref() {
+            let cwd_path = Path::new(cwd);
+            if !cwd_path.exists() {
+                issues.push(ValidationIssue::new(
+                    "cwd",
+                    format!("working directory does not exist: {}", cwd),
+                ));
+            } else if !cwd_path.is_dir() {
+                issues.push(ValidationIssue::new(
+                    "cwd",
+                    format!("working directory is not a directory: {}", cwd),
+                ));
+            }
+        }
+
+        let delay_ms = match RestartDelayMs::try_new(restart_policy.delay_ms) {
+            Ok(delay_ms) => Some(delay_ms.into_inner()),
+            Err(_) => {
+                issues.push(ValidationIssue::new(
+                    "restart_policy.delay_ms",
+                    "must be greater than 0",
+                ));
+                None
+            }
+        };
+        let backoff_multiplier =
+            match RestartBackoffMultiplier::try_new(restart_policy.backoff_multiplier) {
+                Ok(multiplier) => Some(multiplier.into_inner()),
+                Err(_) => {
+                    issues.push(ValidationIssue::new(
+                        "restart_policy.backoff_multiplier",
+                        "must be finite and >= 1.0",
+                    ));
+                    None
+                }
+            };
+        let restart_policy =
+            if let (Some(delay_ms), Some(backoff_multiplier)) = (delay_ms, backoff_multiplier) {
+                Some(RestartPolicy {
+                    strategy: restart_policy.strategy,
+                    max_retries: restart_policy.max_retries,
+                    delay_ms,
+                    backoff_multiplier,
+                })
+            } else {
+                None
+            };
+
+        let max_file_size = match LogMaxFileSize::try_new(log_config.max_file_size) {
+            Ok(size) => Some(size.into_inner()),
+            Err(_) => {
+                issues.push(ValidationIssue::new(
+                    "log_config.max_file_size",
+                    "must be at least 1024 bytes",
+                ));
+                None
+            }
+        };
+        let max_files = match LogMaxFiles::try_new(log_config.max_files) {
+            Ok(max_files) => Some(max_files.into_inner()),
+            Err(_) => {
+                issues.push(ValidationIssue::new(
+                    "log_config.max_files",
+                    "must be greater than 0",
+                ));
+                None
+            }
+        };
+        let log_config = if let (Some(max_file_size), Some(max_files)) = (max_file_size, max_files)
+        {
+            Some(ProcessLogConfig {
+                max_file_size,
+                max_files,
+            })
+        } else {
+            None
+        };
+
+        if !issues.is_empty() {
+            return Err(AppError::bad_request_with_details(
+                "Invalid process.create params",
+                issues,
+            ));
+        }
+
+        let group_name = group_name.and_then(trimmed_non_empty);
+        let run_as = run_as.and_then(trimmed_non_empty);
+
+        Ok(Self {
+            name: name.expect("name is present when issues is empty"),
+            command: command.expect("command is present when issues is empty"),
+            args,
+            cwd: cwd.expect("cwd is present when issues is empty"),
+            env,
+            restart_policy: restart_policy.expect("restart_policy is present when issues is empty"),
+            auto_start,
+            group_name,
+            log_config: log_config.expect("log_config is present when issues is empty"),
+            run_as,
+        })
+    }
+}
+
 /// Request payload for fetching process logs.
 #[derive(Debug, Deserialize)]
 pub struct GetLogsRequest {
@@ -179,6 +445,71 @@ fn default_stream() -> String {
 
 fn default_tail_lines() -> usize {
     200
+}
+
+#[derive(Debug)]
+struct ParsedGetLogsRequest {
+    id: String,
+    stream: LogStream,
+    lines: usize,
+    offset: usize,
+}
+
+impl ParsedGetLogsRequest {
+    fn parse(raw: GetLogsRequest) -> Result<Self, AppError> {
+        let GetLogsRequest {
+            id,
+            stream,
+            lines,
+            offset,
+        } = raw;
+        let mut issues = Vec::new();
+
+        let id = match ProcessId::try_new(id) {
+            Ok(id) => Some(id.into_inner()),
+            Err(_) => {
+                issues.push(ValidationIssue::new("id", "must not be empty"));
+                None
+            }
+        };
+        let stream = match LogStream::parse(&stream) {
+            Ok(stream) => Some(stream),
+            Err(msg) => {
+                issues.push(ValidationIssue::new("stream", msg));
+                None
+            }
+        };
+        let lines = match LogTailLines::try_new(lines) {
+            Ok(lines) => Some(lines.into_inner()),
+            Err(_) => {
+                issues.push(ValidationIssue::new("lines", "must be in range [1, 5000]"));
+                None
+            }
+        };
+
+        if !issues.is_empty() {
+            return Err(AppError::bad_request_with_details(
+                "Invalid process.logs params",
+                issues,
+            ));
+        }
+
+        Ok(Self {
+            id: id.expect("id is present when issues is empty"),
+            stream: stream.expect("stream is present when issues is empty"),
+            lines: lines.expect("lines is present when issues is empty"),
+            offset,
+        })
+    }
+}
+
+fn trimmed_non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Response for log retrieval.
@@ -270,85 +601,12 @@ impl ProcessManager {
         Ok(())
     }
 
-    /// Validate a CreateProcessRequest before persisting.
-    fn validate_request(req: &CreateProcessRequest) -> Result<(), AppError> {
-        // Name must not be empty
-        if req.name.trim().is_empty() {
-            return Err(AppError::BadRequest("Process name must not be empty".into()));
-        }
-
-        // Command must not be empty
-        if req.command.trim().is_empty() {
-            return Err(AppError::BadRequest("Command must not be empty".into()));
-        }
-
-        // Check if command exists (resolve via PATH or absolute path)
-        let cmd = req.command.trim();
-        let cmd_path = Path::new(cmd);
-        if cmd_path.is_absolute() {
-            if !cmd_path.exists() {
-                return Err(AppError::BadRequest(format!(
-                    "Command not found: {}",
-                    cmd
-                )));
-            }
-        } else {
-            // Try to resolve via which
-            if which::which(cmd).is_err() {
-                return Err(AppError::BadRequest(format!(
-                    "Command not found in PATH: {}",
-                    cmd
-                )));
-            }
-        }
-
-        // Working directory must exist
-        let cwd = req.cwd.trim();
-        if !cwd.is_empty() && cwd != "." {
-            let cwd_path = Path::new(cwd);
-            if !cwd_path.exists() {
-                return Err(AppError::BadRequest(format!(
-                    "Working directory does not exist: {}",
-                    cwd
-                )));
-            }
-            if !cwd_path.is_dir() {
-                return Err(AppError::BadRequest(format!(
-                    "Working directory is not a directory: {}",
-                    cwd
-                )));
-            }
-        }
-
-        // Validate restart policy
-        if req.restart_policy.delay_ms == 0 {
-            return Err(AppError::BadRequest(
-                "Restart delay must be greater than 0".into(),
-            ));
-        }
-        if req.restart_policy.backoff_multiplier < 1.0 {
-            return Err(AppError::BadRequest(
-                "Backoff multiplier must be >= 1.0".into(),
-            ));
-        }
-
-        // Validate log config
-        if req.log_config.max_file_size < 1024 {
-            return Err(AppError::BadRequest(
-                "Log max_file_size must be at least 1KB".into(),
-            ));
-        }
-
-        Ok(())
-    }
-
     /// Create a new managed process.
     pub async fn create_process(
         self: &Arc<Self>,
         req: CreateProcessRequest,
     ) -> Result<ProcessInfo, AppError> {
-        // Validate
-        Self::validate_request(&req)?;
+        let req = ParsedCreateProcessRequest::parse(req)?;
 
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
@@ -437,7 +695,6 @@ impl ProcessManager {
         // Unix: set user if run_as is specified and we are root
         #[cfg(unix)]
         {
-            use std::os::unix::process::CommandExt;
             if let Some(ref run_as) = def.run_as {
                 let is_root = unsafe { libc::geteuid() } == 0;
                 if is_root {
@@ -449,17 +706,26 @@ impl ProcessManager {
                         // Resolve username to UID via libc
                         match resolve_username(run_as) {
                             Some((uid, gid)) => {
-                                info!("Running process {} as user {} (UID={}, GID={})", def.name, run_as, uid, gid);
+                                info!(
+                                    "Running process {} as user {} (UID={}, GID={})",
+                                    def.name, run_as, uid, gid
+                                );
                                 cmd.uid(uid);
                                 cmd.gid(gid);
                             }
                             None => {
-                                warn!("User '{}' not found, ignoring run_as for process {}", run_as, def.name);
+                                warn!(
+                                    "User '{}' not found, ignoring run_as for process {}",
+                                    run_as, def.name
+                                );
                             }
                         }
                     }
                 } else {
-                    warn!("Not running as root, ignoring run_as='{}' for process {}", run_as, def.name);
+                    warn!(
+                        "Not running as root, ignoring run_as='{}' for process {}",
+                        run_as, def.name
+                    );
                 }
             }
         }
@@ -482,7 +748,10 @@ impl ProcessManager {
             let max_size = log_config.max_file_size;
             let max_files = log_config.max_files;
             tokio::spawn(async move {
-                stream_to_file_and_bus(stdout, &bus, &pid_str, "stdout", &log_path, max_size, max_files).await;
+                stream_to_file_and_bus(
+                    stdout, &bus, &pid_str, "stdout", &log_path, max_size, max_files,
+                )
+                .await;
             });
         }
         if let Some(stderr) = child.stderr.take() {
@@ -492,7 +761,10 @@ impl ProcessManager {
             let max_size = log_config.max_file_size;
             let max_files = log_config.max_files;
             tokio::spawn(async move {
-                stream_to_file_and_bus(stderr, &bus, &pid_str, "stderr", &log_path, max_size, max_files).await;
+                stream_to_file_and_bus(
+                    stderr, &bus, &pid_str, "stderr", &log_path, max_size, max_files,
+                )
+                .await;
             });
         }
     }
@@ -838,6 +1110,8 @@ impl ProcessManager {
 
     /// Get logs for a process.
     pub async fn get_logs(&self, req: GetLogsRequest) -> Result<LogsResponse, AppError> {
+        let req = ParsedGetLogsRequest::parse(req)?;
+
         // Verify process exists
         self.load_definition(&req.id)
             .await?
@@ -847,11 +1121,7 @@ impl ProcessManager {
 
         let mut all_lines: Vec<LogLine> = Vec::new();
 
-        let streams: Vec<&str> = match req.stream.as_str() {
-            "stdout" => vec!["stdout"],
-            "stderr" => vec!["stderr"],
-            _ => vec!["stdout", "stderr"],
-        };
+        let streams = req.stream.as_slices();
 
         for stream in streams {
             let log_file = proc_log_dir.join(format!("{}.log", stream));
@@ -899,7 +1169,11 @@ impl ProcessManager {
             0
         };
 
-        let lines: Vec<LogLine> = all_lines.into_iter().skip(start).take(end - start).collect();
+        let lines: Vec<LogLine> = all_lines
+            .into_iter()
+            .skip(start)
+            .take(end - start)
+            .collect();
         let has_more = start > 0;
 
         Ok(LogsResponse {
@@ -1108,9 +1382,7 @@ async fn stream_to_file_and_bus<R: tokio::io::AsyncRead + Unpin>(
         }
     };
 
-    let mut current_size = std::fs::metadata(log_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let mut current_size = std::fs::metadata(log_path).map(|m| m.len()).unwrap_or(0);
 
     loop {
         line_buf.clear();
@@ -1163,7 +1435,10 @@ async fn stream_to_file_and_bus<R: tokio::io::AsyncRead + Unpin>(
                 );
             }
             Err(e) => {
-                debug!("Log stream read error for {}/{}: {}", process_id, stream_name, e);
+                debug!(
+                    "Log stream read error for {}/{}: {}",
+                    process_id, stream_name, e
+                );
                 break;
             }
         }
@@ -1375,6 +1650,154 @@ mod tests {
 
         let list = pm.list_processes().await.unwrap();
         assert_eq!(list.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_process_rejects_empty_name() {
+        let (pm, _pool) = test_pm().await;
+
+        let err = pm
+            .create_process(CreateProcessRequest {
+                name: "   ".to_string(),
+                command: "echo".to_string(),
+                args: vec!["hello".to_string()],
+                cwd: "/tmp".to_string(),
+                env: HashMap::new(),
+                restart_policy: RestartPolicy::default(),
+                auto_start: false,
+                group_name: None,
+                log_config: ProcessLogConfig::default(),
+                run_as: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::BadRequestWithDetails { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_create_process_rejects_zero_log_max_files() {
+        let (pm, _pool) = test_pm().await;
+
+        let err = pm
+            .create_process(CreateProcessRequest {
+                name: "test-log".to_string(),
+                command: "echo".to_string(),
+                args: vec!["hello".to_string()],
+                cwd: "/tmp".to_string(),
+                env: HashMap::new(),
+                restart_policy: RestartPolicy::default(),
+                auto_start: false,
+                group_name: None,
+                log_config: ProcessLogConfig {
+                    max_file_size: 1024,
+                    max_files: 0,
+                },
+                run_as: None,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::BadRequestWithDetails { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_get_logs_rejects_invalid_stream() {
+        let (pm, _pool) = test_pm().await;
+
+        let err = pm
+            .get_logs(GetLogsRequest {
+                id: "proc-id".to_string(),
+                stream: "invalid".to_string(),
+                lines: 200,
+                offset: 0,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::BadRequestWithDetails { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_get_logs_rejects_zero_lines() {
+        let (pm, _pool) = test_pm().await;
+
+        let err = pm
+            .get_logs(GetLogsRequest {
+                id: "proc-id".to_string(),
+                stream: "all".to_string(),
+                lines: 0,
+                offset: 0,
+            })
+            .await
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::BadRequestWithDetails { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_create_process_accumulates_multiple_errors() {
+        let (pm, _pool) = test_pm().await;
+
+        let err = pm
+            .create_process(CreateProcessRequest {
+                name: "   ".to_string(),
+                command: "   ".to_string(),
+                args: vec![],
+                cwd: "/path/that/does/not/exist".to_string(),
+                env: HashMap::new(),
+                restart_policy: RestartPolicy {
+                    strategy: RestartStrategy::OnFailure,
+                    max_retries: Some(3),
+                    delay_ms: 0,
+                    backoff_multiplier: 0.5,
+                },
+                auto_start: false,
+                group_name: None,
+                log_config: ProcessLogConfig {
+                    max_file_size: 100,
+                    max_files: 0,
+                },
+                run_as: None,
+            })
+            .await
+            .unwrap_err();
+
+        match err {
+            AppError::BadRequestWithDetails { details, .. } => {
+                assert!(details.len() >= 6);
+                assert!(details.iter().any(|d| d.field == "name"));
+                assert!(details.iter().any(|d| d.field == "command"));
+                assert!(details.iter().any(|d| d.field == "restart_policy.delay_ms"));
+                assert!(details.iter().any(|d| d.field == "log_config.max_files"));
+            }
+            other => panic!("Expected BadRequestWithDetails, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_logs_accumulates_multiple_errors() {
+        let (pm, _pool) = test_pm().await;
+
+        let err = pm
+            .get_logs(GetLogsRequest {
+                id: "   ".to_string(),
+                stream: "invalid".to_string(),
+                lines: 0,
+                offset: 0,
+            })
+            .await
+            .unwrap_err();
+
+        match err {
+            AppError::BadRequestWithDetails { details, .. } => {
+                assert_eq!(details.len(), 3);
+                assert!(details.iter().any(|d| d.field == "id"));
+                assert!(details.iter().any(|d| d.field == "stream"));
+                assert!(details.iter().any(|d| d.field == "lines"));
+            }
+            other => panic!("Expected BadRequestWithDetails, got {:?}", other),
+        }
     }
 
     #[test]

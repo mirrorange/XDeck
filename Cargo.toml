@@ -37,6 +37,7 @@ sysinfo = "0.33"
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+nutype = "0.6"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
