@@ -41,6 +41,7 @@ export interface SystemStatus {
 export interface DaemonInfo {
   name: string;
   version: string;
+  os_type: "windows" | "macos" | "linux";
 }
 
 interface SystemState {

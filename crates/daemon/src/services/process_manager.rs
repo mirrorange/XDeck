@@ -1,14 +1,15 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{Mutex, RwLock};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::error::AppError;
@@ -71,6 +72,34 @@ impl Default for RestartPolicy {
     }
 }
 
+/// Per-process log configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcessLogConfig {
+    /// Max log file size in bytes before rotation (default: 10MB)
+    #[serde(default = "default_log_max_size")]
+    pub max_file_size: u64,
+    /// Number of rotated log files to keep (default: 5)
+    #[serde(default = "default_log_max_files")]
+    pub max_files: u32,
+}
+
+fn default_log_max_size() -> u64 {
+    10 * 1024 * 1024 // 10MB
+}
+
+fn default_log_max_files() -> u32 {
+    5
+}
+
+impl Default for ProcessLogConfig {
+    fn default() -> Self {
+        Self {
+            max_file_size: default_log_max_size(),
+            max_files: default_log_max_files(),
+        }
+    }
+}
+
 /// Persistent process definition (stored in DB).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessDefinition {
@@ -83,6 +112,11 @@ pub struct ProcessDefinition {
     pub restart_policy: RestartPolicy,
     pub auto_start: bool,
     pub group_name: Option<String>,
+    #[serde(default)]
+    pub log_config: ProcessLogConfig,
+    /// Run as a specific user (username or UID). Unix only.
+    /// Ignored on Windows or when daemon is not running as root.
+    pub run_as: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -114,10 +148,52 @@ pub struct CreateProcessRequest {
     #[serde(default = "default_true")]
     pub auto_start: bool,
     pub group_name: Option<String>,
+    #[serde(default)]
+    pub log_config: ProcessLogConfig,
+    /// Run as a specific user (username or UID). Unix only.
+    pub run_as: Option<String>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// Request payload for fetching process logs.
+#[derive(Debug, Deserialize)]
+pub struct GetLogsRequest {
+    pub id: String,
+    /// Which stream to fetch: "stdout", "stderr", or "all" (default)
+    #[serde(default = "default_stream")]
+    pub stream: String,
+    /// Number of lines to return from the tail (default: 200)
+    #[serde(default = "default_tail_lines")]
+    pub lines: usize,
+    /// Offset from the end for pagination (default: 0)
+    #[serde(default)]
+    pub offset: usize,
+}
+
+fn default_stream() -> String {
+    "all".to_string()
+}
+
+fn default_tail_lines() -> usize {
+    200
+}
+
+/// Response for log retrieval.
+#[derive(Debug, Serialize)]
+pub struct LogsResponse {
+    pub process_id: String,
+    pub lines: Vec<LogLine>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct LogLine {
+    pub stream: String,
+    pub line: String,
+    pub timestamp: Option<String>,
 }
 
 // ── Runtime State ───────────────────────────────────────────────
@@ -141,14 +217,22 @@ pub struct ProcessManager {
     processes: RwLock<HashMap<String, Mutex<RunningProcess>>>,
     pool: SqlitePool,
     event_bus: SharedEventBus,
+    /// Root directory for process log files
+    log_dir: PathBuf,
 }
 
 impl ProcessManager {
-    pub fn new(pool: SqlitePool, event_bus: SharedEventBus) -> Arc<Self> {
+    pub fn new(pool: SqlitePool, event_bus: SharedEventBus, data_dir: &Path) -> Arc<Self> {
+        let log_dir = data_dir.join("logs").join("processes");
+        // Ensure log directory exists
+        if let Err(e) = std::fs::create_dir_all(&log_dir) {
+            error!("Failed to create process log directory: {}", e);
+        }
         Arc::new(Self {
             processes: RwLock::new(HashMap::new()),
             pool,
             event_bus,
+            log_dir,
         })
     }
 
@@ -186,13 +270,93 @@ impl ProcessManager {
         Ok(())
     }
 
+    /// Validate a CreateProcessRequest before persisting.
+    fn validate_request(req: &CreateProcessRequest) -> Result<(), AppError> {
+        // Name must not be empty
+        if req.name.trim().is_empty() {
+            return Err(AppError::BadRequest("Process name must not be empty".into()));
+        }
+
+        // Command must not be empty
+        if req.command.trim().is_empty() {
+            return Err(AppError::BadRequest("Command must not be empty".into()));
+        }
+
+        // Check if command exists (resolve via PATH or absolute path)
+        let cmd = req.command.trim();
+        let cmd_path = Path::new(cmd);
+        if cmd_path.is_absolute() {
+            if !cmd_path.exists() {
+                return Err(AppError::BadRequest(format!(
+                    "Command not found: {}",
+                    cmd
+                )));
+            }
+        } else {
+            // Try to resolve via which
+            if which::which(cmd).is_err() {
+                return Err(AppError::BadRequest(format!(
+                    "Command not found in PATH: {}",
+                    cmd
+                )));
+            }
+        }
+
+        // Working directory must exist
+        let cwd = req.cwd.trim();
+        if !cwd.is_empty() && cwd != "." {
+            let cwd_path = Path::new(cwd);
+            if !cwd_path.exists() {
+                return Err(AppError::BadRequest(format!(
+                    "Working directory does not exist: {}",
+                    cwd
+                )));
+            }
+            if !cwd_path.is_dir() {
+                return Err(AppError::BadRequest(format!(
+                    "Working directory is not a directory: {}",
+                    cwd
+                )));
+            }
+        }
+
+        // Validate restart policy
+        if req.restart_policy.delay_ms == 0 {
+            return Err(AppError::BadRequest(
+                "Restart delay must be greater than 0".into(),
+            ));
+        }
+        if req.restart_policy.backoff_multiplier < 1.0 {
+            return Err(AppError::BadRequest(
+                "Backoff multiplier must be >= 1.0".into(),
+            ));
+        }
+
+        // Validate log config
+        if req.log_config.max_file_size < 1024 {
+            return Err(AppError::BadRequest(
+                "Log max_file_size must be at least 1KB".into(),
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Create a new managed process.
     pub async fn create_process(
         self: &Arc<Self>,
         req: CreateProcessRequest,
     ) -> Result<ProcessInfo, AppError> {
+        // Validate
+        Self::validate_request(&req)?;
+
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
+
+        // Ensure process log directory
+        let proc_log_dir = self.log_dir.join(&id);
+        std::fs::create_dir_all(&proc_log_dir)
+            .map_err(|e| AppError::Internal(format!("Failed to create log dir: {}", e)))?;
 
         let definition = ProcessDefinition {
             id: id.clone(),
@@ -204,6 +368,8 @@ impl ProcessManager {
             restart_policy: req.restart_policy,
             auto_start: req.auto_start,
             group_name: req.group_name,
+            log_config: req.log_config,
+            run_as: req.run_as,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -252,6 +418,85 @@ impl ProcessManager {
         self.start_process_internal(id).await
     }
 
+    /// Build a `Command` from a `ProcessDefinition`, applying user switching on Unix.
+    fn build_command(def: &ProcessDefinition) -> Command {
+        let mut cmd = Command::new(&def.command);
+        cmd.args(&def.args);
+        let cwd = if def.cwd.is_empty() || def.cwd == "." {
+            ".".to_string()
+        } else {
+            def.cwd.clone()
+        };
+        cmd.current_dir(&cwd);
+        for (k, v) in &def.env {
+            cmd.env(k, v);
+        }
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        // Unix: set user if run_as is specified and we are root
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            if let Some(ref run_as) = def.run_as {
+                let is_root = unsafe { libc::geteuid() } == 0;
+                if is_root {
+                    // Try parsing as UID first, then as username
+                    if let Ok(uid) = run_as.parse::<u32>() {
+                        info!("Running process {} as UID {}", def.name, uid);
+                        cmd.uid(uid);
+                    } else {
+                        // Resolve username to UID via libc
+                        match resolve_username(run_as) {
+                            Some((uid, gid)) => {
+                                info!("Running process {} as user {} (UID={}, GID={})", def.name, run_as, uid, gid);
+                                cmd.uid(uid);
+                                cmd.gid(gid);
+                            }
+                            None => {
+                                warn!("User '{}' not found, ignoring run_as for process {}", run_as, def.name);
+                            }
+                        }
+                    }
+                } else {
+                    warn!("Not running as root, ignoring run_as='{}' for process {}", run_as, def.name);
+                }
+            }
+        }
+
+        cmd
+    }
+
+    /// Spawn log-streaming tasks for stdout/stderr. Writes to files and publishes to event bus.
+    fn spawn_log_tasks(
+        event_bus: &SharedEventBus,
+        child: &mut Child,
+        process_id: &str,
+        log_dir: &Path,
+        log_config: &ProcessLogConfig,
+    ) {
+        if let Some(stdout) = child.stdout.take() {
+            let bus = event_bus.clone();
+            let pid_str = process_id.to_string();
+            let log_path = log_dir.join("stdout.log");
+            let max_size = log_config.max_file_size;
+            let max_files = log_config.max_files;
+            tokio::spawn(async move {
+                stream_to_file_and_bus(stdout, &bus, &pid_str, "stdout", &log_path, max_size, max_files).await;
+            });
+        }
+        if let Some(stderr) = child.stderr.take() {
+            let bus = event_bus.clone();
+            let pid_str = process_id.to_string();
+            let log_path = log_dir.join("stderr.log");
+            let max_size = log_config.max_file_size;
+            let max_files = log_config.max_files;
+            tokio::spawn(async move {
+                stream_to_file_and_bus(stderr, &bus, &pid_str, "stderr", &log_path, max_size, max_files).await;
+            });
+        }
+    }
+
     /// Internal: Actually spawn the child process and set up monitoring.
     async fn start_process_internal(self: &Arc<Self>, id: &str) -> Result<(), AppError> {
         let def = self
@@ -276,14 +521,11 @@ impl ProcessManager {
         proc.status = ProcessStatus::Starting;
 
         // Build the command
-        let mut cmd = Command::new(&def.command);
-        cmd.args(&def.args);
-        cmd.current_dir(&def.cwd);
-        for (k, v) in &def.env {
-            cmd.env(k, v);
-        }
-        cmd.stdout(std::process::Stdio::piped());
-        cmd.stderr(std::process::Stdio::piped());
+        let mut cmd = Self::build_command(&def);
+
+        // Ensure log directory
+        let proc_log_dir = self.log_dir.join(id);
+        let _ = std::fs::create_dir_all(&proc_log_dir);
 
         // Spawn
         match cmd.spawn() {
@@ -294,47 +536,14 @@ impl ProcessManager {
                 proc.started_at = Some(Utc::now());
                 proc.exit_code = None;
 
-                // Set up log streaming for stdout
-                let event_bus = self.event_bus.clone();
-                let process_id = id.to_string();
-
-                if let Some(stdout) = child.stdout.take() {
-                    let bus = event_bus.clone();
-                    let pid_str = process_id.clone();
-                    tokio::spawn(async move {
-                        let reader = BufReader::new(stdout);
-                        let mut lines = reader.lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            bus.publish(
-                                "process.log",
-                                serde_json::json!({
-                                    "process_id": pid_str,
-                                    "stream": "stdout",
-                                    "line": line,
-                                }),
-                            );
-                        }
-                    });
-                }
-
-                if let Some(stderr) = child.stderr.take() {
-                    let bus = event_bus.clone();
-                    let pid_str = process_id.clone();
-                    tokio::spawn(async move {
-                        let reader = BufReader::new(stderr);
-                        let mut lines = reader.lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            bus.publish(
-                                "process.log",
-                                serde_json::json!({
-                                    "process_id": pid_str,
-                                    "stream": "stderr",
-                                    "line": line,
-                                }),
-                            );
-                        }
-                    });
-                }
+                // Set up log streaming (file + event bus)
+                Self::spawn_log_tasks(
+                    &self.event_bus,
+                    &mut child,
+                    id,
+                    &proc_log_dir,
+                    &def.log_config,
+                );
 
                 proc.child = Some(child);
 
@@ -496,56 +705,23 @@ impl ProcessManager {
             tokio::time::sleep(delay).await;
 
             // Inline restart: spawn the child process directly
-            let mut cmd = Command::new(&def.command);
-            cmd.args(&def.args);
-            cmd.current_dir(&def.cwd);
-            for (k, v) in &def.env {
-                cmd.env(k, v);
-            }
-            cmd.stdout(std::process::Stdio::piped());
-            cmd.stderr(std::process::Stdio::piped());
+            let mut cmd = Self::build_command(&def);
+
+            let proc_log_dir = self.log_dir.join(&id);
+            let _ = std::fs::create_dir_all(&proc_log_dir);
 
             match cmd.spawn() {
                 Ok(mut child) => {
                     let pid = child.id();
 
-                    // Set up log streaming
-                    if let Some(stdout) = child.stdout.take() {
-                        let bus = self.event_bus.clone();
-                        let pid_str = id.clone();
-                        tokio::spawn(async move {
-                            let reader = BufReader::new(stdout);
-                            let mut lines = reader.lines();
-                            while let Ok(Some(line)) = lines.next_line().await {
-                                bus.publish(
-                                    "process.log",
-                                    serde_json::json!({
-                                        "process_id": pid_str,
-                                        "stream": "stdout",
-                                        "line": line,
-                                    }),
-                                );
-                            }
-                        });
-                    }
-                    if let Some(stderr) = child.stderr.take() {
-                        let bus = self.event_bus.clone();
-                        let pid_str = id.clone();
-                        tokio::spawn(async move {
-                            let reader = BufReader::new(stderr);
-                            let mut lines = reader.lines();
-                            while let Ok(Some(line)) = lines.next_line().await {
-                                bus.publish(
-                                    "process.log",
-                                    serde_json::json!({
-                                        "process_id": pid_str,
-                                        "stream": "stderr",
-                                        "line": line,
-                                    }),
-                                );
-                            }
-                        });
-                    }
+                    // Set up log streaming (file + event bus)
+                    Self::spawn_log_tasks(
+                        &self.event_bus,
+                        &mut child,
+                        &id,
+                        &proc_log_dir,
+                        &def.log_config,
+                    );
 
                     // Update state
                     let (new_cancel_tx, new_cancel_rx) = tokio::sync::oneshot::channel();
@@ -648,8 +824,89 @@ impl ProcessManager {
             .execute(&self.pool)
             .await?;
 
+        // Clean up log files
+        let log_dir = self.log_dir.join(id);
+        if log_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&log_dir) {
+                warn!("Failed to remove log dir for {}: {}", id, e);
+            }
+        }
+
         info!("Deleted process: {}", id);
         Ok(())
+    }
+
+    /// Get logs for a process.
+    pub async fn get_logs(&self, req: GetLogsRequest) -> Result<LogsResponse, AppError> {
+        // Verify process exists
+        self.load_definition(&req.id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Process {} not found", req.id)))?;
+
+        let proc_log_dir = self.log_dir.join(&req.id);
+
+        let mut all_lines: Vec<LogLine> = Vec::new();
+
+        let streams: Vec<&str> = match req.stream.as_str() {
+            "stdout" => vec!["stdout"],
+            "stderr" => vec!["stderr"],
+            _ => vec!["stdout", "stderr"],
+        };
+
+        for stream in streams {
+            let log_file = proc_log_dir.join(format!("{}.log", stream));
+            if log_file.exists() {
+                if let Ok(content) = tokio::fs::read_to_string(&log_file).await {
+                    for line_str in content.lines() {
+                        all_lines.push(LogLine {
+                            stream: stream.to_string(),
+                            line: line_str.to_string(),
+                            timestamp: None,
+                        });
+                    }
+                }
+            }
+
+            // Also read rotated files (oldest first)
+            for i in (1..=10).rev() {
+                let rotated = proc_log_dir.join(format!("{}.log.{}", stream, i));
+                if rotated.exists() {
+                    if let Ok(content) = tokio::fs::read_to_string(&rotated).await {
+                        let rotated_lines: Vec<LogLine> = content
+                            .lines()
+                            .map(|l| LogLine {
+                                stream: stream.to_string(),
+                                line: l.to_string(),
+                                timestamp: None,
+                            })
+                            .collect();
+                        // Prepend rotated lines (older)
+                        all_lines.splice(0..0, rotated_lines);
+                    }
+                }
+            }
+        }
+
+        let total = all_lines.len();
+        let start = if total > req.offset + req.lines {
+            total - req.offset - req.lines
+        } else {
+            0
+        };
+        let end = if total > req.offset {
+            total - req.offset
+        } else {
+            0
+        };
+
+        let lines: Vec<LogLine> = all_lines.into_iter().skip(start).take(end - start).collect();
+        let has_more = start > 0;
+
+        Ok(LogsResponse {
+            process_id: req.id,
+            lines,
+            has_more,
+        })
     }
 
     /// List all processes with their current status.
@@ -724,9 +981,10 @@ impl ProcessManager {
         let args_json = serde_json::to_string(&def.args).unwrap();
         let env_json = serde_json::to_string(&def.env).unwrap();
         let policy_json = serde_json::to_string(&def.restart_policy).unwrap();
+        let log_config_json = serde_json::to_string(&def.log_config).unwrap();
 
         sqlx::query(
-            "INSERT OR REPLACE INTO processes (id, name, command, args, cwd, env, restart_policy, auto_start, group_name, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT OR REPLACE INTO processes (id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         )
         .bind(&def.id)
         .bind(&def.name)
@@ -737,6 +995,8 @@ impl ProcessManager {
         .bind(&policy_json)
         .bind(def.auto_start as i32)
         .bind(&def.group_name)
+        .bind(&log_config_json)
+        .bind(&def.run_as)
         .bind(&def.created_at)
         .bind(&def.updated_at)
         .execute(&self.pool)
@@ -748,9 +1008,9 @@ impl ProcessManager {
     async fn load_definition(&self, id: &str) -> Result<Option<ProcessDefinition>, AppError> {
         let row: Option<(
             String, String, String, String, String,
-            String, String, i32, Option<String>, String, String,
+            String, String, i32, Option<String>, String, Option<String>, String, String,
         )> = sqlx::query_as(
-            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, created_at, updated_at FROM processes WHERE id = ?1",
+            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, created_at, updated_at FROM processes WHERE id = ?1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -766,17 +1026,19 @@ impl ProcessManager {
             restart_policy: serde_json::from_str(&r.6).unwrap_or_default(),
             auto_start: r.7 != 0,
             group_name: r.8,
-            created_at: r.9,
-            updated_at: r.10,
+            log_config: serde_json::from_str(&r.9).unwrap_or_default(),
+            run_as: r.10,
+            created_at: r.11,
+            updated_at: r.12,
         }))
     }
 
     async fn load_all_definitions(&self) -> Result<Vec<ProcessDefinition>, AppError> {
         let rows: Vec<(
             String, String, String, String, String,
-            String, String, i32, Option<String>, String, String,
+            String, String, i32, Option<String>, String, Option<String>, String, String,
         )> = sqlx::query_as(
-            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, created_at, updated_at FROM processes ORDER BY created_at",
+            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, created_at, updated_at FROM processes ORDER BY created_at",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -793,12 +1055,153 @@ impl ProcessManager {
                 restart_policy: serde_json::from_str(&r.6).unwrap_or_default(),
                 auto_start: r.7 != 0,
                 group_name: r.8,
-                created_at: r.9,
-                updated_at: r.10,
+                log_config: serde_json::from_str(&r.9).unwrap_or_default(),
+                run_as: r.10,
+                created_at: r.11,
+                updated_at: r.12,
             })
             .collect();
 
         Ok(defs)
+    }
+}
+
+// ── Log File Utilities ──────────────────────────────────────────
+
+/// Stream from an async reader to both a log file (with rotation) and the event bus.
+async fn stream_to_file_and_bus<R: tokio::io::AsyncRead + Unpin>(
+    reader: R,
+    bus: &SharedEventBus,
+    process_id: &str,
+    stream_name: &str,
+    log_path: &Path,
+    max_file_size: u64,
+    max_files: u32,
+) {
+    let mut buf_reader = BufReader::new(reader);
+    let mut line_buf = String::new();
+
+    // Open log file for appending
+    let file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .await;
+
+    let mut file = match file {
+        Ok(f) => f,
+        Err(e) => {
+            error!("Failed to open log file {:?}: {}", log_path, e);
+            // Fallback: just stream to bus without file
+            let mut lines = BufReader::new(buf_reader).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                bus.publish(
+                    "process.log",
+                    serde_json::json!({
+                        "process_id": process_id,
+                        "stream": stream_name,
+                        "line": line,
+                    }),
+                );
+            }
+            return;
+        }
+    };
+
+    let mut current_size = std::fs::metadata(log_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    loop {
+        line_buf.clear();
+        match buf_reader.read_line(&mut line_buf).await {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                let line = line_buf.trim_end_matches('\n').trim_end_matches('\r');
+
+                // Write to file
+                let log_line = format!("{}\n", line);
+                if let Err(e) = file.write_all(log_line.as_bytes()).await {
+                    error!("Failed to write to log: {}", e);
+                }
+                current_size += log_line.len() as u64;
+
+                // Check rotation
+                if current_size >= max_file_size {
+                    // Flush and close
+                    let _ = file.flush().await;
+                    drop(file);
+
+                    // Rotate files
+                    rotate_log_files(log_path, max_files);
+                    current_size = 0;
+
+                    // Reopen
+                    file = match tokio::fs::OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .truncate(true)
+                        .open(log_path)
+                        .await
+                    {
+                        Ok(f) => f,
+                        Err(e) => {
+                            error!("Failed to reopen log file after rotation: {}", e);
+                            return;
+                        }
+                    };
+                }
+
+                // Publish to event bus
+                bus.publish(
+                    "process.log",
+                    serde_json::json!({
+                        "process_id": process_id,
+                        "stream": stream_name,
+                        "line": line,
+                    }),
+                );
+            }
+            Err(e) => {
+                debug!("Log stream read error for {}/{}: {}", process_id, stream_name, e);
+                break;
+            }
+        }
+    }
+}
+
+/// Rotate log files: file.log -> file.log.1, file.log.1 -> file.log.2, etc.
+fn rotate_log_files(log_path: &Path, max_files: u32) {
+    // Remove the oldest if it exceeds max
+    let oldest = format!("{}.{}", log_path.display(), max_files);
+    let _ = std::fs::remove_file(&oldest);
+
+    // Shift files
+    for i in (1..max_files).rev() {
+        let from = format!("{}.{}", log_path.display(), i);
+        let to = format!("{}.{}", log_path.display(), i + 1);
+        if Path::new(&from).exists() {
+            let _ = std::fs::rename(&from, &to);
+        }
+    }
+
+    // Move current to .1
+    let first_rotated = format!("{}.1", log_path.display());
+    let _ = std::fs::rename(log_path, &first_rotated);
+}
+
+/// Resolve a username to (uid, gid) on Unix.
+#[cfg(unix)]
+fn resolve_username(username: &str) -> Option<(u32, u32)> {
+    use std::ffi::CString;
+    let c_name = CString::new(username).ok()?;
+    unsafe {
+        let pw = libc::getpwnam(c_name.as_ptr());
+        if pw.is_null() {
+            None
+        } else {
+            Some(((*pw).pw_uid, (*pw).pw_gid))
+        }
     }
 }
 
@@ -821,7 +1224,8 @@ mod tests {
         let pool = crate::db::connect_in_memory().await.unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
         let event_bus = Arc::new(EventBus::default());
-        let pm = ProcessManager::new(pool.clone(), event_bus);
+        let tmp_dir = std::env::temp_dir().join(format!("xdeck-test-{}", uuid::Uuid::new_v4()));
+        let pm = ProcessManager::new(pool.clone(), event_bus, &tmp_dir);
         (pm, pool)
     }
 
@@ -839,6 +1243,8 @@ mod tests {
                 restart_policy: RestartPolicy::default(),
                 auto_start: false,
                 group_name: None,
+                log_config: ProcessLogConfig::default(),
+                run_as: None,
             })
             .await
             .unwrap();
@@ -864,6 +1270,8 @@ mod tests {
                 },
                 auto_start: false,
                 group_name: None,
+                log_config: ProcessLogConfig::default(),
+                run_as: None,
             })
             .await
             .unwrap();
@@ -918,6 +1326,8 @@ mod tests {
             restart_policy: RestartPolicy::default(),
             auto_start: false,
             group_name: None,
+            log_config: ProcessLogConfig::default(),
+            run_as: None,
         })
         .await
         .unwrap();
@@ -931,6 +1341,8 @@ mod tests {
             restart_policy: RestartPolicy::default(),
             auto_start: false,
             group_name: None,
+            log_config: ProcessLogConfig::default(),
+            run_as: None,
         })
         .await
         .unwrap();
@@ -953,6 +1365,8 @@ mod tests {
                 restart_policy: RestartPolicy::default(),
                 auto_start: false,
                 group_name: None,
+                log_config: ProcessLogConfig::default(),
+                run_as: None,
             })
             .await
             .unwrap();

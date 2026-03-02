@@ -20,6 +20,11 @@ export interface RestartPolicy {
   backoff_multiplier: number;
 }
 
+export interface ProcessLogConfig {
+  max_file_size: number;
+  max_files: number;
+}
+
 export interface ProcessInfo {
   id: string;
   name: string;
@@ -30,6 +35,8 @@ export interface ProcessInfo {
   restart_policy: RestartPolicy;
   auto_start: boolean;
   group_name: string | null;
+  log_config: ProcessLogConfig;
+  run_as: string | null;
   created_at: string;
   updated_at: string;
   status: ProcessStatus;
@@ -48,6 +55,20 @@ export interface CreateProcessRequest {
   restart_policy?: Partial<RestartPolicy>;
   auto_start?: boolean;
   group_name?: string;
+  log_config?: Partial<ProcessLogConfig>;
+  run_as?: string;
+}
+
+export interface LogLine {
+  stream: string;
+  line: string;
+  timestamp: string | null;
+}
+
+export interface LogsResponse {
+  process_id: string;
+  lines: LogLine[];
+  has_more: boolean;
 }
 
 interface ProcessState {
@@ -61,6 +82,7 @@ interface ProcessState {
   stopProcess: (id: string) => Promise<void>;
   restartProcess: (id: string) => Promise<void>;
   deleteProcess: (id: string) => Promise<void>;
+  fetchLogs: (id: string, options?: { stream?: string; lines?: number; offset?: number }) => Promise<LogsResponse>;
   subscribeToEvents: () => () => void;
 }
 
@@ -111,6 +133,17 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     set((state) => ({
       processes: state.processes.filter((p) => p.id !== id),
     }));
+  },
+
+  fetchLogs: async (id, options = {}) => {
+    const rpc = getRpcClient();
+    const params = {
+      id,
+      stream: options.stream ?? "all",
+      lines: options.lines ?? 500,
+      offset: options.offset ?? 0,
+    };
+    return await rpc.call<LogsResponse>("process.logs", params);
   },
 
   subscribeToEvents: () => {

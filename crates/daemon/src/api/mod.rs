@@ -12,7 +12,7 @@ use crate::error::AppError;
 use crate::rpc::router::RpcRouter;
 use crate::services::auth::AuthService;
 use crate::services::event_bus::{EventBus, SharedEventBus};
-use crate::services::process_manager::ProcessManager;
+use crate::services::process_manager::{ProcessManager, GetLogsRequest};
 
 /// Shared application state accessible by all handlers.
 #[derive(Clone)]
@@ -35,7 +35,7 @@ impl AppState {
 
         let auth_service = Arc::new(AuthService::new(jwt_secret));
         let event_bus = Arc::new(EventBus::default());
-        let process_manager = ProcessManager::new(pool.clone(), event_bus.clone());
+        let process_manager = ProcessManager::new(pool.clone(), event_bus.clone(), &config.data_dir);
         let rpc_router = Arc::new(Self::build_rpc_router(
             auth_service.clone(),
             process_manager.clone(),
@@ -61,9 +61,17 @@ impl AppState {
         });
 
         router.register("system.info", |_params, _ctx| async {
+            let os_type = if cfg!(target_os = "windows") {
+                "windows"
+            } else if cfg!(target_os = "macos") {
+                "macos"
+            } else {
+                "linux"
+            };
             Ok(serde_json::json!({
                 "name": "XDeck Daemon",
                 "version": env!("CARGO_PKG_VERSION"),
+                "os_type": os_type,
             }))
         });
 
@@ -207,6 +215,18 @@ impl AppState {
                     .ok_or_else(|| AppError::BadRequest("Missing id".into()))?;
                 pm.delete_process(id).await?;
                 Ok(serde_json::json!({"success": true}))
+            }
+        });
+
+        let pm = process_mgr.clone();
+        router.register("process.logs", move |params, _ctx| {
+            let pm = pm.clone();
+            async move {
+                let params = params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
+                let req: GetLogsRequest = serde_json::from_value(params)
+                    .map_err(|e| AppError::BadRequest(format!("Invalid params: {}", e)))?;
+                let logs = pm.get_logs(req).await?;
+                Ok(serde_json::to_value(&logs).unwrap())
             }
         });
 

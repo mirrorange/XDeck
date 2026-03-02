@@ -48,3 +48,7 @@ dirs = "6"
 
 # CLI
 clap = { version = "4", features = ["derive"] }
+
+# System utilities
+which = "7"
+libc = "0.2"
