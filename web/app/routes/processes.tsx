@@ -24,14 +24,14 @@ import { Card, CardContent, CardTitle, CardDescription } from "~/components/ui/c
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-  DialogFooter,
-} from "~/components/ui/dialog";
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+  ResponsiveModalTrigger,
+  ResponsiveModalFooter,
+} from "~/components/responsive-modal";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -688,41 +688,43 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
   );
 
   return (
-    <Dialog
+    <ResponsiveModal
       open={open}
       onOpenChange={(v) => {
         setOpen(v);
         if (!v) resetDialog();
       }}
     >
-      <DialogTrigger asChild>
+      <ResponsiveModalTrigger asChild>
         <Button>
           <Plus className="mr-2 size-4" />
           New Process
         </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-xl max-h-[85vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Create New Process</DialogTitle>
-          <DialogDescription>
+      </ResponsiveModalTrigger>
+      <ResponsiveModalContent className="sm:max-w-xl">
+        <ResponsiveModalHeader>
+          <ResponsiveModalTitle>Create New Process</ResponsiveModalTitle>
+          <ResponsiveModalDescription>
             Follow the steps to configure your process.
-          </DialogDescription>
-        </DialogHeader>
+          </ResponsiveModalDescription>
+        </ResponsiveModalHeader>
 
-        <StepIndicator steps={wizardSteps} current={step} />
-        <div className="min-h-[250px]">
-          {step === 0 && BasicSection}
-          {step === 1 && RestartSection}
-          {step === 2 && AdvancedSection}
+        <div className="px-4 md:px-0">
+          <StepIndicator steps={wizardSteps} current={step} />
+          <div className="min-h-[250px]">
+            {step === 0 && BasicSection}
+            {step === 1 && RestartSection}
+            {step === 2 && AdvancedSection}
+          </div>
+
+          {error && (
+            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
         </div>
 
-        {error && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error}
-          </div>
-        )}
-
-        <DialogFooter className="gap-2">
+        <ResponsiveModalFooter className="gap-2">
           {step > 0 && (
             <Button type="button" variant="outline" onClick={prevStep}>
               <ChevronLeft className="mr-1 size-4" />
@@ -741,9 +743,9 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
               Create Process
             </Button>
           )}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveModalFooter>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
   );
 }
 
