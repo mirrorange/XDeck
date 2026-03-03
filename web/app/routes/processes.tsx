@@ -25,6 +25,14 @@ import { Card, CardContent, CardTitle, CardDescription } from "~/components/ui/c
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "~/components/ui/dialog";
+import {
   ResponsiveModal,
   ResponsiveModalContent,
   ResponsiveModalDescription,
@@ -274,9 +282,11 @@ function StepIndicator({
   );
 }
 
-// ── Create Process Dialog ───────────────────────────────────────
+// ── Shared Process Form ─────────────────────────────────────────
 
-interface CreateFormState {
+const wizardSteps = ["Basic Info", "Restart Policy", "Advanced"];
+
+interface ProcessFormState {
   name: string;
   command: string;
   args: string;
@@ -294,7 +304,7 @@ interface CreateFormState {
   runAs: string;
 }
 
-const defaultForm: CreateFormState = {
+const defaultForm: ProcessFormState = {
   name: "",
   command: "",
   args: "",
@@ -312,7 +322,7 @@ const defaultForm: CreateFormState = {
   runAs: "",
 };
 
-function buildEnvFromForm(form: CreateFormState): Record<string, string> {
+function buildEnvFromForm(form: ProcessFormState): Record<string, string> {
   const env: Record<string, string> = {};
   form.envKeys.forEach((key, i) => {
     if (key.trim()) {
@@ -326,289 +336,331 @@ function splitArgs(input: string): string[] {
   return input ? input.split(/\s+/).filter(Boolean) : [];
 }
 
-function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
-  const [open, setOpen] = useState(false);
-  const { createProcess } = useProcessStore();
-  const { daemonInfo } = useSystemStore();
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function validateProcessFormStep(form: ProcessFormState, step: number): string | null {
+  if (step === 0) {
+    if (!form.name.trim()) return "Name is required";
+    if (!form.command.trim()) return "Command is required";
+  }
 
-  const [step, setStep] = useState(0);
-  const [form, setForm] = useState<CreateFormState>({ ...defaultForm });
-
-  const isWindows = daemonInfo?.os_type === "windows";
-  const wizardSteps = ["Basic Info", "Restart Policy", "Advanced"];
-
-  const updateForm = (field: keyof CreateFormState, value: unknown) => {
-    setForm((f) => ({ ...f, [field]: value }));
-  };
-
-  const addEnvVar = () => {
-    setForm((f) => ({
-      ...f,
-      envKeys: [...f.envKeys, ""],
-      envValues: [...f.envValues, ""],
-    }));
-  };
-
-  const removeEnvVar = (index: number) => {
-    setForm((f) => ({
-      ...f,
-      envKeys: f.envKeys.filter((_, i) => i !== index),
-      envValues: f.envValues.filter((_, i) => i !== index),
-    }));
-  };
-
-  const validateStep = (s: number): string | null => {
-    if (s === 0) {
-      if (!form.name.trim()) return "Name is required";
-      if (!form.command.trim()) return "Command is required";
+  if (step === 1) {
+    if (form.maxRetries && isNaN(Number(form.maxRetries))) return "Max retries must be a number";
+    if (form.delayMs && isNaN(Number(form.delayMs))) return "Delay must be a number";
+    if (form.backoffMultiplier && isNaN(Number(form.backoffMultiplier))) {
+      return "Backoff multiplier must be a number";
     }
-    if (s === 1) {
-      if (form.maxRetries && isNaN(Number(form.maxRetries))) return "Max retries must be a number";
-      if (form.delayMs && isNaN(Number(form.delayMs))) return "Delay must be a number";
-      if (form.backoffMultiplier && isNaN(Number(form.backoffMultiplier)))
-        return "Backoff multiplier must be a number";
-    }
-    return null;
+  }
+
+  return null;
+}
+
+function buildCreateRequest(form: ProcessFormState, isWindows: boolean): CreateProcessRequest {
+  const env = buildEnvFromForm(form);
+
+  return {
+    name: form.name.trim(),
+    command: form.command.trim(),
+    args: splitArgs(form.args),
+    cwd: form.cwd.trim() || ".",
+    env: Object.keys(env).length > 0 ? env : undefined,
+    restart_policy: {
+      strategy: form.restartStrategy,
+      max_retries: form.maxRetries ? Number(form.maxRetries) : null,
+      delay_ms: Number(form.delayMs) || 1000,
+      backoff_multiplier: Number(form.backoffMultiplier) || 2.0,
+    },
+    auto_start: form.autoStart,
+    group_name: form.groupName.trim() || undefined,
+    log_config: {
+      max_file_size: (Number(form.logMaxFileSize) || 10) * 1024 * 1024,
+      max_files: Number(form.logMaxFiles) || 5,
+    },
+    run_as: !isWindows && form.runAs.trim() ? form.runAs.trim() : undefined,
   };
+}
 
-  const nextStep = () => {
-    const err = validateStep(step);
-    if (err) {
-      setError(err);
-      return;
-    }
-    setError(null);
-    setStep((s) => Math.min(s + 1, wizardSteps.length - 1));
-  };
+function buildEditRequestDiff(
+  target: ProcessInfo,
+  form: ProcessFormState,
+  isWindows: boolean
+): { req: UpdateProcessRequest; hasChanges: boolean; willRestart: boolean } {
+  const nextEnv = buildEnvFromForm(form);
+  const nextArgs = splitArgs(form.args);
+  const nextCwd = form.cwd.trim() || ".";
+  const nextGroupName = form.groupName.trim() || null;
+  const nextRunAs = isWindows ? target.run_as : (form.runAs.trim() || null);
+  const nextRestartPolicy = {
+    strategy: form.restartStrategy,
+    max_retries: form.maxRetries ? Number(form.maxRetries) : null,
+    delay_ms: Number(form.delayMs) || 1000,
+    backoff_multiplier: Number(form.backoffMultiplier) || 2.0,
+  } as const;
+  const nextLogConfig = {
+    max_file_size: (Number(form.logMaxFileSize) || 10) * 1024 * 1024,
+    max_files: Number(form.logMaxFiles) || 5,
+  } as const;
 
-  const prevStep = () => {
-    setError(null);
-    setStep((s) => Math.max(s - 1, 0));
-  };
+  const req: UpdateProcessRequest = { id: target.id };
 
-  const buildRequest = (): CreateProcessRequest => {
-    const env = buildEnvFromForm(form);
+  if (form.name.trim() !== target.name) req.name = form.name.trim();
+  if (form.command.trim() !== target.command) req.command = form.command.trim();
+  if (nextArgs.length !== target.args.length || nextArgs.some((arg, i) => arg !== target.args[i])) {
+    req.args = nextArgs;
+  }
+  if (nextCwd !== target.cwd) req.cwd = nextCwd;
 
-    return {
-      name: form.name.trim(),
-      command: form.command.trim(),
-      args: splitArgs(form.args),
-      cwd: form.cwd.trim() || ".",
-      env: Object.keys(env).length > 0 ? env : undefined,
-      restart_policy: {
-        strategy: form.restartStrategy,
-        max_retries: form.maxRetries ? Number(form.maxRetries) : null,
-        delay_ms: Number(form.delayMs) || 1000,
-        backoff_multiplier: Number(form.backoffMultiplier) || 2.0,
-      },
-      auto_start: form.autoStart,
-      group_name: form.groupName.trim() || undefined,
-      log_config: {
-        max_file_size: (Number(form.logMaxFileSize) || 10) * 1024 * 1024,
-        max_files: Number(form.logMaxFiles) || 5,
-      },
-      run_as: !isWindows && form.runAs.trim() ? form.runAs.trim() : undefined,
+  const targetEnvEntries = Object.entries(target.env).sort(([a], [b]) => a.localeCompare(b));
+  const nextEnvEntries = Object.entries(nextEnv).sort(([a], [b]) => a.localeCompare(b));
+  const envChanged =
+    targetEnvEntries.length !== nextEnvEntries.length ||
+    targetEnvEntries.some(([k, v], i) => {
+      const [nextK, nextV] = nextEnvEntries[i] ?? [];
+      return k !== nextK || v !== nextV;
+    });
+  if (envChanged) req.env = nextEnv;
+
+  if (
+    target.restart_policy.strategy !== nextRestartPolicy.strategy ||
+    target.restart_policy.max_retries !== nextRestartPolicy.max_retries ||
+    target.restart_policy.delay_ms !== nextRestartPolicy.delay_ms ||
+    target.restart_policy.backoff_multiplier !== nextRestartPolicy.backoff_multiplier
+  ) {
+    req.restart_policy = {
+      strategy: nextRestartPolicy.strategy,
+      max_retries: nextRestartPolicy.max_retries,
+      delay_ms: nextRestartPolicy.delay_ms,
+      backoff_multiplier: nextRestartPolicy.backoff_multiplier,
     };
+  }
+
+  if (target.auto_start !== form.autoStart) req.auto_start = form.autoStart;
+  if (target.group_name !== nextGroupName) req.group_name = nextGroupName;
+
+  if (
+    target.log_config.max_file_size !== nextLogConfig.max_file_size ||
+    target.log_config.max_files !== nextLogConfig.max_files
+  ) {
+    req.log_config = {
+      max_file_size: nextLogConfig.max_file_size,
+      max_files: nextLogConfig.max_files,
+    };
+  }
+
+  if (!isWindows && target.run_as !== nextRunAs) req.run_as = nextRunAs;
+
+  const willRestart =
+    target.status === "running" &&
+    (req.command !== undefined ||
+      req.args !== undefined ||
+      req.cwd !== undefined ||
+      req.env !== undefined ||
+      req.run_as !== undefined);
+
+  return { req, hasChanges: Object.keys(req).length > 1, willRestart };
+}
+
+function toFormState(process: ProcessInfo): ProcessFormState {
+  const envEntries = Object.entries(process.env);
+  return {
+    name: process.name,
+    command: process.command,
+    args: process.args.join(" "),
+    cwd: process.cwd,
+    envKeys: envEntries.length > 0 ? envEntries.map(([k]) => k) : [""],
+    envValues: envEntries.length > 0 ? envEntries.map(([, v]) => v) : [""],
+    restartStrategy: process.restart_policy.strategy,
+    maxRetries: process.restart_policy.max_retries === null ? "" : String(process.restart_policy.max_retries),
+    delayMs: String(process.restart_policy.delay_ms),
+    backoffMultiplier: String(process.restart_policy.backoff_multiplier),
+    autoStart: process.auto_start,
+    groupName: process.group_name ?? "",
+    logMaxFileSize: String(process.log_config.max_file_size / (1024 * 1024)),
+    logMaxFiles: String(process.log_config.max_files),
+    runAs: process.run_as ?? "",
   };
+}
 
-  const handleSubmit = async () => {
-    // Validate all steps
-    for (let s = 0; s < wizardSteps.length; s++) {
-      const err = validateStep(s);
-      if (err) {
-        setError(err);
-        setStep(s);
-        return;
-      }
-    }
+function ProcessFormSections({
+  form,
+  step,
+  isWindows,
+  idPrefix,
+  updateForm,
+  addEnvVar,
+  removeEnvVar,
+}: {
+  form: ProcessFormState;
+  step: number;
+  isWindows: boolean;
+  idPrefix: string;
+  updateForm: (field: keyof ProcessFormState, value: unknown) => void;
+  addEnvVar: () => void;
+  removeEnvVar: (index: number) => void;
+}) {
+  const fieldId = (field: string) => `${idPrefix}-${field}`;
 
-    setIsSubmitting(true);
-    setError(null);
-
-    try {
-      await createProcess(buildRequest());
-      setOpen(false);
-      setForm({ ...defaultForm });
-      setStep(0);
-      onCreated();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create process");
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const resetDialog = () => {
-    setForm({ ...defaultForm });
-    setStep(0);
-    setError(null);
-  };
-
-  // ── Form Sections ──────────────────────────────────────────
-
-  const BasicSection = (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        <Label htmlFor="proc-name">Name *</Label>
-        <Input
-          id="proc-name"
-          value={form.name}
-          onChange={(e) => updateForm("name", e.target.value)}
-          placeholder="my-app"
-          required
-        />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="proc-command">Command *</Label>
-        <Input
-          id="proc-command"
-          value={form.command}
-          onChange={(e) => updateForm("command", e.target.value)}
-          placeholder="node"
-          className="font-mono"
-          required
-        />
-        <p className="text-xs text-muted-foreground">
-          Executable or command to run. Must exist in PATH or be an absolute path.
-        </p>
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="proc-args">Arguments</Label>
-        <Input
-          id="proc-args"
-          value={form.args}
-          onChange={(e) => updateForm("args", e.target.value)}
-          placeholder="server.js --port 3000"
-          className="font-mono"
-        />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="proc-cwd">Working Directory</Label>
-        <Input
-          id="proc-cwd"
-          value={form.cwd}
-          onChange={(e) => updateForm("cwd", e.target.value)}
-          placeholder="/home/user/app"
-          className="font-mono"
-        />
-      </div>
-    </div>
-  );
-
-  const RestartSection = (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        <Label>Restart Strategy</Label>
-        <div className="grid grid-cols-3 gap-2">
-          {(["on_failure", "always", "never"] as const).map((strategy) => (
-            <button
-              key={strategy}
-              type="button"
-              onClick={() => updateForm("restartStrategy", strategy)}
-              className={`rounded-lg border px-3 py-2.5 text-sm transition-all ${
-                form.restartStrategy === strategy
-                  ? "border-primary bg-primary/5 text-primary font-medium ring-1 ring-primary/20"
-                  : "hover:bg-muted/50"
-              }`}
-            >
-              {strategy === "on_failure"
-                ? "On Failure"
-                : strategy === "always"
-                ? "Always"
-                : "Never"}
-            </button>
-          ))}
+  if (step === 0) {
+    return (
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor={fieldId("name")}>Name *</Label>
+          <Input
+            id={fieldId("name")}
+            value={form.name}
+            onChange={(e) => updateForm("name", e.target.value)}
+            placeholder="my-app"
+            required
+          />
         </div>
-        <p className="text-xs text-muted-foreground">
-          {form.restartStrategy === "on_failure"
-            ? "Restart only when the process exits with a non-zero code."
-            : form.restartStrategy === "always"
-            ? "Always restart the process when it exits, regardless of exit code."
-            : "Never automatically restart the process."}
-        </p>
-      </div>
-
-      {form.restartStrategy !== "never" && (
-        <div className="grid grid-cols-3 gap-4">
-          <div className="space-y-2">
-            <Label htmlFor="proc-retries">Max Retries</Label>
-            <Input
-              id="proc-retries"
-              type="number"
-              min="0"
-              value={form.maxRetries}
-              onChange={(e) => updateForm("maxRetries", e.target.value)}
-              placeholder="10"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="proc-delay">Delay (ms)</Label>
-            <Input
-              id="proc-delay"
-              type="number"
-              min="1"
-              value={form.delayMs}
-              onChange={(e) => updateForm("delayMs", e.target.value)}
-              placeholder="1000"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="proc-backoff">Backoff ×</Label>
-            <Input
-              id="proc-backoff"
-              type="number"
-              min="1"
-              step="0.1"
-              value={form.backoffMultiplier}
-              onChange={(e) => updateForm("backoffMultiplier", e.target.value)}
-              placeholder="2.0"
-            />
-          </div>
-        </div>
-      )}
-
-      <div className="flex items-center gap-3 rounded-lg border p-3">
-        <input
-          type="checkbox"
-          id="proc-autostart"
-          checked={form.autoStart}
-          onChange={(e) => updateForm("autoStart", e.target.checked)}
-          className="size-4 rounded"
-        />
-        <div>
-          <Label htmlFor="proc-autostart" className="cursor-pointer">Auto Start</Label>
+        <div className="space-y-2">
+          <Label htmlFor={fieldId("command")}>Command *</Label>
+          <Input
+            id={fieldId("command")}
+            value={form.command}
+            onChange={(e) => updateForm("command", e.target.value)}
+            placeholder="node"
+            className="font-mono"
+            required
+          />
           <p className="text-xs text-muted-foreground">
-            Automatically start this process when the daemon starts.
+            Executable or command to run. Must exist in PATH or be an absolute path.
           </p>
         </div>
+        <div className="space-y-2">
+          <Label htmlFor={fieldId("args")}>Arguments</Label>
+          <Input
+            id={fieldId("args")}
+            value={form.args}
+            onChange={(e) => updateForm("args", e.target.value)}
+            placeholder="server.js --port 3000"
+            className="font-mono"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={fieldId("cwd")}>Working Directory</Label>
+          <Input
+            id={fieldId("cwd")}
+            value={form.cwd}
+            onChange={(e) => updateForm("cwd", e.target.value)}
+            placeholder="/home/user/app"
+            className="font-mono"
+          />
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
 
-  const AdvancedSection = (
+  if (step === 1) {
+    return (
+      <div className="space-y-4">
+        <div className="space-y-2">
+          <Label>Restart Strategy</Label>
+          <div className="grid grid-cols-3 gap-2">
+            {(["on_failure", "always", "never"] as const).map((strategy) => (
+              <button
+                key={strategy}
+                type="button"
+                onClick={() => updateForm("restartStrategy", strategy)}
+                className={`rounded-lg border px-3 py-2.5 text-sm transition-all ${
+                  form.restartStrategy === strategy
+                    ? "border-primary bg-primary/5 text-primary font-medium ring-1 ring-primary/20"
+                    : "hover:bg-muted/50"
+                }`}
+              >
+                {strategy === "on_failure" ? "On Failure" : strategy === "always" ? "Always" : "Never"}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {form.restartStrategy === "on_failure"
+              ? "Restart only when the process exits with a non-zero code."
+              : form.restartStrategy === "always"
+              ? "Always restart the process when it exits, regardless of exit code."
+              : "Never automatically restart the process."}
+          </p>
+        </div>
+
+        {form.restartStrategy !== "never" && (
+          <div className="grid grid-cols-3 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor={fieldId("retries")}>Max Retries</Label>
+              <Input
+                id={fieldId("retries")}
+                type="number"
+                min="0"
+                value={form.maxRetries}
+                onChange={(e) => updateForm("maxRetries", e.target.value)}
+                placeholder="10"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={fieldId("delay")}>Delay (ms)</Label>
+              <Input
+                id={fieldId("delay")}
+                type="number"
+                min="1"
+                value={form.delayMs}
+                onChange={(e) => updateForm("delayMs", e.target.value)}
+                placeholder="1000"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor={fieldId("backoff")}>Backoff ×</Label>
+              <Input
+                id={fieldId("backoff")}
+                type="number"
+                min="1"
+                step="0.1"
+                value={form.backoffMultiplier}
+                onChange={(e) => updateForm("backoffMultiplier", e.target.value)}
+                placeholder="2.0"
+              />
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center gap-3 rounded-lg border p-3">
+          <input
+            type="checkbox"
+            id={fieldId("autostart")}
+            checked={form.autoStart}
+            onChange={(e) => updateForm("autoStart", e.target.checked)}
+            className="size-4 rounded"
+          />
+          <div>
+            <Label htmlFor={fieldId("autostart")} className="cursor-pointer">
+              Auto Start
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Automatically start this process when the daemon starts.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
     <div className="space-y-4">
-      {/* Group Name */}
       <div className="space-y-2">
-        <Label htmlFor="proc-group">Group Name</Label>
+        <Label htmlFor={fieldId("group")}>Group Name</Label>
         <Input
-          id="proc-group"
+          id={fieldId("group")}
           value={form.groupName}
           onChange={(e) => updateForm("groupName", e.target.value)}
           placeholder="web-services"
         />
       </div>
 
-      {/* Run As User (Unix only) */}
       {!isWindows && (
         <div className="space-y-2">
           <div className="flex items-center gap-2">
-            <Label htmlFor="proc-runas">Run As User</Label>
-            <Badge variant="outline" className="text-[10px]">Unix Only</Badge>
+            <Label htmlFor={fieldId("runas")}>Run As User</Label>
+            <Badge variant="outline" className="text-[10px]">
+              Unix Only
+            </Badge>
           </div>
           <Input
-            id="proc-runas"
+            id={fieldId("runas")}
             value={form.runAs}
             onChange={(e) => updateForm("runAs", e.target.value)}
             placeholder="www-data"
@@ -620,16 +672,15 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
         </div>
       )}
 
-      {/* Log Config */}
       <div className="space-y-2">
         <Label>Log Rotation</Label>
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1">
-            <Label htmlFor="proc-logsize" className="text-xs text-muted-foreground">
+            <Label htmlFor={fieldId("logsize")} className="text-xs text-muted-foreground">
               Max File Size (MB)
             </Label>
             <Input
-              id="proc-logsize"
+              id={fieldId("logsize")}
               type="number"
               min="1"
               value={form.logMaxFileSize}
@@ -638,11 +689,11 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="proc-logfiles" className="text-xs text-muted-foreground">
+            <Label htmlFor={fieldId("logfiles")} className="text-xs text-muted-foreground">
               Rotated Files to Keep
             </Label>
             <Input
-              id="proc-logfiles"
+              id={fieldId("logfiles")}
               type="number"
               min="1"
               value={form.logMaxFiles}
@@ -653,7 +704,6 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
         </div>
       </div>
 
-      {/* Environment Variables */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <Label>Environment Variables</Label>
@@ -668,9 +718,9 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
               <Input
                 value={key}
                 onChange={(e) => {
-                  const k = [...form.envKeys];
-                  k[i] = e.target.value;
-                  updateForm("envKeys", k);
+                  const keys = [...form.envKeys];
+                  keys[i] = e.target.value;
+                  updateForm("envKeys", keys);
                 }}
                 placeholder="KEY"
                 className="font-mono flex-1"
@@ -679,9 +729,9 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
               <Input
                 value={form.envValues[i] ?? ""}
                 onChange={(e) => {
-                  const v = [...form.envValues];
-                  v[i] = e.target.value;
-                  updateForm("envValues", v);
+                  const values = [...form.envValues];
+                  values[i] = e.target.value;
+                  updateForm("envValues", values);
                 }}
                 placeholder="value"
                 className="font-mono flex-1"
@@ -703,13 +753,133 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
       </div>
     </div>
   );
+}
+
+function WizardFooter({
+  step,
+  isSubmitting,
+  submitLabel,
+  onBack,
+  onNext,
+  onSubmit,
+}: {
+  step: number;
+  isSubmitting: boolean;
+  submitLabel: string;
+  onBack: () => void;
+  onNext: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <ResponsiveModalFooter className="gap-2">
+      {step > 0 && (
+        <Button type="button" variant="outline" onClick={onBack} disabled={isSubmitting}>
+          <ChevronLeft className="mr-1 size-4" />
+          Back
+        </Button>
+      )}
+      <div className="flex-1" />
+      {step < wizardSteps.length - 1 ? (
+        <Button type="button" onClick={onNext} disabled={isSubmitting}>
+          Next
+          <ChevronRight className="ml-1 size-4" />
+        </Button>
+      ) : (
+        <Button type="button" onClick={onSubmit} disabled={isSubmitting}>
+          {isSubmitting && <Loader2 className="mr-2 size-4 animate-spin" />}
+          {submitLabel}
+        </Button>
+      )}
+    </ResponsiveModalFooter>
+  );
+}
+
+// ── Create Process Dialog ───────────────────────────────────────
+
+function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
+  const { createProcess } = useProcessStore();
+  const { daemonInfo } = useSystemStore();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [step, setStep] = useState(0);
+  const [form, setForm] = useState<ProcessFormState>({ ...defaultForm });
+
+  const isWindows = daemonInfo?.os_type === "windows";
+
+  const updateForm = (field: keyof ProcessFormState, value: unknown) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const addEnvVar = () => {
+    setForm((prev) => ({
+      ...prev,
+      envKeys: [...prev.envKeys, ""],
+      envValues: [...prev.envValues, ""],
+    }));
+  };
+
+  const removeEnvVar = (index: number) => {
+    setForm((prev) => ({
+      ...prev,
+      envKeys: prev.envKeys.filter((_, i) => i !== index),
+      envValues: prev.envValues.filter((_, i) => i !== index),
+    }));
+  };
+
+  const nextStep = () => {
+    const validationError = validateProcessFormStep(form, step);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    setError(null);
+    setStep((prev) => Math.min(prev + 1, wizardSteps.length - 1));
+  };
+
+  const prevStep = () => {
+    setError(null);
+    setStep((prev) => Math.max(prev - 1, 0));
+  };
+
+  const resetDialog = () => {
+    setForm({ ...defaultForm });
+    setStep(0);
+    setError(null);
+  };
+
+  const handleSubmit = async () => {
+    for (let i = 0; i < wizardSteps.length; i += 1) {
+      const validationError = validateProcessFormStep(form, i);
+      if (validationError) {
+        setError(validationError);
+        setStep(i);
+        return;
+      }
+    }
+
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      await createProcess(buildCreateRequest(form, isWindows));
+      setOpen(false);
+      resetDialog();
+      onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to create process");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
     <ResponsiveModal
       open={open}
-      onOpenChange={(v) => {
-        setOpen(v);
-        if (!v) resetDialog();
+      onOpenChange={(nextOpen) => {
+        setOpen(nextOpen);
+        if (!nextOpen) {
+          resetDialog();
+        }
       }}
     >
       <ResponsiveModalTrigger asChild>
@@ -729,9 +899,15 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
         <div className="px-4 md:px-0">
           <StepIndicator steps={wizardSteps} current={step} />
           <div className="min-h-[250px]">
-            {step === 0 && BasicSection}
-            {step === 1 && RestartSection}
-            {step === 2 && AdvancedSection}
+            <ProcessFormSections
+              form={form}
+              step={step}
+              isWindows={isWindows}
+              idPrefix="create-proc"
+              updateForm={updateForm}
+              addEnvVar={addEnvVar}
+              removeEnvVar={removeEnvVar}
+            />
           </div>
 
           {error && (
@@ -741,30 +917,20 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
           )}
         </div>
 
-        <ResponsiveModalFooter className="gap-2">
-          {step > 0 && (
-            <Button type="button" variant="outline" onClick={prevStep}>
-              <ChevronLeft className="mr-1 size-4" />
-              Back
-            </Button>
-          )}
-          <div className="flex-1" />
-          {step < wizardSteps.length - 1 ? (
-            <Button type="button" onClick={nextStep}>
-              Next
-              <ChevronRight className="ml-1 size-4" />
-            </Button>
-          ) : (
-            <Button type="button" onClick={handleSubmit} disabled={isSubmitting}>
-              {isSubmitting && <Loader2 className="mr-2 size-4 animate-spin" />}
-              Create Process
-            </Button>
-          )}
-        </ResponsiveModalFooter>
+        <WizardFooter
+          step={step}
+          isSubmitting={isSubmitting}
+          submitLabel="Create Process"
+          onBack={prevStep}
+          onNext={nextStep}
+          onSubmit={handleSubmit}
+        />
       </ResponsiveModalContent>
     </ResponsiveModal>
   );
 }
+
+// ── Edit Process Dialog ─────────────────────────────────────────
 
 function EditProcessDialog({
   process,
@@ -782,522 +948,197 @@ function EditProcessDialog({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [step, setStep] = useState(0);
-  const [form, setForm] = useState<CreateFormState>({ ...defaultForm });
+  const [form, setForm] = useState<ProcessFormState>({ ...defaultForm });
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingUpdate, setPendingUpdate] = useState<{ req: UpdateProcessRequest; willRestart: boolean } | null>(
+    null
+  );
 
   const isWindows = daemonInfo?.os_type === "windows";
-  const wizardSteps = ["Basic Info", "Restart Policy", "Advanced"];
 
   useEffect(() => {
     if (!open || !process) return;
 
-    const envEntries = Object.entries(process.env);
-    setForm({
-      name: process.name,
-      command: process.command,
-      args: process.args.join(" "),
-      cwd: process.cwd,
-      envKeys: envEntries.length > 0 ? envEntries.map(([k]) => k) : [""],
-      envValues: envEntries.length > 0 ? envEntries.map(([, v]) => v) : [""],
-      restartStrategy: process.restart_policy.strategy,
-      maxRetries:
-        process.restart_policy.max_retries === null
-          ? ""
-          : String(process.restart_policy.max_retries),
-      delayMs: String(process.restart_policy.delay_ms),
-      backoffMultiplier: String(process.restart_policy.backoff_multiplier),
-      autoStart: process.auto_start,
-      groupName: process.group_name ?? "",
-      logMaxFileSize: String(process.log_config.max_file_size / (1024 * 1024)),
-      logMaxFiles: String(process.log_config.max_files),
-      runAs: process.run_as ?? "",
-    });
+    setForm(toFormState(process));
     setStep(0);
     setError(null);
     setIsSubmitting(false);
+    setConfirmOpen(false);
+    setPendingUpdate(null);
   }, [open, process?.id]);
 
-  const updateForm = (field: keyof CreateFormState, value: unknown) => {
-    setForm((f) => ({ ...f, [field]: value }));
+  const updateForm = (field: keyof ProcessFormState, value: unknown) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
   };
 
   const addEnvVar = () => {
-    setForm((f) => ({
-      ...f,
-      envKeys: [...f.envKeys, ""],
-      envValues: [...f.envValues, ""],
+    setForm((prev) => ({
+      ...prev,
+      envKeys: [...prev.envKeys, ""],
+      envValues: [...prev.envValues, ""],
     }));
   };
 
   const removeEnvVar = (index: number) => {
-    setForm((f) => ({
-      ...f,
-      envKeys: f.envKeys.filter((_, i) => i !== index),
-      envValues: f.envValues.filter((_, i) => i !== index),
+    setForm((prev) => ({
+      ...prev,
+      envKeys: prev.envKeys.filter((_, i) => i !== index),
+      envValues: prev.envValues.filter((_, i) => i !== index),
     }));
   };
 
-  const validateStep = (s: number): string | null => {
-    if (s === 0) {
-      if (!form.name.trim()) return "Name is required";
-      if (!form.command.trim()) return "Command is required";
-    }
-    if (s === 1) {
-      if (form.maxRetries && isNaN(Number(form.maxRetries))) return "Max retries must be a number";
-      if (form.delayMs && isNaN(Number(form.delayMs))) return "Delay must be a number";
-      if (form.backoffMultiplier && isNaN(Number(form.backoffMultiplier)))
-        return "Backoff multiplier must be a number";
-    }
-    return null;
-  };
-
   const nextStep = () => {
-    const err = validateStep(step);
-    if (err) {
-      setError(err);
+    const validationError = validateProcessFormStep(form, step);
+    if (validationError) {
+      setError(validationError);
       return;
     }
     setError(null);
-    setStep((s) => Math.min(s + 1, wizardSteps.length - 1));
+    setStep((prev) => Math.min(prev + 1, wizardSteps.length - 1));
   };
 
   const prevStep = () => {
     setError(null);
-    setStep((s) => Math.max(s - 1, 0));
+    setStep((prev) => Math.max(prev - 1, 0));
   };
 
-  const buildDiffRequest = (target: ProcessInfo): { req: UpdateProcessRequest; willRestart: boolean } => {
-    const nextEnv = buildEnvFromForm(form);
-    const nextArgs = splitArgs(form.args);
-    const nextCwd = form.cwd.trim() || ".";
-    const nextGroupName = form.groupName.trim() || null;
-    const nextRunAs = isWindows ? target.run_as : (form.runAs.trim() || null);
-    const nextRestartPolicy = {
-      strategy: form.restartStrategy,
-      max_retries: form.maxRetries ? Number(form.maxRetries) : null,
-      delay_ms: Number(form.delayMs) || 1000,
-      backoff_multiplier: Number(form.backoffMultiplier) || 2.0,
-    } as const;
-    const nextLogConfig = {
-      max_file_size: (Number(form.logMaxFileSize) || 10) * 1024 * 1024,
-      max_files: Number(form.logMaxFiles) || 5,
-    } as const;
-
-    const req: UpdateProcessRequest = { id: target.id };
-
-    if (form.name.trim() !== target.name) req.name = form.name.trim();
-    if (form.command.trim() !== target.command) req.command = form.command.trim();
-    if (
-      nextArgs.length !== target.args.length ||
-      nextArgs.some((arg, i) => arg !== target.args[i])
-    ) {
-      req.args = nextArgs;
-    }
-    if (nextCwd !== target.cwd) req.cwd = nextCwd;
-
-    const targetEnvEntries = Object.entries(target.env).sort(([a], [b]) => a.localeCompare(b));
-    const nextEnvEntries = Object.entries(nextEnv).sort(([a], [b]) => a.localeCompare(b));
-    const envChanged =
-      targetEnvEntries.length !== nextEnvEntries.length ||
-      targetEnvEntries.some(([k, v], i) => {
-        const [nextK, nextV] = nextEnvEntries[i] ?? [];
-        return k !== nextK || v !== nextV;
-      });
-    if (envChanged) req.env = nextEnv;
-
-    if (
-      target.restart_policy.strategy !== nextRestartPolicy.strategy ||
-      target.restart_policy.max_retries !== nextRestartPolicy.max_retries ||
-      target.restart_policy.delay_ms !== nextRestartPolicy.delay_ms ||
-      target.restart_policy.backoff_multiplier !== nextRestartPolicy.backoff_multiplier
-    ) {
-      req.restart_policy = {
-        strategy: nextRestartPolicy.strategy,
-        max_retries: nextRestartPolicy.max_retries,
-        delay_ms: nextRestartPolicy.delay_ms,
-        backoff_multiplier: nextRestartPolicy.backoff_multiplier,
-      };
-    }
-
-    if (target.auto_start !== form.autoStart) req.auto_start = form.autoStart;
-    if (target.group_name !== nextGroupName) req.group_name = nextGroupName;
-
-    if (
-      target.log_config.max_file_size !== nextLogConfig.max_file_size ||
-      target.log_config.max_files !== nextLogConfig.max_files
-    ) {
-      req.log_config = {
-        max_file_size: nextLogConfig.max_file_size,
-        max_files: nextLogConfig.max_files,
-      };
-    }
-
-    if (!isWindows && target.run_as !== nextRunAs) req.run_as = nextRunAs;
-
-    const willRestart = target.status === "running" && (
-      req.command !== undefined ||
-      req.args !== undefined ||
-      req.cwd !== undefined ||
-      req.env !== undefined ||
-      req.run_as !== undefined
-    );
-
-    return { req, willRestart };
-  };
-
-  const hasChanges = process ? Object.keys(buildDiffRequest(process).req).length > 1 : false;
-  const willRestart = process ? buildDiffRequest(process).willRestart : false;
-
-  const handleSubmit = async () => {
+  const handleSubmit = () => {
     if (!process) return;
 
-    for (let s = 0; s < wizardSteps.length; s++) {
-      const err = validateStep(s);
-      if (err) {
-        setError(err);
-        setStep(s);
+    for (let i = 0; i < wizardSteps.length; i += 1) {
+      const validationError = validateProcessFormStep(form, i);
+      if (validationError) {
+        setError(validationError);
+        setStep(i);
         return;
       }
     }
 
-    const { req } = buildDiffRequest(process);
-    if (Object.keys(req).length <= 1) {
+    const diff = buildEditRequestDiff(process, form, isWindows);
+    if (!diff.hasChanges) {
       onOpenChange(false);
       return;
     }
 
+    setPendingUpdate({ req: diff.req, willRestart: diff.willRestart });
+    setConfirmOpen(true);
+  };
+
+  const confirmAndSubmit = async () => {
+    if (!pendingUpdate) return;
+
     setIsSubmitting(true);
     setError(null);
     try {
-      await updateProcess(req);
+      await updateProcess(pendingUpdate.req);
+      setConfirmOpen(false);
+      setPendingUpdate(null);
       onOpenChange(false);
       onUpdated();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to update process");
+      setConfirmOpen(false);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const BasicSection = (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        <Label htmlFor="edit-proc-name">Name *</Label>
-        <Input
-          id="edit-proc-name"
-          value={form.name}
-          onChange={(e) => updateForm("name", e.target.value)}
-          placeholder="my-app"
-          required
-        />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="edit-proc-command">Command *</Label>
-        <Input
-          id="edit-proc-command"
-          value={form.command}
-          onChange={(e) => updateForm("command", e.target.value)}
-          placeholder="node"
-          className="font-mono"
-          required
-        />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="edit-proc-args">Arguments</Label>
-        <Input
-          id="edit-proc-args"
-          value={form.args}
-          onChange={(e) => updateForm("args", e.target.value)}
-          placeholder="server.js --port 3000"
-          className="font-mono"
-        />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="edit-proc-cwd">Working Directory</Label>
-        <Input
-          id="edit-proc-cwd"
-          value={form.cwd}
-          onChange={(e) => updateForm("cwd", e.target.value)}
-          placeholder="/home/user/app"
-          className="font-mono"
-        />
-      </div>
-    </div>
-  );
-
-  const RestartSection = (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        <Label>Restart Strategy</Label>
-        <div className="grid grid-cols-3 gap-2">
-          {(["on_failure", "always", "never"] as const).map((strategy) => (
-            <button
-              key={strategy}
-              type="button"
-              onClick={() => updateForm("restartStrategy", strategy)}
-              className={`rounded-lg border px-3 py-2.5 text-sm transition-all ${
-                form.restartStrategy === strategy
-                  ? "border-primary bg-primary/5 text-primary font-medium ring-1 ring-primary/20"
-                  : "hover:bg-muted/50"
-              }`}
-            >
-              {strategy === "on_failure"
-                ? "On Failure"
-                : strategy === "always"
-                ? "Always"
-                : "Never"}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {form.restartStrategy !== "never" && (
-        <div className="grid grid-cols-3 gap-4">
-          <div className="space-y-2">
-            <Label htmlFor="edit-proc-retries">Max Retries</Label>
-            <Input
-              id="edit-proc-retries"
-              type="number"
-              min="0"
-              value={form.maxRetries}
-              onChange={(e) => updateForm("maxRetries", e.target.value)}
-              placeholder="10"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="edit-proc-delay">Delay (ms)</Label>
-            <Input
-              id="edit-proc-delay"
-              type="number"
-              min="1"
-              value={form.delayMs}
-              onChange={(e) => updateForm("delayMs", e.target.value)}
-              placeholder="1000"
-            />
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="edit-proc-backoff">Backoff ×</Label>
-            <Input
-              id="edit-proc-backoff"
-              type="number"
-              min="1"
-              step="0.1"
-              value={form.backoffMultiplier}
-              onChange={(e) => updateForm("backoffMultiplier", e.target.value)}
-              placeholder="2.0"
-            />
-          </div>
-        </div>
-      )}
-
-      <div className="flex items-center gap-3 rounded-lg border p-3">
-        <input
-          type="checkbox"
-          id="edit-proc-autostart"
-          checked={form.autoStart}
-          onChange={(e) => updateForm("autoStart", e.target.checked)}
-          className="size-4 rounded"
-        />
-        <div>
-          <Label htmlFor="edit-proc-autostart" className="cursor-pointer">Auto Start</Label>
-          <p className="text-xs text-muted-foreground">
-            Automatically start this process when the daemon starts.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
-
-  const AdvancedSection = (
-    <div className="space-y-4">
-      <div className="space-y-2">
-        <Label htmlFor="edit-proc-group">Group Name</Label>
-        <Input
-          id="edit-proc-group"
-          value={form.groupName}
-          onChange={(e) => updateForm("groupName", e.target.value)}
-          placeholder="web-services"
-        />
-      </div>
-
-      {!isWindows && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <Label htmlFor="edit-proc-runas">Run As User</Label>
-            <Badge variant="outline" className="text-[10px]">Unix Only</Badge>
-          </div>
-          <Input
-            id="edit-proc-runas"
-            value={form.runAs}
-            onChange={(e) => updateForm("runAs", e.target.value)}
-            placeholder="www-data"
-            className="font-mono"
-          />
-          <p className="text-xs text-muted-foreground">
-            Username or UID. Requires root privileges. Ignored if not root.
-          </p>
-        </div>
-      )}
-
-      <div className="space-y-2">
-        <Label>Log Rotation</Label>
-        <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-1">
-            <Label htmlFor="edit-proc-logsize" className="text-xs text-muted-foreground">
-              Max File Size (MB)
-            </Label>
-            <Input
-              id="edit-proc-logsize"
-              type="number"
-              min="1"
-              value={form.logMaxFileSize}
-              onChange={(e) => updateForm("logMaxFileSize", e.target.value)}
-              placeholder="10"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="edit-proc-logfiles" className="text-xs text-muted-foreground">
-              Rotated Files to Keep
-            </Label>
-            <Input
-              id="edit-proc-logfiles"
-              type="number"
-              min="1"
-              value={form.logMaxFiles}
-              onChange={(e) => updateForm("logMaxFiles", e.target.value)}
-              placeholder="5"
-            />
-          </div>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <Label>Environment Variables</Label>
-          <Button type="button" variant="outline" size="sm" onClick={addEnvVar} className="h-7 text-xs">
-            <Plus className="mr-1 size-3" />
-            Add
-          </Button>
-        </div>
-        <div className="space-y-2">
-          {form.envKeys.map((key, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <Input
-                value={key}
-                onChange={(e) => {
-                  const k = [...form.envKeys];
-                  k[i] = e.target.value;
-                  updateForm("envKeys", k);
-                }}
-                placeholder="KEY"
-                className="font-mono flex-1"
-              />
-              <span className="text-muted-foreground">=</span>
-              <Input
-                value={form.envValues[i] ?? ""}
-                onChange={(e) => {
-                  const v = [...form.envValues];
-                  v[i] = e.target.value;
-                  updateForm("envValues", v);
-                }}
-                placeholder="value"
-                className="font-mono flex-1"
-              />
-              {form.envKeys.length > 1 && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 text-muted-foreground hover:text-destructive"
-                  onClick={() => removeEnvVar(i)}
-                >
-                  <X className="size-3" />
-                </Button>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
+  const confirmTitle = pendingUpdate?.willRestart ? "Save Changes and Restart?" : "Save Changes?";
+  const confirmDescription = pendingUpdate?.willRestart
+    ? "This process is running and launch parameters changed. Save changes and restart the process now?"
+    : "Save these configuration changes now?";
+  const confirmActionText = pendingUpdate?.willRestart ? "Save and Restart" : "Save Changes";
 
   return (
-    <ResponsiveModal
-      open={open}
-      onOpenChange={(nextOpen) => {
-        if (!isSubmitting) {
+    <>
+      <ResponsiveModal
+        open={open}
+        onOpenChange={(nextOpen) => {
+          if (isSubmitting) return;
+          if (!nextOpen) {
+            setConfirmOpen(false);
+            setPendingUpdate(null);
+          }
           onOpenChange(nextOpen);
-        }
-      }}
-    >
-      <ResponsiveModalContent className="md:max-w-xl">
-        <ResponsiveModalHeader>
-          <ResponsiveModalTitle>Edit Process</ResponsiveModalTitle>
-          <ResponsiveModalDescription>
-            Update process configuration. Only changed fields will be saved.
-          </ResponsiveModalDescription>
-        </ResponsiveModalHeader>
+        }}
+      >
+        <ResponsiveModalContent className="md:max-w-xl">
+          <ResponsiveModalHeader>
+            <ResponsiveModalTitle>Edit Process</ResponsiveModalTitle>
+            <ResponsiveModalDescription>
+              Update process configuration. Only changed fields will be saved.
+            </ResponsiveModalDescription>
+          </ResponsiveModalHeader>
 
-        <div className="px-4 md:px-0">
-          <StepIndicator steps={wizardSteps} current={step} />
-
-          {process?.status === "running" && (
-            <div
-              className={`mb-4 rounded-md px-3 py-2 text-sm ${
-                willRestart
-                  ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
-                  : "bg-muted text-muted-foreground"
-              }`}
-            >
-              {willRestart
-                ? "This update will restart the running process (launch parameters changed)."
-                : "This update will be applied without restart."}
+          <div className="px-4 md:px-0">
+            <StepIndicator steps={wizardSteps} current={step} />
+            <div className="min-h-[250px]">
+              <ProcessFormSections
+                form={form}
+                step={step}
+                isWindows={isWindows}
+                idPrefix="edit-proc"
+                updateForm={updateForm}
+                addEnvVar={addEnvVar}
+                removeEnvVar={removeEnvVar}
+              />
             </div>
-          )}
 
-          {!hasChanges && (
-            <div className="mb-4 rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
-              No changes detected yet.
-            </div>
-          )}
-
-          <div className="min-h-[250px]">
-            {step === 0 && BasicSection}
-            {step === 1 && RestartSection}
-            {step === 2 && AdvancedSection}
+            {error && (
+              <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {error}
+              </div>
+            )}
           </div>
 
-          {error && (
-            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error}
-            </div>
-          )}
-        </div>
+          <WizardFooter
+            step={step}
+            isSubmitting={isSubmitting}
+            submitLabel="Save Changes"
+            onBack={prevStep}
+            onNext={nextStep}
+            onSubmit={handleSubmit}
+          />
+        </ResponsiveModalContent>
+      </ResponsiveModal>
 
-        <ResponsiveModalFooter className="gap-2">
-          {step > 0 && (
-            <Button type="button" variant="outline" onClick={prevStep} disabled={isSubmitting}>
-              <ChevronLeft className="mr-1 size-4" />
-              Back
+      <Dialog
+        open={confirmOpen}
+        onOpenChange={(nextOpen) => {
+          if (isSubmitting) return;
+          setConfirmOpen(nextOpen);
+          if (!nextOpen) {
+            setPendingUpdate(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{confirmTitle}</DialogTitle>
+            <DialogDescription>{confirmDescription}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setConfirmOpen(false);
+                setPendingUpdate(null);
+              }}
+              disabled={isSubmitting}
+            >
+              Cancel
             </Button>
-          )}
-          <div className="flex-1" />
-          {step < wizardSteps.length - 1 ? (
-            <Button type="button" onClick={nextStep} disabled={isSubmitting}>
-              Next
-              <ChevronRight className="ml-1 size-4" />
-            </Button>
-          ) : (
-            <Button type="button" onClick={handleSubmit} disabled={isSubmitting}>
+            <Button type="button" onClick={confirmAndSubmit} disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="mr-2 size-4 animate-spin" />}
-              Save Changes
+              {confirmActionText}
             </Button>
-          )}
-        </ResponsiveModalFooter>
-      </ResponsiveModalContent>
-    </ResponsiveModal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
-
 // ── Log Viewer ──────────────────────────────────────────────────
 
 function LogViewer({
