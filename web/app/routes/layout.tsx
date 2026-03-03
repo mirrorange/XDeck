@@ -6,7 +6,6 @@ import { AppSidebar } from "~/components/app-sidebar";
 import { ConnectionStatus } from "~/components/connection-status";
 import { useAuthStore } from "~/stores/auth-store";
 import { useSystemStore } from "~/stores/system-store";
-import { useProcessStore } from "~/stores/process-store";
 import { getRpcClient } from "~/lib/rpc-client";
 
 /**
@@ -16,7 +15,7 @@ import { getRpcClient } from "~/lib/rpc-client";
 export default function AppLayout() {
   const navigate = useNavigate();
   const { isAuthenticated, restoreSession } = useAuthStore();
-  const { fetchDaemonInfo, subscribeToMetrics } = useSystemStore();
+  const { fetchDaemonInfo } = useSystemStore();
 
   // Restore session from localStorage on mount
   useEffect(() => {
@@ -37,14 +36,7 @@ export default function AppLayout() {
     const rpc = getRpcClient();
     rpc.connect();
     fetchDaemonInfo();
-
-    // Subscribe to real-time system metrics
-    const unsubMetrics = subscribeToMetrics();
-
-    return () => {
-      unsubMetrics();
-    };
-  }, [isAuthenticated, fetchDaemonInfo, subscribeToMetrics]);
+  }, [isAuthenticated, fetchDaemonInfo]);
 
   if (!isAuthenticated) {
     return null;

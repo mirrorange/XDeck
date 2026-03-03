@@ -12,7 +12,7 @@ use crate::error::AppError;
 use crate::rpc::router::RpcRouter;
 use crate::services::auth::AuthService;
 use crate::services::event_bus::{EventBus, SharedEventBus};
-use crate::services::process_manager::{ProcessManager, GetLogsRequest};
+use crate::services::process_manager::{GetLogsRequest, ProcessManager};
 
 /// Shared application state accessible by all handlers.
 #[derive(Clone)]
@@ -35,7 +35,8 @@ impl AppState {
 
         let auth_service = Arc::new(AuthService::new(jwt_secret));
         let event_bus = Arc::new(EventBus::default());
-        let process_manager = ProcessManager::new(pool.clone(), event_bus.clone(), &config.data_dir);
+        let process_manager =
+            ProcessManager::new(pool.clone(), event_bus.clone(), &config.data_dir);
         let rpc_router = Arc::new(Self::build_rpc_router(
             auth_service.clone(),
             process_manager.clone(),

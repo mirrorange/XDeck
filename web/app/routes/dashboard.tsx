@@ -30,13 +30,18 @@ export function meta() {
 }
 
 export default function DashboardPage() {
-  const { status, fetchStatus } = useSystemStore();
+  const { status, fetchStatus, subscribeToMetrics } = useSystemStore();
   const { processes, fetchProcesses } = useProcessStore();
 
   useEffect(() => {
     fetchStatus();
     fetchProcesses();
   }, [fetchStatus, fetchProcesses]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeToMetrics();
+    return unsubscribe;
+  }, [subscribeToMetrics]);
 
   const runningCount = processes.filter((p) => p.status === "running").length;
   const stoppedCount = processes.filter(

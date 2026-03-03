@@ -59,6 +59,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         password,
       });
       localStorage.setItem("xdeck_token", result.token);
+      rpc.setAuthToken(result.token);
       set({
         token: result.token,
         isAuthenticated: true,
@@ -76,14 +77,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: () => {
+    const rpc = getRpcClient();
+    rpc.setAuthToken(null);
     localStorage.removeItem("xdeck_token");
     set({ token: null, isAuthenticated: false });
   },
 
   restoreSession: () => {
     const token = localStorage.getItem("xdeck_token");
+    const rpc = getRpcClient();
     if (token) {
+      rpc.setAuthToken(token);
       set({ token, isAuthenticated: true });
+    } else {
+      rpc.setAuthToken(null);
     }
   },
 }));
