@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use axum::{
     extract::{
@@ -8,116 +9,88 @@ use axum::{
     response::IntoResponse,
 };
 use futures_util::{SinkExt, StreamExt};
-use serde::{de::DeserializeOwned, Deserialize};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
 
 use crate::error::AppError;
-use crate::rpc::router::RequestContext;
+use crate::rpc::event_handlers::topic_matches_pattern;
+use crate::rpc::router::{RequestContext, SessionAccess};
 use crate::rpc::types::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 
 use super::AppState;
 
-const AUTH_AUTHENTICATE_METHOD: &str = "auth.authenticate";
-const EVENT_SUBSCRIBE_METHOD: &str = "event.subscribe";
-const EVENT_UNSUBSCRIBE_METHOD: &str = "event.unsubscribe";
-
-#[derive(Debug, Default)]
-struct WsSession {
+#[derive(Default)]
+struct WsSessionInner {
     authenticated_user_id: Option<String>,
     subscribed_topics: HashSet<String>,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct WsSession {
+    inner: Arc<Mutex<WsSessionInner>>,
+}
+
 impl WsSession {
-    fn request_context(&self, pool: sqlx::SqlitePool) -> RequestContext {
-        RequestContext {
-            user_id: self.authenticated_user_id.clone(),
-            ip_address: None,
-            pool,
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(WsSessionInner::default())),
         }
     }
+}
 
-    fn is_authenticated(&self) -> bool {
-        self.authenticated_user_id.is_some()
+impl SessionAccess for WsSession {
+    fn set_authenticated_user(&self, user_id: String) {
+        self.inner.lock().unwrap().authenticated_user_id = Some(user_id);
     }
 
-    fn ensure_authenticated(&self) -> Result<(), AppError> {
-        if self.is_authenticated() {
-            Ok(())
-        } else {
-            Err(AppError::Unauthorized)
-        }
+    fn get_authenticated_user(&self) -> Option<String> {
+        self.inner.lock().unwrap().authenticated_user_id.clone()
     }
 
-    fn authenticate_as(&mut self, user_id: String) -> Result<(), AppError> {
-        if let Some(existing_user_id) = &self.authenticated_user_id {
-            if existing_user_id != &user_id {
-                return Err(AppError::Unauthorized);
-            }
-        }
-
-        self.authenticated_user_id = Some(user_id);
-        Ok(())
-    }
-
-    fn subscribe_topics(&mut self, topics: Vec<String>) -> Result<(), AppError> {
+    fn subscribe_topics(&self, topics: Vec<String>) -> Result<(), AppError> {
         if topics.is_empty() {
             return Err(AppError::BadRequest(
                 "topics must contain at least one topic".into(),
             ));
         }
 
+        let mut inner = self.inner.lock().unwrap();
         for topic in topics {
-            let normalized = normalize_topic(&topic)
-                .ok_or_else(|| AppError::BadRequest(format!("Invalid topic: {}", topic)))?;
-            self.subscribed_topics.insert(normalized);
+            inner.subscribed_topics.insert(topic);
         }
 
         Ok(())
     }
 
-    fn unsubscribe_topics(&mut self, topics: Vec<String>) -> Result<(), AppError> {
+    fn unsubscribe_topics(&self, topics: Vec<String>) -> Result<(), AppError> {
+        let mut inner = self.inner.lock().unwrap();
+
         if topics.is_empty() {
-            self.subscribed_topics.clear();
+            inner.subscribed_topics.clear();
             return Ok(());
         }
 
         for topic in topics {
-            let normalized = normalize_topic(&topic)
-                .ok_or_else(|| AppError::BadRequest(format!("Invalid topic: {}", topic)))?;
-            self.subscribed_topics.remove(&normalized);
+            inner.subscribed_topics.remove(&topic);
         }
 
         Ok(())
     }
 
-    fn is_event_subscribed(&self, event_topic: &str) -> bool {
-        self.subscribed_topics
+    fn get_subscribed_topics(&self) -> Vec<String> {
+        let inner = self.inner.lock().unwrap();
+        let mut topics: Vec<String> = inner.subscribed_topics.iter().cloned().collect();
+        topics.sort();
+        topics
+    }
+
+    fn is_subscribed_to(&self, topic: &str) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .subscribed_topics
             .iter()
-            .any(|topic| topic_matches_pattern(topic, event_topic))
+            .any(|pattern| topic_matches_pattern(pattern, topic))
     }
-
-    fn subscribed_topics(&self) -> Vec<String> {
-        sorted_topics(&self.subscribed_topics)
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthAuthenticateParams {
-    token: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EventSubscribeParams {
-    topics: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EventUnsubscribeParams {
-    topics: Vec<String>,
 }
 
 /// WebSocket upgrade handler.
@@ -128,7 +101,7 @@ pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> 
 /// Handle a single WebSocket connection.
 async fn handle_socket(socket: WebSocket, state: AppState) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let mut session = WsSession::default();
+    let session = Arc::new(WsSession::new());
     let mut event_rx = state.event_bus.subscribe();
 
     info!("WebSocket client connected");
@@ -144,7 +117,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
                     message,
                     &mut ws_sender,
                     &state,
-                    &mut session,
+                    &session,
                 ).await;
 
                 if !should_continue {
@@ -154,7 +127,7 @@ async fn handle_socket(socket: WebSocket, state: AppState) {
             event = event_rx.recv() => {
                 match event {
                     Ok(event) => {
-                        if !session.is_event_subscribed(&event.topic) {
+                        if !session.is_subscribed_to(&event.topic) {
                             continue;
                         }
 
@@ -193,7 +166,7 @@ async fn handle_client_message(
     msg: Result<Message, axum::Error>,
     ws_sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
     state: &AppState,
-    session: &mut WsSession,
+    session: &Arc<WsSession>,
 ) -> bool {
     let msg = match msg {
         Ok(msg) => msg,
@@ -218,7 +191,15 @@ async fn handle_client_message(
                 }
             };
 
-            if let Some(response) = dispatch_client_request(request, state, session).await {
+            let session_access: Arc<dyn SessionAccess> = session.clone();
+            let ctx = RequestContext::with_session(
+                session.get_authenticated_user(),
+                None,
+                state.pool.clone(),
+                session_access,
+            );
+
+            if let Some(response) = state.rpc_router.dispatch(request, ctx).await {
                 debug!("RPC response queued");
                 if send_response(ws_sender, &response).await.is_err() {
                     return false;
@@ -240,164 +221,6 @@ async fn handle_client_message(
             true
         }
         _ => true,
-    }
-}
-
-async fn dispatch_client_request(
-    request: JsonRpcRequest,
-    state: &AppState,
-    session: &mut WsSession,
-) -> Option<JsonRpcResponse> {
-    match request.method.as_str() {
-        AUTH_AUTHENTICATE_METHOD => handle_auth_authenticate(request, state, session),
-        EVENT_SUBSCRIBE_METHOD => handle_event_subscribe(request, session),
-        EVENT_UNSUBSCRIBE_METHOD => handle_event_unsubscribe(request, session),
-        _ => dispatch_application_request(request, state, session).await,
-    }
-}
-
-fn handle_auth_authenticate(
-    request: JsonRpcRequest,
-    state: &AppState,
-    session: &mut WsSession,
-) -> Option<JsonRpcResponse> {
-    let is_notification = request.is_notification();
-    let id = request.id;
-    let result =
-        parse_required_params::<AuthAuthenticateParams>(request.params).and_then(|params| {
-            let claims = state.auth_service.verify_token(&params.token)?;
-            session.authenticate_as(claims.sub.clone())?;
-
-            Ok(serde_json::json!({
-                "authenticated": true,
-                "user_id": claims.sub,
-            }))
-        });
-
-    rpc_response_from_result(id, is_notification, result)
-}
-
-fn handle_event_subscribe(
-    request: JsonRpcRequest,
-    session: &mut WsSession,
-) -> Option<JsonRpcResponse> {
-    let is_notification = request.is_notification();
-    let id = request.id;
-    let result = session.ensure_authenticated().and_then(|_| {
-        parse_required_params::<EventSubscribeParams>(request.params)
-            .and_then(|params| session.subscribe_topics(params.topics))
-            .map(|_| {
-                serde_json::json!({
-                    "subscribed_topics": session.subscribed_topics(),
-                })
-            })
-    });
-
-    rpc_response_from_result(id, is_notification, result)
-}
-
-fn handle_event_unsubscribe(
-    request: JsonRpcRequest,
-    session: &mut WsSession,
-) -> Option<JsonRpcResponse> {
-    let is_notification = request.is_notification();
-    let id = request.id;
-    let result = session.ensure_authenticated().and_then(|_| {
-        parse_required_params::<EventUnsubscribeParams>(request.params)
-            .and_then(|params| session.unsubscribe_topics(params.topics))
-            .map(|_| {
-                serde_json::json!({
-                    "subscribed_topics": session.subscribed_topics(),
-                })
-            })
-    });
-
-    rpc_response_from_result(id, is_notification, result)
-}
-
-async fn dispatch_application_request(
-    request: JsonRpcRequest,
-    state: &AppState,
-    session: &WsSession,
-) -> Option<JsonRpcResponse> {
-    if method_requires_auth(&request.method) && !session.is_authenticated() {
-        let is_notification = request.is_notification();
-        let id = request.id;
-        return rpc_response_from_result(id, is_notification, Err(AppError::Unauthorized));
-    }
-
-    let ctx = session.request_context(state.pool.clone());
-    state.rpc_router.dispatch(request, ctx).await
-}
-
-fn method_requires_auth(method: &str) -> bool {
-    method.starts_with("process.")
-}
-
-fn parse_required_params<T: DeserializeOwned>(
-    params: Option<serde_json::Value>,
-) -> Result<T, AppError> {
-    let params = params.ok_or_else(|| AppError::BadRequest("Missing params".into()))?;
-    serde_json::from_value(params)
-        .map_err(|e| AppError::BadRequest(format!("Invalid params: {}", e)))
-}
-
-fn normalize_topic(topic: &str) -> Option<String> {
-    let trimmed = topic.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let topic = trimmed.strip_prefix("event.").unwrap_or(trimmed);
-    Some(topic.to_string())
-}
-
-fn topic_matches_pattern(pattern: &str, event_topic: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-
-    if let Some(prefix) = pattern.strip_suffix(".*") {
-        return event_topic == prefix
-            || event_topic
-                .strip_prefix(prefix)
-                .is_some_and(|suffix| suffix.starts_with('.'));
-    }
-
-    pattern == event_topic
-}
-
-fn sorted_topics(topics: &HashSet<String>) -> Vec<String> {
-    let mut sorted: Vec<String> = topics.iter().cloned().collect();
-    sorted.sort();
-    sorted
-}
-
-fn rpc_response_from_result(
-    id: Option<serde_json::Value>,
-    is_notification: bool,
-    result: Result<serde_json::Value, AppError>,
-) -> Option<JsonRpcResponse> {
-    if is_notification {
-        None
-    } else {
-        Some(map_rpc_result(id, result))
-    }
-}
-
-fn map_rpc_result(
-    id: Option<serde_json::Value>,
-    result: Result<serde_json::Value, AppError>,
-) -> JsonRpcResponse {
-    match result {
-        Ok(value) => JsonRpcResponse::success(id, value),
-        Err(err) => {
-            if let Some(data) = err.error_data() {
-                JsonRpcResponse::error_with_data(id, err.error_code(), err.to_string(), data)
-            } else {
-                JsonRpcResponse::error(id, err.error_code(), err.to_string())
-            }
-        }
     }
 }
 
@@ -424,56 +247,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_topic_matches_pattern() {
-        assert!(topic_matches_pattern("system.metrics", "system.metrics"));
-        assert!(!topic_matches_pattern("system.metrics", "process.log"));
+    fn test_ws_session_subscribe_and_match() {
+        let session = WsSession::new();
 
-        assert!(topic_matches_pattern("process.*", "process.log"));
-        assert!(topic_matches_pattern("process.*", "process.status_changed"));
-        assert!(!topic_matches_pattern("process.*", "system.metrics"));
+        session
+            .subscribe_topics(vec!["process.*".to_string(), "system.metrics".to_string()])
+            .unwrap();
 
-        assert!(topic_matches_pattern("*", "anything"));
-    }
+        assert!(session.is_subscribed_to("process.log"));
+        assert!(session.is_subscribed_to("process.status_changed"));
+        assert!(session.is_subscribed_to("system.metrics"));
+        assert!(!session.is_subscribed_to("system.info"));
 
-    #[test]
-    fn test_normalize_topic() {
         assert_eq!(
-            normalize_topic("system.metrics"),
-            Some("system.metrics".to_string())
+            session.get_subscribed_topics(),
+            vec!["process.*".to_string(), "system.metrics".to_string()]
         );
-        assert_eq!(
-            normalize_topic("event.system.metrics"),
-            Some("system.metrics".to_string())
-        );
-        assert_eq!(
-            normalize_topic("  process.log  "),
-            Some("process.log".to_string())
-        );
-        assert_eq!(normalize_topic(""), None);
     }
 
     #[test]
-    fn test_event_subscribe_rejects_unknown_fields() {
-        let result: Result<EventSubscribeParams, _> = serde_json::from_value(serde_json::json!({
-            "topics": ["process.*"],
-            "token": "should-not-be-accepted"
-        }));
-        assert!(result.is_err());
-    }
+    fn test_ws_session_unsubscribe_all_with_empty_topics() {
+        let session = WsSession::new();
+        session
+            .subscribe_topics(vec!["process.*".to_string(), "system.*".to_string()])
+            .unwrap();
 
-    #[test]
-    fn test_event_unsubscribe_requires_topics_field() {
-        let result: Result<EventUnsubscribeParams, _> =
-            serde_json::from_value(serde_json::json!({}));
-        assert!(result.is_err());
-    }
+        session.unsubscribe_topics(vec![]).unwrap();
 
-    #[test]
-    fn test_auth_authenticate_rejects_extra_fields() {
-        let result: Result<AuthAuthenticateParams, _> = serde_json::from_value(serde_json::json!({
-            "token": "abc",
-            "username": "admin"
-        }));
-        assert!(result.is_err());
+        assert!(session.get_subscribed_topics().is_empty());
+        assert!(!session.is_subscribed_to("process.log"));
     }
 }

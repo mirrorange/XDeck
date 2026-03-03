@@ -234,6 +234,7 @@ export class RpcClient {
   private requiresSessionAuth(method: string): boolean {
     return (
       method.startsWith("process.") ||
+      method === "system.status" ||
       method === "event.subscribe" ||
       method === "event.unsubscribe"
     );
