@@ -162,6 +162,14 @@ export class RpcClient {
   }
 
   /**
+   * Ensure current socket session is authenticated for the active auth token.
+   */
+  async authenticateSession(): Promise<void> {
+    await this.ensureConnected("auth.authenticate");
+    await this.ensureSessionAuthenticated();
+  }
+
+  /**
    * Subscribe to a server-pushed event topic.
    * Returns an unsubscribe function.
    */

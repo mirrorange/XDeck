@@ -49,20 +49,25 @@ export function Layout({ children }: { children: React.ReactNode }) {
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { checkSetupStatus, isSetupComplete, restoreSession, isAuthenticated } =
-    useAuthStore();
+  const {
+    checkSetupStatus,
+    isSetupComplete,
+    restoreSession,
+    isAuthenticated,
+    isSessionRestored,
+  } = useAuthStore();
 
   // On app mount: connect WS and check setup status
   useEffect(() => {
     const rpc = getRpcClient();
     rpc.connect();
-    restoreSession();
+    void restoreSession();
     checkSetupStatus();
   }, [checkSetupStatus, restoreSession]);
 
   // Route based on setup status
   useEffect(() => {
-    if (isSetupComplete === null) return; // still loading
+    if (isSetupComplete === null || !isSessionRestored) return; // still loading
 
     const isOnPublicPage =
       location.pathname === "/login" || location.pathname === "/setup";
@@ -75,7 +80,13 @@ export default function App() {
     } else if (!isAuthenticated && !isOnPublicPage) {
       navigate("/login", { replace: true });
     }
-  }, [isSetupComplete, isAuthenticated, location.pathname, navigate]);
+  }, [
+    isSetupComplete,
+    isAuthenticated,
+    isSessionRestored,
+    location.pathname,
+    navigate,
+  ]);
 
   return <Outlet />;
 }

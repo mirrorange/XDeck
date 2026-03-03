@@ -14,20 +14,19 @@ import { getRpcClient } from "~/lib/rpc-client";
  */
 export default function AppLayout() {
   const navigate = useNavigate();
-  const { isAuthenticated, restoreSession } = useAuthStore();
+  const { isAuthenticated, isSessionRestored } = useAuthStore();
   const { fetchDaemonInfo } = useSystemStore();
-
-  // Restore session from localStorage on mount
-  useEffect(() => {
-    restoreSession();
-  }, [restoreSession]);
 
   // Auth guard: redirect to login if not authenticated
   useEffect(() => {
+    if (!isSessionRestored) {
+      return;
+    }
+
     if (!isAuthenticated) {
       navigate("/login", { replace: true });
     }
-  }, [isAuthenticated, navigate]);
+  }, [isAuthenticated, isSessionRestored, navigate]);
 
   // Connect WebSocket and fetch initial data when authenticated
   useEffect(() => {
@@ -38,7 +37,7 @@ export default function AppLayout() {
     fetchDaemonInfo();
   }, [isAuthenticated, fetchDaemonInfo]);
 
-  if (!isAuthenticated) {
+  if (!isSessionRestored || !isAuthenticated) {
     return null;
   }
 
