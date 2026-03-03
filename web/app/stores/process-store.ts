@@ -59,6 +59,20 @@ export interface CreateProcessRequest {
   run_as?: string;
 }
 
+export interface UpdateProcessRequest {
+  id: string;
+  name?: string;
+  command?: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  restart_policy?: RestartPolicy;
+  auto_start?: boolean;
+  group_name?: string | null;
+  log_config?: ProcessLogConfig;
+  run_as?: string | null;
+}
+
 export interface LogLine {
   stream: string;
   line: string;
@@ -78,6 +92,7 @@ interface ProcessState {
 
   fetchProcesses: () => Promise<void>;
   createProcess: (req: CreateProcessRequest) => Promise<ProcessInfo>;
+  updateProcess: (req: UpdateProcessRequest) => Promise<ProcessInfo>;
   startProcess: (id: string) => Promise<void>;
   stopProcess: (id: string) => Promise<void>;
   restartProcess: (id: string) => Promise<void>;
@@ -109,6 +124,15 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     const rpc = getRpcClient();
     const result = await rpc.call<ProcessInfo>("process.create", req as unknown as Record<string, unknown>);
     set((state) => ({ processes: [...state.processes, result] }));
+    return result;
+  },
+
+  updateProcess: async (req) => {
+    const rpc = getRpcClient();
+    const result = await rpc.call<ProcessInfo>("process.update", req as unknown as Record<string, unknown>);
+    set((state) => ({
+      processes: state.processes.map((p) => (p.id === result.id ? result : p)),
+    }));
     return result;
   },
 
@@ -149,7 +173,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
   subscribeToEvents: () => {
     const rpc = getRpcClient();
 
-    const unsub = rpc.on(
+    const unsubStatus = rpc.on(
       "event.process.status_changed",
       (params: unknown) => {
         const data = params as {
@@ -173,6 +197,28 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
       }
     );
 
-    return unsub;
+    const unsubConfig = rpc.on(
+      "event.process.config_updated",
+      (params: unknown) => {
+        const data = params as {
+          process_id: string;
+        };
+        void rpc
+          .call<ProcessInfo>("process.get", { id: data.process_id })
+          .then((updated) => {
+            set((state) => ({
+              processes: state.processes.map((p) => (p.id === updated.id ? updated : p)),
+            }));
+          })
+          .catch((err) => {
+            console.error("Failed to sync updated process:", err);
+          });
+      }
+    );
+
+    return () => {
+      unsubStatus();
+      unsubConfig();
+    };
   },
 }));

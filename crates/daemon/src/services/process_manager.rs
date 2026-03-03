@@ -43,7 +43,7 @@ impl Default for RestartStrategy {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RestartPolicy {
     #[serde(default)]
     pub strategy: RestartStrategy,
@@ -74,7 +74,7 @@ impl Default for RestartPolicy {
 }
 
 /// Per-process log configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProcessLogConfig {
     /// Max log file size in bytes before rotation (default: 10MB)
     #[serde(default = "default_log_max_size")]
@@ -153,6 +153,24 @@ pub struct CreateProcessRequest {
     pub log_config: ProcessLogConfig,
     /// Run as a specific user (username or UID). Unix only.
     pub run_as: Option<String>,
+}
+
+/// Update process request payload (PATCH semantics).
+#[derive(Debug, Deserialize)]
+pub struct UpdateProcessRequest {
+    pub id: String,
+    pub name: Option<String>,
+    pub command: Option<String>,
+    pub args: Option<Vec<String>>,
+    pub cwd: Option<String>,
+    pub env: Option<HashMap<String, String>>,
+    pub restart_policy: Option<RestartPolicy>,
+    pub auto_start: Option<bool>,
+    /// `Some(None)` clears group_name.
+    pub group_name: Option<Option<String>>,
+    pub log_config: Option<ProcessLogConfig>,
+    /// `Some(None)` clears run_as.
+    pub run_as: Option<Option<String>>,
 }
 
 fn default_true() -> bool {
@@ -424,6 +442,218 @@ impl ParsedCreateProcessRequest {
     }
 }
 
+#[derive(Debug)]
+struct ParsedUpdateProcessRequest {
+    id: String,
+    name: Option<String>,
+    command: Option<String>,
+    args: Option<Vec<String>>,
+    cwd: Option<String>,
+    env: Option<HashMap<String, String>>,
+    restart_policy: Option<RestartPolicy>,
+    auto_start: Option<bool>,
+    group_name: Option<Option<String>>,
+    log_config: Option<ProcessLogConfig>,
+    run_as: Option<Option<String>>,
+}
+
+impl ParsedUpdateProcessRequest {
+    fn parse(raw: UpdateProcessRequest) -> Result<Self, AppError> {
+        let UpdateProcessRequest {
+            id,
+            name,
+            command,
+            args,
+            cwd,
+            env,
+            restart_policy,
+            auto_start,
+            group_name,
+            log_config,
+            run_as,
+        } = raw;
+
+        let mut issues = Vec::new();
+
+        let id = match ProcessId::try_new(id) {
+            Ok(id) => Some(id.into_inner()),
+            Err(_) => {
+                issues.push(ValidationIssue::new("id", "must not be empty"));
+                None
+            }
+        };
+
+        let name = match name {
+            Some(name) => match ProcessName::try_new(name) {
+                Ok(name) => Some(Some(name.into_inner())),
+                Err(_) => {
+                    issues.push(ValidationIssue::new("name", "must not be empty"));
+                    None
+                }
+            },
+            None => Some(None),
+        };
+
+        let command = match command {
+            Some(command) => match ProcessCommand::try_new(command) {
+                Ok(command) => Some(Some(command.into_inner())),
+                Err(_) => {
+                    issues.push(ValidationIssue::new("command", "must not be empty"));
+                    None
+                }
+            },
+            None => Some(None),
+        };
+
+        if let Some(Some(command)) = command.as_ref() {
+            let command_path = Path::new(command);
+            if command_path.is_absolute() {
+                if !command_path.exists() {
+                    issues.push(ValidationIssue::new(
+                        "command",
+                        format!("command not found: {}", command),
+                    ));
+                }
+            } else if which::which(command).is_err() {
+                issues.push(ValidationIssue::new(
+                    "command",
+                    format!("command not found in PATH: {}", command),
+                ));
+            }
+        }
+
+        let cwd = match cwd {
+            Some(cwd) => {
+                let cwd_raw = if cwd.trim().is_empty() {
+                    ".".to_string()
+                } else {
+                    cwd
+                };
+                match ProcessCwd::try_new(cwd_raw) {
+                    Ok(cwd) => Some(Some(cwd.into_inner())),
+                    Err(_) => {
+                        issues.push(ValidationIssue::new("cwd", "must not be empty"));
+                        None
+                    }
+                }
+            }
+            None => Some(None),
+        };
+
+        if let Some(Some(cwd)) = cwd.as_ref() {
+            let cwd_path = Path::new(cwd);
+            if !cwd_path.exists() {
+                issues.push(ValidationIssue::new(
+                    "cwd",
+                    format!("working directory does not exist: {}", cwd),
+                ));
+            } else if !cwd_path.is_dir() {
+                issues.push(ValidationIssue::new(
+                    "cwd",
+                    format!("working directory is not a directory: {}", cwd),
+                ));
+            }
+        }
+
+        let restart_policy = match restart_policy {
+            Some(restart_policy) => {
+                let delay_ms = match RestartDelayMs::try_new(restart_policy.delay_ms) {
+                    Ok(delay_ms) => Some(delay_ms.into_inner()),
+                    Err(_) => {
+                        issues.push(ValidationIssue::new(
+                            "restart_policy.delay_ms",
+                            "must be greater than 0",
+                        ));
+                        None
+                    }
+                };
+                let backoff_multiplier =
+                    match RestartBackoffMultiplier::try_new(restart_policy.backoff_multiplier) {
+                        Ok(multiplier) => Some(multiplier.into_inner()),
+                        Err(_) => {
+                            issues.push(ValidationIssue::new(
+                                "restart_policy.backoff_multiplier",
+                                "must be finite and >= 1.0",
+                            ));
+                            None
+                        }
+                    };
+
+                if let (Some(delay_ms), Some(backoff_multiplier)) = (delay_ms, backoff_multiplier) {
+                    Some(Some(RestartPolicy {
+                        strategy: restart_policy.strategy,
+                        max_retries: restart_policy.max_retries,
+                        delay_ms,
+                        backoff_multiplier,
+                    }))
+                } else {
+                    None
+                }
+            }
+            None => Some(None),
+        };
+
+        let log_config = match log_config {
+            Some(log_config) => {
+                let max_file_size = match LogMaxFileSize::try_new(log_config.max_file_size) {
+                    Ok(size) => Some(size.into_inner()),
+                    Err(_) => {
+                        issues.push(ValidationIssue::new(
+                            "log_config.max_file_size",
+                            "must be at least 1024 bytes",
+                        ));
+                        None
+                    }
+                };
+                let max_files = match LogMaxFiles::try_new(log_config.max_files) {
+                    Ok(max_files) => Some(max_files.into_inner()),
+                    Err(_) => {
+                        issues.push(ValidationIssue::new(
+                            "log_config.max_files",
+                            "must be greater than 0",
+                        ));
+                        None
+                    }
+                };
+
+                if let (Some(max_file_size), Some(max_files)) = (max_file_size, max_files) {
+                    Some(Some(ProcessLogConfig {
+                        max_file_size,
+                        max_files,
+                    }))
+                } else {
+                    None
+                }
+            }
+            None => Some(None),
+        };
+
+        if !issues.is_empty() {
+            return Err(AppError::bad_request_with_details(
+                "Invalid process.update params",
+                issues,
+            ));
+        }
+
+        let group_name = group_name.map(|name| name.and_then(trimmed_non_empty));
+        let run_as = run_as.map(|user| user.and_then(trimmed_non_empty));
+
+        Ok(Self {
+            id: id.expect("id is present when issues is empty"),
+            name: name.expect("name is present when issues is empty"),
+            command: command.expect("command is present when issues is empty"),
+            args,
+            cwd: cwd.expect("cwd is present when issues is empty"),
+            env,
+            restart_policy: restart_policy.expect("restart_policy is present when issues is empty"),
+            auto_start,
+            group_name,
+            log_config: log_config.expect("log_config is present when issues is empty"),
+            run_as,
+        })
+    }
+}
+
 /// Request payload for fetching process logs.
 #[derive(Debug, Deserialize)]
 pub struct GetLogsRequest {
@@ -662,6 +892,109 @@ impl ProcessManager {
             started_at: None,
             exit_code: None,
         })
+    }
+
+    /// Update an existing managed process definition.
+    pub async fn update_process(
+        self: &Arc<Self>,
+        req: UpdateProcessRequest,
+    ) -> Result<ProcessInfo, AppError> {
+        let req = ParsedUpdateProcessRequest::parse(req)?;
+
+        let existing = self
+            .load_definition(&req.id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Process {} not found", req.id.as_str())))?;
+
+        let mut updated = existing.clone();
+        let mut changed_fields = Vec::new();
+
+        if let Some(name) = req.name {
+            if updated.name != name {
+                updated.name = name;
+                changed_fields.push("name");
+            }
+        }
+        if let Some(command) = req.command {
+            if updated.command != command {
+                updated.command = command;
+                changed_fields.push("command");
+            }
+        }
+        if let Some(args) = req.args {
+            if updated.args != args {
+                updated.args = args;
+                changed_fields.push("args");
+            }
+        }
+        if let Some(cwd) = req.cwd {
+            if updated.cwd != cwd {
+                updated.cwd = cwd;
+                changed_fields.push("cwd");
+            }
+        }
+        if let Some(env) = req.env {
+            if updated.env != env {
+                updated.env = env;
+                changed_fields.push("env");
+            }
+        }
+        if let Some(restart_policy) = req.restart_policy {
+            if updated.restart_policy != restart_policy {
+                updated.restart_policy = restart_policy;
+                changed_fields.push("restart_policy");
+            }
+        }
+        if let Some(auto_start) = req.auto_start {
+            if updated.auto_start != auto_start {
+                updated.auto_start = auto_start;
+                changed_fields.push("auto_start");
+            }
+        }
+        if let Some(group_name) = req.group_name {
+            if updated.group_name != group_name {
+                updated.group_name = group_name;
+                changed_fields.push("group_name");
+            }
+        }
+        if let Some(log_config) = req.log_config {
+            if updated.log_config != log_config {
+                updated.log_config = log_config;
+                changed_fields.push("log_config");
+            }
+        }
+        if let Some(run_as) = req.run_as {
+            if updated.run_as != run_as {
+                updated.run_as = run_as;
+                changed_fields.push("run_as");
+            }
+        }
+
+        let launch_param_changed = changed_fields
+            .iter()
+            .any(|field| matches!(*field, "command" | "args" | "cwd" | "env" | "run_as"));
+        let is_running = self.is_running(&req.id).await;
+
+        updated.updated_at = Utc::now().to_rfc3339();
+        self.save_definition(&updated).await?;
+
+        let restarted = if is_running && launch_param_changed {
+            self.restart_process(&req.id).await?;
+            true
+        } else {
+            false
+        };
+
+        self.event_bus.publish(
+            "process.config_updated",
+            serde_json::json!({
+                "process_id": req.id,
+                "restarted": restarted,
+                "changed_fields": changed_fields,
+            }),
+        );
+
+        self.get_process(&updated.id).await
     }
 
     /// Start a process by ID.
@@ -1070,6 +1403,15 @@ impl ProcessManager {
 
         info!("Stopped process: {}", id);
         Ok(())
+    }
+
+    async fn is_running(&self, id: &str) -> bool {
+        let procs = self.processes.read().await;
+        let Some(proc_mutex) = procs.get(id) else {
+            return false;
+        };
+        let proc = proc_mutex.lock().await;
+        proc.status == ProcessStatus::Running
     }
 
     /// Restart a process by ID.
@@ -1504,6 +1846,24 @@ mod tests {
         (pm, pool)
     }
 
+    fn sleep_process_request(name: &str) -> CreateProcessRequest {
+        CreateProcessRequest {
+            name: name.to_string(),
+            command: "sleep".to_string(),
+            args: vec!["60".to_string()],
+            cwd: "/tmp".to_string(),
+            env: HashMap::new(),
+            restart_policy: RestartPolicy {
+                strategy: RestartStrategy::Never,
+                ..Default::default()
+            },
+            auto_start: false,
+            group_name: None,
+            log_config: ProcessLogConfig::default(),
+            run_as: None,
+        }
+    }
+
     #[tokio::test]
     async fn test_create_process() {
         let (pm, _pool) = test_pm().await;
@@ -1533,21 +1893,7 @@ mod tests {
         let (pm, _pool) = test_pm().await;
 
         let info = pm
-            .create_process(CreateProcessRequest {
-                name: "test-sleep".to_string(),
-                command: "sleep".to_string(),
-                args: vec!["60".to_string()],
-                cwd: "/tmp".to_string(),
-                env: HashMap::new(),
-                restart_policy: RestartPolicy {
-                    strategy: RestartStrategy::Never,
-                    ..Default::default()
-                },
-                auto_start: false,
-                group_name: None,
-                log_config: ProcessLogConfig::default(),
-                run_as: None,
-            })
+            .create_process(sleep_process_request("test-sleep"))
             .await
             .unwrap();
 
@@ -1650,6 +1996,252 @@ mod tests {
 
         let list = pm.list_processes().await.unwrap();
         assert_eq!(list.len(), 0);
+    }
+
+    #[test]
+    fn test_update_process_parse_accepts_partial_request() {
+        let parsed = ParsedUpdateProcessRequest::parse(UpdateProcessRequest {
+            id: "process-1".to_string(),
+            name: Some("renamed".to_string()),
+            command: None,
+            args: None,
+            cwd: None,
+            env: None,
+            restart_policy: None,
+            auto_start: None,
+            group_name: None,
+            log_config: None,
+            run_as: None,
+        })
+        .unwrap();
+
+        assert_eq!(parsed.id, "process-1");
+        assert_eq!(parsed.name, Some("renamed".to_string()));
+        assert!(parsed.command.is_none());
+        assert!(parsed.restart_policy.is_none());
+    }
+
+    #[test]
+    fn test_update_process_parse_rejects_invalid_fields() {
+        let err = ParsedUpdateProcessRequest::parse(UpdateProcessRequest {
+            id: "   ".to_string(),
+            name: Some("   ".to_string()),
+            command: Some("/path/that/does/not/exist".to_string()),
+            args: None,
+            cwd: Some("/path/that/does/not/exist".to_string()),
+            env: None,
+            restart_policy: Some(RestartPolicy {
+                strategy: RestartStrategy::OnFailure,
+                max_retries: Some(3),
+                delay_ms: 0,
+                backoff_multiplier: 0.5,
+            }),
+            auto_start: None,
+            group_name: None,
+            log_config: Some(ProcessLogConfig {
+                max_file_size: 100,
+                max_files: 0,
+            }),
+            run_as: None,
+        })
+        .unwrap_err();
+
+        match err {
+            AppError::BadRequestWithDetails { details, .. } => {
+                assert!(details.iter().any(|d| d.field == "id"));
+                assert!(details.iter().any(|d| d.field == "name"));
+                assert!(details.iter().any(|d| d.field == "command"));
+                assert!(details.iter().any(|d| d.field == "cwd"));
+                assert!(details.iter().any(|d| d.field == "restart_policy.delay_ms"));
+                assert!(details
+                    .iter()
+                    .any(|d| d.field == "restart_policy.backoff_multiplier"));
+                assert!(details.iter().any(|d| d.field == "log_config.max_files"));
+            }
+            other => panic!("Expected BadRequestWithDetails, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_name_only_when_running_does_not_restart() {
+        let (pm, _pool) = test_pm().await;
+        let info = pm
+            .create_process(sleep_process_request("name-only"))
+            .await
+            .unwrap();
+        let id = info.definition.id;
+
+        pm.start_process(&id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let before = pm.get_process(&id).await.unwrap();
+        let old_pid = before.pid.expect("running process should have pid");
+
+        let updated = pm
+            .update_process(UpdateProcessRequest {
+                id: id.clone(),
+                name: Some("name-only-updated".to_string()),
+                command: None,
+                args: None,
+                cwd: None,
+                env: None,
+                restart_policy: None,
+                auto_start: None,
+                group_name: None,
+                log_config: None,
+                run_as: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(updated.definition.name, "name-only-updated");
+        assert_eq!(updated.status, ProcessStatus::Running);
+        assert_eq!(updated.pid, Some(old_pid));
+    }
+
+    #[tokio::test]
+    async fn test_update_launch_params_when_running_triggers_restart() {
+        let (pm, _pool) = test_pm().await;
+        let info = pm
+            .create_process(sleep_process_request("launch-change"))
+            .await
+            .unwrap();
+        let id = info.definition.id;
+
+        pm.start_process(&id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let before = pm.get_process(&id).await.unwrap();
+        let old_pid = before.pid.expect("running process should have pid");
+
+        let updated = pm
+            .update_process(UpdateProcessRequest {
+                id: id.clone(),
+                name: None,
+                command: Some("sh".to_string()),
+                args: Some(vec!["-c".to_string(), "sleep 60".to_string()]),
+                cwd: None,
+                env: None,
+                restart_policy: None,
+                auto_start: None,
+                group_name: None,
+                log_config: None,
+                run_as: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(updated.status, ProcessStatus::Running);
+        assert!(updated.pid.is_some());
+        assert_ne!(updated.pid, Some(old_pid));
+        assert_eq!(updated.definition.command, "sh");
+    }
+
+    #[tokio::test]
+    async fn test_update_daemon_config_when_running_does_not_restart() {
+        let (pm, _pool) = test_pm().await;
+        let info = pm
+            .create_process(sleep_process_request("daemon-change"))
+            .await
+            .unwrap();
+        let id = info.definition.id;
+
+        pm.start_process(&id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let before = pm.get_process(&id).await.unwrap();
+        let old_pid = before.pid.expect("running process should have pid");
+
+        let updated = pm
+            .update_process(UpdateProcessRequest {
+                id: id.clone(),
+                name: None,
+                command: None,
+                args: None,
+                cwd: None,
+                env: None,
+                restart_policy: Some(RestartPolicy {
+                    strategy: RestartStrategy::Always,
+                    max_retries: Some(2),
+                    delay_ms: 500,
+                    backoff_multiplier: 2.0,
+                }),
+                auto_start: Some(true),
+                group_name: Some(Some("svc".to_string())),
+                log_config: None,
+                run_as: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(updated.status, ProcessStatus::Running);
+        assert_eq!(updated.pid, Some(old_pid));
+        assert_eq!(
+            updated.definition.restart_policy.strategy,
+            RestartStrategy::Always
+        );
+        assert_eq!(updated.definition.group_name.as_deref(), Some("svc"));
+    }
+
+    #[tokio::test]
+    async fn test_update_stopped_process_only_saves_definition() {
+        let (pm, _pool) = test_pm().await;
+        let info = pm
+            .create_process(sleep_process_request("stopped-update"))
+            .await
+            .unwrap();
+        let id = info.definition.id;
+
+        let updated = pm
+            .update_process(UpdateProcessRequest {
+                id: id.clone(),
+                name: None,
+                command: Some("echo".to_string()),
+                args: Some(vec!["hello".to_string()]),
+                cwd: None,
+                env: None,
+                restart_policy: None,
+                auto_start: None,
+                group_name: None,
+                log_config: None,
+                run_as: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(updated.status, ProcessStatus::Created);
+        assert_eq!(updated.definition.command, "echo");
+        assert_eq!(updated.definition.args, vec!["hello".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_update_process_publishes_config_updated_event() {
+        let (pm, _pool) = test_pm().await;
+        let mut events = pm.event_bus.subscribe();
+        let info = pm
+            .create_process(sleep_process_request("event-update"))
+            .await
+            .unwrap();
+        let id = info.definition.id;
+
+        pm.update_process(UpdateProcessRequest {
+            id: id.clone(),
+            name: Some("event-update-2".to_string()),
+            command: None,
+            args: None,
+            cwd: None,
+            env: None,
+            restart_policy: None,
+            auto_start: None,
+            group_name: None,
+            log_config: None,
+            run_as: None,
+        })
+        .await
+        .unwrap();
+
+        let event = events.recv().await.unwrap();
+        assert_eq!(event.topic, "process.config_updated");
+        assert_eq!(event.payload["process_id"], serde_json::json!(id));
+        assert_eq!(event.payload["restarted"], false);
+        assert_eq!(event.payload["changed_fields"], serde_json::json!(["name"]));
     }
 
     #[tokio::test]

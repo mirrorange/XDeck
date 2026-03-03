@@ -15,6 +15,7 @@ import {
   Download,
   ArrowDown,
   Pause,
+  Pencil,
 } from "lucide-react";
 
 import { AppHeader } from "~/components/app-header";
@@ -50,6 +51,7 @@ import {
   type ProcessInfo,
   type ProcessStatus,
   type CreateProcessRequest,
+  type UpdateProcessRequest,
   type LogLine,
 } from "~/stores/process-store";
 import { useSystemStore } from "~/stores/system-store";
@@ -189,6 +191,10 @@ function ProcessRow({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => onAction("edit", process.id)}>
+              <Pencil className="mr-2 size-4" />
+              Edit
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => onViewLogs(process.id)}>
               <ScrollText className="mr-2 size-4" />
               View Logs
@@ -306,6 +312,20 @@ const defaultForm: CreateFormState = {
   runAs: "",
 };
 
+function buildEnvFromForm(form: CreateFormState): Record<string, string> {
+  const env: Record<string, string> = {};
+  form.envKeys.forEach((key, i) => {
+    if (key.trim()) {
+      env[key.trim()] = form.envValues[i] ?? "";
+    }
+  });
+  return env;
+}
+
+function splitArgs(input: string): string[] {
+  return input ? input.split(/\s+/).filter(Boolean) : [];
+}
+
 function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false);
   const { createProcess } = useProcessStore();
@@ -369,15 +389,12 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
   };
 
   const buildRequest = (): CreateProcessRequest => {
-    const env: Record<string, string> = {};
-    form.envKeys.forEach((k, i) => {
-      if (k.trim()) env[k.trim()] = form.envValues[i] ?? "";
-    });
+    const env = buildEnvFromForm(form);
 
     return {
       name: form.name.trim(),
       command: form.command.trim(),
-      args: form.args ? form.args.split(/\s+/).filter(Boolean) : [],
+      args: splitArgs(form.args),
       cwd: form.cwd.trim() || ".",
       env: Object.keys(env).length > 0 ? env : undefined,
       restart_policy: {
@@ -749,6 +766,538 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
   );
 }
 
+function EditProcessDialog({
+  process,
+  open,
+  onOpenChange,
+  onUpdated,
+}: {
+  process: ProcessInfo | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onUpdated: () => void;
+}) {
+  const { updateProcess } = useProcessStore();
+  const { daemonInfo } = useSystemStore();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [step, setStep] = useState(0);
+  const [form, setForm] = useState<CreateFormState>({ ...defaultForm });
+
+  const isWindows = daemonInfo?.os_type === "windows";
+  const wizardSteps = ["Basic Info", "Restart Policy", "Advanced"];
+
+  useEffect(() => {
+    if (!open || !process) return;
+
+    const envEntries = Object.entries(process.env);
+    setForm({
+      name: process.name,
+      command: process.command,
+      args: process.args.join(" "),
+      cwd: process.cwd,
+      envKeys: envEntries.length > 0 ? envEntries.map(([k]) => k) : [""],
+      envValues: envEntries.length > 0 ? envEntries.map(([, v]) => v) : [""],
+      restartStrategy: process.restart_policy.strategy,
+      maxRetries:
+        process.restart_policy.max_retries === null
+          ? ""
+          : String(process.restart_policy.max_retries),
+      delayMs: String(process.restart_policy.delay_ms),
+      backoffMultiplier: String(process.restart_policy.backoff_multiplier),
+      autoStart: process.auto_start,
+      groupName: process.group_name ?? "",
+      logMaxFileSize: String(process.log_config.max_file_size / (1024 * 1024)),
+      logMaxFiles: String(process.log_config.max_files),
+      runAs: process.run_as ?? "",
+    });
+    setStep(0);
+    setError(null);
+    setIsSubmitting(false);
+  }, [open, process?.id]);
+
+  const updateForm = (field: keyof CreateFormState, value: unknown) => {
+    setForm((f) => ({ ...f, [field]: value }));
+  };
+
+  const addEnvVar = () => {
+    setForm((f) => ({
+      ...f,
+      envKeys: [...f.envKeys, ""],
+      envValues: [...f.envValues, ""],
+    }));
+  };
+
+  const removeEnvVar = (index: number) => {
+    setForm((f) => ({
+      ...f,
+      envKeys: f.envKeys.filter((_, i) => i !== index),
+      envValues: f.envValues.filter((_, i) => i !== index),
+    }));
+  };
+
+  const validateStep = (s: number): string | null => {
+    if (s === 0) {
+      if (!form.name.trim()) return "Name is required";
+      if (!form.command.trim()) return "Command is required";
+    }
+    if (s === 1) {
+      if (form.maxRetries && isNaN(Number(form.maxRetries))) return "Max retries must be a number";
+      if (form.delayMs && isNaN(Number(form.delayMs))) return "Delay must be a number";
+      if (form.backoffMultiplier && isNaN(Number(form.backoffMultiplier)))
+        return "Backoff multiplier must be a number";
+    }
+    return null;
+  };
+
+  const nextStep = () => {
+    const err = validateStep(step);
+    if (err) {
+      setError(err);
+      return;
+    }
+    setError(null);
+    setStep((s) => Math.min(s + 1, wizardSteps.length - 1));
+  };
+
+  const prevStep = () => {
+    setError(null);
+    setStep((s) => Math.max(s - 1, 0));
+  };
+
+  const buildDiffRequest = (target: ProcessInfo): { req: UpdateProcessRequest; willRestart: boolean } => {
+    const nextEnv = buildEnvFromForm(form);
+    const nextArgs = splitArgs(form.args);
+    const nextCwd = form.cwd.trim() || ".";
+    const nextGroupName = form.groupName.trim() || null;
+    const nextRunAs = isWindows ? target.run_as : (form.runAs.trim() || null);
+    const nextRestartPolicy = {
+      strategy: form.restartStrategy,
+      max_retries: form.maxRetries ? Number(form.maxRetries) : null,
+      delay_ms: Number(form.delayMs) || 1000,
+      backoff_multiplier: Number(form.backoffMultiplier) || 2.0,
+    } as const;
+    const nextLogConfig = {
+      max_file_size: (Number(form.logMaxFileSize) || 10) * 1024 * 1024,
+      max_files: Number(form.logMaxFiles) || 5,
+    } as const;
+
+    const req: UpdateProcessRequest = { id: target.id };
+
+    if (form.name.trim() !== target.name) req.name = form.name.trim();
+    if (form.command.trim() !== target.command) req.command = form.command.trim();
+    if (
+      nextArgs.length !== target.args.length ||
+      nextArgs.some((arg, i) => arg !== target.args[i])
+    ) {
+      req.args = nextArgs;
+    }
+    if (nextCwd !== target.cwd) req.cwd = nextCwd;
+
+    const targetEnvEntries = Object.entries(target.env).sort(([a], [b]) => a.localeCompare(b));
+    const nextEnvEntries = Object.entries(nextEnv).sort(([a], [b]) => a.localeCompare(b));
+    const envChanged =
+      targetEnvEntries.length !== nextEnvEntries.length ||
+      targetEnvEntries.some(([k, v], i) => {
+        const [nextK, nextV] = nextEnvEntries[i] ?? [];
+        return k !== nextK || v !== nextV;
+      });
+    if (envChanged) req.env = nextEnv;
+
+    if (
+      target.restart_policy.strategy !== nextRestartPolicy.strategy ||
+      target.restart_policy.max_retries !== nextRestartPolicy.max_retries ||
+      target.restart_policy.delay_ms !== nextRestartPolicy.delay_ms ||
+      target.restart_policy.backoff_multiplier !== nextRestartPolicy.backoff_multiplier
+    ) {
+      req.restart_policy = {
+        strategy: nextRestartPolicy.strategy,
+        max_retries: nextRestartPolicy.max_retries,
+        delay_ms: nextRestartPolicy.delay_ms,
+        backoff_multiplier: nextRestartPolicy.backoff_multiplier,
+      };
+    }
+
+    if (target.auto_start !== form.autoStart) req.auto_start = form.autoStart;
+    if (target.group_name !== nextGroupName) req.group_name = nextGroupName;
+
+    if (
+      target.log_config.max_file_size !== nextLogConfig.max_file_size ||
+      target.log_config.max_files !== nextLogConfig.max_files
+    ) {
+      req.log_config = {
+        max_file_size: nextLogConfig.max_file_size,
+        max_files: nextLogConfig.max_files,
+      };
+    }
+
+    if (!isWindows && target.run_as !== nextRunAs) req.run_as = nextRunAs;
+
+    const willRestart = target.status === "running" && (
+      req.command !== undefined ||
+      req.args !== undefined ||
+      req.cwd !== undefined ||
+      req.env !== undefined ||
+      req.run_as !== undefined
+    );
+
+    return { req, willRestart };
+  };
+
+  const hasChanges = process ? Object.keys(buildDiffRequest(process).req).length > 1 : false;
+  const willRestart = process ? buildDiffRequest(process).willRestart : false;
+
+  const handleSubmit = async () => {
+    if (!process) return;
+
+    for (let s = 0; s < wizardSteps.length; s++) {
+      const err = validateStep(s);
+      if (err) {
+        setError(err);
+        setStep(s);
+        return;
+      }
+    }
+
+    const { req } = buildDiffRequest(process);
+    if (Object.keys(req).length <= 1) {
+      onOpenChange(false);
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError(null);
+    try {
+      await updateProcess(req);
+      onOpenChange(false);
+      onUpdated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to update process");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const BasicSection = (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor="edit-proc-name">Name *</Label>
+        <Input
+          id="edit-proc-name"
+          value={form.name}
+          onChange={(e) => updateForm("name", e.target.value)}
+          placeholder="my-app"
+          required
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="edit-proc-command">Command *</Label>
+        <Input
+          id="edit-proc-command"
+          value={form.command}
+          onChange={(e) => updateForm("command", e.target.value)}
+          placeholder="node"
+          className="font-mono"
+          required
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="edit-proc-args">Arguments</Label>
+        <Input
+          id="edit-proc-args"
+          value={form.args}
+          onChange={(e) => updateForm("args", e.target.value)}
+          placeholder="server.js --port 3000"
+          className="font-mono"
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="edit-proc-cwd">Working Directory</Label>
+        <Input
+          id="edit-proc-cwd"
+          value={form.cwd}
+          onChange={(e) => updateForm("cwd", e.target.value)}
+          placeholder="/home/user/app"
+          className="font-mono"
+        />
+      </div>
+    </div>
+  );
+
+  const RestartSection = (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <Label>Restart Strategy</Label>
+        <div className="grid grid-cols-3 gap-2">
+          {(["on_failure", "always", "never"] as const).map((strategy) => (
+            <button
+              key={strategy}
+              type="button"
+              onClick={() => updateForm("restartStrategy", strategy)}
+              className={`rounded-lg border px-3 py-2.5 text-sm transition-all ${
+                form.restartStrategy === strategy
+                  ? "border-primary bg-primary/5 text-primary font-medium ring-1 ring-primary/20"
+                  : "hover:bg-muted/50"
+              }`}
+            >
+              {strategy === "on_failure"
+                ? "On Failure"
+                : strategy === "always"
+                ? "Always"
+                : "Never"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {form.restartStrategy !== "never" && (
+        <div className="grid grid-cols-3 gap-4">
+          <div className="space-y-2">
+            <Label htmlFor="edit-proc-retries">Max Retries</Label>
+            <Input
+              id="edit-proc-retries"
+              type="number"
+              min="0"
+              value={form.maxRetries}
+              onChange={(e) => updateForm("maxRetries", e.target.value)}
+              placeholder="10"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="edit-proc-delay">Delay (ms)</Label>
+            <Input
+              id="edit-proc-delay"
+              type="number"
+              min="1"
+              value={form.delayMs}
+              onChange={(e) => updateForm("delayMs", e.target.value)}
+              placeholder="1000"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="edit-proc-backoff">Backoff ×</Label>
+            <Input
+              id="edit-proc-backoff"
+              type="number"
+              min="1"
+              step="0.1"
+              value={form.backoffMultiplier}
+              onChange={(e) => updateForm("backoffMultiplier", e.target.value)}
+              placeholder="2.0"
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 rounded-lg border p-3">
+        <input
+          type="checkbox"
+          id="edit-proc-autostart"
+          checked={form.autoStart}
+          onChange={(e) => updateForm("autoStart", e.target.checked)}
+          className="size-4 rounded"
+        />
+        <div>
+          <Label htmlFor="edit-proc-autostart" className="cursor-pointer">Auto Start</Label>
+          <p className="text-xs text-muted-foreground">
+            Automatically start this process when the daemon starts.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+
+  const AdvancedSection = (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor="edit-proc-group">Group Name</Label>
+        <Input
+          id="edit-proc-group"
+          value={form.groupName}
+          onChange={(e) => updateForm("groupName", e.target.value)}
+          placeholder="web-services"
+        />
+      </div>
+
+      {!isWindows && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Label htmlFor="edit-proc-runas">Run As User</Label>
+            <Badge variant="outline" className="text-[10px]">Unix Only</Badge>
+          </div>
+          <Input
+            id="edit-proc-runas"
+            value={form.runAs}
+            onChange={(e) => updateForm("runAs", e.target.value)}
+            placeholder="www-data"
+            className="font-mono"
+          />
+          <p className="text-xs text-muted-foreground">
+            Username or UID. Requires root privileges. Ignored if not root.
+          </p>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        <Label>Log Rotation</Label>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <Label htmlFor="edit-proc-logsize" className="text-xs text-muted-foreground">
+              Max File Size (MB)
+            </Label>
+            <Input
+              id="edit-proc-logsize"
+              type="number"
+              min="1"
+              value={form.logMaxFileSize}
+              onChange={(e) => updateForm("logMaxFileSize", e.target.value)}
+              placeholder="10"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="edit-proc-logfiles" className="text-xs text-muted-foreground">
+              Rotated Files to Keep
+            </Label>
+            <Input
+              id="edit-proc-logfiles"
+              type="number"
+              min="1"
+              value={form.logMaxFiles}
+              onChange={(e) => updateForm("logMaxFiles", e.target.value)}
+              placeholder="5"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <Label>Environment Variables</Label>
+          <Button type="button" variant="outline" size="sm" onClick={addEnvVar} className="h-7 text-xs">
+            <Plus className="mr-1 size-3" />
+            Add
+          </Button>
+        </div>
+        <div className="space-y-2">
+          {form.envKeys.map((key, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Input
+                value={key}
+                onChange={(e) => {
+                  const k = [...form.envKeys];
+                  k[i] = e.target.value;
+                  updateForm("envKeys", k);
+                }}
+                placeholder="KEY"
+                className="font-mono flex-1"
+              />
+              <span className="text-muted-foreground">=</span>
+              <Input
+                value={form.envValues[i] ?? ""}
+                onChange={(e) => {
+                  const v = [...form.envValues];
+                  v[i] = e.target.value;
+                  updateForm("envValues", v);
+                }}
+                placeholder="value"
+                className="font-mono flex-1"
+              />
+              {form.envKeys.length > 1 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 text-muted-foreground hover:text-destructive"
+                  onClick={() => removeEnvVar(i)}
+                >
+                  <X className="size-3" />
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <ResponsiveModal
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!isSubmitting) {
+          onOpenChange(nextOpen);
+        }
+      }}
+    >
+      <ResponsiveModalContent className="md:max-w-xl">
+        <ResponsiveModalHeader>
+          <ResponsiveModalTitle>Edit Process</ResponsiveModalTitle>
+          <ResponsiveModalDescription>
+            Update process configuration. Only changed fields will be saved.
+          </ResponsiveModalDescription>
+        </ResponsiveModalHeader>
+
+        <div className="px-4 md:px-0">
+          <StepIndicator steps={wizardSteps} current={step} />
+
+          {process?.status === "running" && (
+            <div
+              className={`mb-4 rounded-md px-3 py-2 text-sm ${
+                willRestart
+                  ? "bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                  : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {willRestart
+                ? "This update will restart the running process (launch parameters changed)."
+                : "This update will be applied without restart."}
+            </div>
+          )}
+
+          {!hasChanges && (
+            <div className="mb-4 rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">
+              No changes detected yet.
+            </div>
+          )}
+
+          <div className="min-h-[250px]">
+            {step === 0 && BasicSection}
+            {step === 1 && RestartSection}
+            {step === 2 && AdvancedSection}
+          </div>
+
+          {error && (
+            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <ResponsiveModalFooter className="gap-2">
+          {step > 0 && (
+            <Button type="button" variant="outline" onClick={prevStep} disabled={isSubmitting}>
+              <ChevronLeft className="mr-1 size-4" />
+              Back
+            </Button>
+          )}
+          <div className="flex-1" />
+          {step < wizardSteps.length - 1 ? (
+            <Button type="button" onClick={nextStep} disabled={isSubmitting}>
+              Next
+              <ChevronRight className="ml-1 size-4" />
+            </Button>
+          ) : (
+            <Button type="button" onClick={handleSubmit} disabled={isSubmitting}>
+              {isSubmitting && <Loader2 className="mr-2 size-4 animate-spin" />}
+              Save Changes
+            </Button>
+          )}
+        </ResponsiveModalFooter>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
+  );
+}
+
 // ── Log Viewer ──────────────────────────────────────────────────
 
 function LogViewer({
@@ -963,6 +1512,7 @@ export default function ProcessesPage() {
   } = useProcessStore();
 
   const [viewingLogs, setViewingLogs] = useState<string | null>(null);
+  const [editingProcessId, setEditingProcessId] = useState<string | null>(null);
 
   useEffect(() => {
     fetchProcesses();
@@ -982,6 +1532,9 @@ export default function ProcessesPage() {
         case "restart":
           await restartProcess(id);
           break;
+        case "edit":
+          setEditingProcessId(id);
+          break;
         case "delete":
           await deleteProcess(id);
           break;
@@ -993,6 +1546,9 @@ export default function ProcessesPage() {
 
   const logProcess = viewingLogs
     ? processes.find((p) => p.id === viewingLogs)
+    : null;
+  const editingProcess = editingProcessId
+    ? processes.find((p) => p.id === editingProcessId) ?? null
     : null;
 
   // If viewing logs, show full-screen log viewer
@@ -1014,6 +1570,16 @@ export default function ProcessesPage() {
   return (
     <>
       <AppHeader title="Processes" />
+      <EditProcessDialog
+        process={editingProcess}
+        open={Boolean(editingProcessId && editingProcess)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditingProcessId(null);
+          }
+        }}
+        onUpdated={fetchProcesses}
+      />
       <div className="flex-1 overflow-auto p-6">
         <div className="mx-auto max-w-5xl space-y-6">
           {/* Header */}
