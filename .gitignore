@@ -25,3 +25,5 @@ web/dist/
 # Environment
 .env
 .env.local
+
+/AGENTS.md
