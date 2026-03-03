@@ -701,7 +701,7 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
           New Process
         </Button>
       </ResponsiveModalTrigger>
-      <ResponsiveModalContent className="sm:max-w-xl">
+      <ResponsiveModalContent className="md:max-w-xl">
         <ResponsiveModalHeader>
           <ResponsiveModalTitle>Create New Process</ResponsiveModalTitle>
           <ResponsiveModalDescription>

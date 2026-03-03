@@ -100,7 +100,10 @@ function ResponsiveModalContent({
   if (isMobile) {
     return (
       <DrawerContent
-        className={cn(className, "max-h-[85vh] overflow-hidden")}
+        className={cn(
+          className,
+          "max-h-[85vh] w-full max-w-none overflow-hidden sm:max-w-none"
+        )}
         {...(props as React.ComponentProps<typeof DrawerContent>)}
       >
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">{children}</div>
