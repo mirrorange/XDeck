@@ -96,24 +96,28 @@ function ResponsiveModalContent({
   ...props
 }: React.ComponentProps<typeof DialogContent>) {
   const { isMobile } = useResponsiveModal();
+  const content = <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">{children}</div>;
 
   if (isMobile) {
     return (
       <DrawerContent
         className={cn(
           className,
-          "max-h-[85vh] w-full max-w-none overflow-hidden sm:max-w-none"
+          "max-h-[85dvh] w-full max-w-none overflow-hidden sm:max-w-none"
         )}
         {...(props as React.ComponentProps<typeof DrawerContent>)}
       >
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">{children}</div>
+        {content}
       </DrawerContent>
     );
   }
 
   return (
-    <DialogContent className={className} {...props}>
-      {children}
+    <DialogContent
+      className={cn("flex max-h-[85dvh] flex-col overflow-hidden", className)}
+      {...props}
+    >
+      {content}
     </DialogContent>
   );
 }
