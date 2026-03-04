@@ -68,6 +68,7 @@ import {
   ComboboxInput,
   ComboboxContent,
   ComboboxList,
+  ComboboxCollection,
   ComboboxItem,
   ComboboxEmpty,
 } from "~/components/ui/combobox";
@@ -786,10 +787,7 @@ function ProcessFormSections({
     );
   }
 
-  // Combine existing groups with what user may be typing
-  const groupSuggestions = (existingGroups ?? []).filter(
-    (g) => g.toLowerCase().includes(form.groupName.toLowerCase())
-  );
+  const groupSuggestions = existingGroups ?? [];
 
   return (
     <div className="space-y-4">
@@ -797,27 +795,31 @@ function ProcessFormSections({
       <div className="space-y-2">
         <Label htmlFor={fieldId("group")}>Group Name</Label>
         <Combobox
-          value={form.groupName || null}
+          items={groupSuggestions}
+          inputValue={form.groupName}
           onValueChange={(val) => updateForm("groupName", val ?? "")}
           onInputValueChange={(val) => updateForm("groupName", val)}
+          filter={(item, query) =>
+            String(item).toLowerCase().includes(query.toLowerCase())
+          }
         >
           <ComboboxInput
             id={fieldId("group")}
             placeholder="web-services"
             showClear={Boolean(form.groupName)}
           />
-          {(groupSuggestions.length > 0 || form.groupName.trim()) && (
-            <ComboboxContent>
-              <ComboboxList>
-                {groupSuggestions.map((g) => (
+          <ComboboxContent>
+            <ComboboxList>
+              <ComboboxCollection>
+                {(g: string) => (
                   <ComboboxItem key={g} value={g}>
                     {g}
                   </ComboboxItem>
-                ))}
-                <ComboboxEmpty>No matching groups</ComboboxEmpty>
-              </ComboboxList>
-            </ComboboxContent>
-          )}
+                )}
+              </ComboboxCollection>
+              <ComboboxEmpty>No matching groups</ComboboxEmpty>
+            </ComboboxList>
+          </ComboboxContent>
         </Combobox>
         <p className="text-xs text-muted-foreground">
           Type a new group or select an existing one.
