@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use nutype::nutype;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -182,11 +182,26 @@ pub struct UpdateProcessRequest {
     pub restart_policy: Option<RestartPolicy>,
     pub auto_start: Option<bool>,
     /// `Some(None)` clears group_name.
+    #[serde(default, deserialize_with = "deserialize_patch_nullable_string")]
     pub group_name: Option<Option<String>>,
     pub log_config: Option<ProcessLogConfig>,
     /// `Some(None)` clears run_as.
+    #[serde(default, deserialize_with = "deserialize_patch_nullable_string")]
     pub run_as: Option<Option<String>>,
     pub instance_count: Option<u32>,
+}
+
+fn deserialize_patch_nullable_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Null => Ok(Some(None)),
+        serde_json::Value::String(value) => Ok(Some(Some(value))),
+        _ => Err(serde::de::Error::custom("must be a string or null")),
+    }
 }
 
 fn default_true() -> bool {
@@ -2405,6 +2420,28 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_update_process_deserialize_group_name_null_as_clear() {
+        let parsed: UpdateProcessRequest = serde_json::from_value(serde_json::json!({
+            "id": "process-1",
+            "group_name": null
+        }))
+        .unwrap();
+
+        assert_eq!(parsed.group_name, Some(None));
+    }
+
+    #[test]
+    fn test_update_process_deserialize_run_as_null_as_clear() {
+        let parsed: UpdateProcessRequest = serde_json::from_value(serde_json::json!({
+            "id": "process-1",
+            "run_as": null
+        }))
+        .unwrap();
+
+        assert_eq!(parsed.run_as, Some(None));
+    }
+
     #[tokio::test]
     async fn test_update_name_only_when_running_does_not_restart() {
         let (pm, _pool) = test_pm().await;
@@ -2530,6 +2567,39 @@ mod tests {
             RestartStrategy::Always
         );
         assert_eq!(updated.definition.group_name.as_deref(), Some("svc"));
+    }
+
+    #[tokio::test]
+    async fn test_update_process_can_clear_group_name() {
+        let (pm, _pool) = test_pm().await;
+        let mut req = sleep_process_request("group-clear");
+        req.group_name = Some("svc".to_string());
+
+        let created = pm.create_process(req).await.unwrap();
+        let id = created.definition.id.clone();
+        assert_eq!(created.definition.group_name.as_deref(), Some("svc"));
+
+        let updated = pm
+            .update_process(UpdateProcessRequest {
+                id: id.clone(),
+                name: None,
+                command: None,
+                args: None,
+                cwd: None,
+                env: None,
+                restart_policy: None,
+                auto_start: None,
+                group_name: Some(None),
+                log_config: None,
+                run_as: None,
+                instance_count: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(updated.definition.group_name, None);
+        let fetched = pm.get_process(&id).await.unwrap();
+        assert_eq!(fetched.definition.group_name, None);
     }
 
     #[tokio::test]
