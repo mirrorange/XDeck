@@ -222,4 +222,59 @@ mod tests {
             Some("rpc-update-test-renamed")
         );
     }
+
+    #[tokio::test]
+    async fn test_process_update_rpc_can_clear_group() {
+        let ctx = test_ctx().await;
+        let event_bus = Arc::new(EventBus::default());
+        let process_mgr = ProcessManager::new(
+            ctx.pool.clone(),
+            event_bus,
+            &std::env::temp_dir().join(format!("xdeck-rpc-{}", uuid::Uuid::new_v4())),
+        );
+
+        let mut router = RpcRouter::new();
+        register(&mut router, process_mgr);
+
+        let create_req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::String("1".to_string())),
+            method: "process.create".to_string(),
+            params: Some(serde_json::json!({
+                "name": "rpc-group-clear-test",
+                "command": "echo",
+                "args": ["hello"],
+                "cwd": "/tmp",
+                "env": HashMap::<String, String>::new(),
+                "restart_policy": RestartPolicy::default(),
+                "auto_start": false,
+                "group_name": "svc",
+                "log_config": ProcessLogConfig::default(),
+                "run_as": null
+            })),
+        };
+
+        let create_resp = router.dispatch(create_req, ctx.clone()).await.unwrap();
+        let created = create_resp.result.unwrap();
+        let id = created
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap()
+            .to_string();
+
+        let update_req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(Value::String("2".to_string())),
+            method: "process.update".to_string(),
+            params: Some(serde_json::json!({
+                "id": id,
+                "group_name": null,
+            })),
+        };
+
+        let update_resp = router.dispatch(update_req, ctx).await.unwrap();
+        assert!(update_resp.error.is_none());
+        let updated = update_resp.result.unwrap();
+        assert!(updated.get("group_name").is_some_and(|v| v.is_null()));
+    }
 }
