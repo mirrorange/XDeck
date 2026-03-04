@@ -19,7 +19,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { Progress } from "~/components/ui/progress";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { useSystemStore } from "~/stores/system-store";
-import { useProcessStore } from "~/stores/process-store";
+import { getAggregateStatus, useProcessStore } from "~/stores/process-store";
 import { formatBytes, formatUptime, formatSpeed } from "~/lib/format";
 
 export function meta() {
@@ -43,12 +43,18 @@ export default function DashboardPage() {
     return unsubscribe;
   }, [subscribeToMetrics]);
 
-  const runningCount = processes.filter((p) => p.status === "running").length;
+  const runningCount = processes.filter((p) => getAggregateStatus(p.instances) === "running").length;
   const stoppedCount = processes.filter(
-    (p) => p.status === "stopped" || p.status === "created"
+    (p) => {
+      const status = getAggregateStatus(p.instances);
+      return status === "stopped" || status === "created";
+    }
   ).length;
   const errorCount = processes.filter(
-    (p) => p.status === "errored" || p.status === "failed"
+    (p) => {
+      const status = getAggregateStatus(p.instances);
+      return status === "errored" || status === "failed";
+    }
   ).length;
   const totalCount = processes.length;
 

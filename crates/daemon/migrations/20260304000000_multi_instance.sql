@@ -1,0 +1,1 @@
+ALTER TABLE processes ADD COLUMN instance_count INTEGER NOT NULL DEFAULT 1;

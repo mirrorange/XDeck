@@ -11,11 +11,14 @@ import {
   ScrollText,
   ChevronRight,
   ChevronLeft,
+  ChevronDown,
   X,
   Download,
   ArrowDown,
   Pause,
   Pencil,
+  Layers,
+  FolderOpen,
 } from "lucide-react";
 
 import { AppHeader } from "~/components/app-header";
@@ -49,15 +52,31 @@ import {
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "~/components/ui/tabs";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "~/components/ui/collapsible";
+import {
+  Combobox,
+  ComboboxInput,
+  ComboboxContent,
+  ComboboxList,
+  ComboboxItem,
+  ComboboxEmpty,
+} from "~/components/ui/combobox";
 import {
   useProcessStore,
+  getAggregateStatus,
   type ProcessInfo,
   type ProcessStatus,
+  type InstanceInfo,
   type CreateProcessRequest,
   type UpdateProcessRequest,
   type LogLine,
@@ -105,17 +124,28 @@ function ProcessRow({
   process,
   onAction,
   onViewLogs,
+  showGroupBadge = false,
 }: {
   process: ProcessInfo;
   onAction: (action: string, id: string) => void;
   onViewLogs: (id: string) => void;
+  showGroupBadge?: boolean;
 }) {
-  const isRunning = process.status === "running";
+  const aggStatus = getAggregateStatus(process.instances);
+  const isRunning = aggStatus === "running";
   const isStopped =
-    process.status === "stopped" ||
-    process.status === "created" ||
-    process.status === "failed" ||
-    process.status === "errored";
+    aggStatus === "stopped" ||
+    aggStatus === "created" ||
+    aggStatus === "failed" ||
+    aggStatus === "errored";
+
+  const runningInstances = process.instances.filter((i) => i.status === "running");
+  const pids = runningInstances.map((i) => i.pid).filter(Boolean);
+  const totalRestarts = process.instances.reduce((sum, i) => sum + i.restart_count, 0);
+  const earliestStart = runningInstances
+    .map((i) => i.started_at)
+    .filter(Boolean)
+    .sort()[0];
 
   return (
     <div className="group flex items-center gap-4 rounded-lg border px-4 py-3 transition-all hover:bg-muted/50 hover:shadow-sm">
@@ -124,8 +154,13 @@ function ProcessRow({
         <div className="flex flex-col gap-0.5 min-w-0">
           <div className="flex items-center gap-2">
             <span className="font-medium truncate">{process.name}</span>
-            <StatusBadge status={process.status} />
-            {process.group_name && (
+            <StatusBadge status={aggStatus} />
+            {process.instance_count > 1 && (
+              <Badge variant="outline" className="text-xs font-mono tabular-nums">
+                ×{process.instance_count}
+              </Badge>
+            )}
+            {showGroupBadge && process.group_name && (
               <Badge variant="outline" className="text-xs">
                 {process.group_name}
               </Badge>
@@ -142,16 +177,19 @@ function ProcessRow({
 
       {/* Metadata */}
       <div className="hidden md:flex items-center gap-6 text-sm text-muted-foreground tabular-nums">
-        {process.pid && <span className="font-mono">PID {process.pid}</span>}
-        {process.started_at && <span>{formatDuration(process.started_at)}</span>}
-        {process.restart_count > 0 && (
-          <span className="text-amber-500">↻ {process.restart_count}</span>
+        {pids.length > 0 && (
+          <span className="font-mono">
+            PID {pids.length <= 2 ? pids.join(",") : `${pids[0]}…+${pids.length - 1}`}
+          </span>
+        )}
+        {earliestStart && <span>{formatDuration(earliestStart)}</span>}
+        {totalRestarts > 0 && (
+          <span className="text-amber-500">↻ {totalRestarts}</span>
         )}
       </div>
 
       {/* Actions */}
       <div className="flex items-center gap-1">
-        {/* Log button */}
         <Button
           variant="ghost"
           size="icon"
@@ -240,6 +278,105 @@ function ProcessRow({
   );
 }
 
+// ── Process Group ───────────────────────────────────────────────
+
+function ProcessGroup({
+  groupName,
+  processes,
+  onAction,
+  onViewLogs,
+  onStartGroup,
+  onStopGroup,
+}: {
+  groupName: string | null;
+  processes: ProcessInfo[];
+  onAction: (action: string, id: string) => void;
+  onViewLogs: (id: string) => void;
+  onStartGroup?: (name: string) => void;
+  onStopGroup?: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  const isUngrouped = groupName === null;
+  const label = isUngrouped ? "Ungrouped" : groupName;
+
+  const runningCount = processes.filter(
+    (p) => getAggregateStatus(p.instances) === "running"
+  ).length;
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div className="rounded-xl border bg-card overflow-hidden transition-shadow hover:shadow-sm">
+        {/* Group header */}
+        <CollapsibleTrigger asChild>
+          <div className="flex items-center gap-3 px-4 py-2.5 cursor-pointer select-none hover:bg-muted/40 transition-colors">
+            <ChevronDown
+              className={`size-4 text-muted-foreground transition-transform duration-200 ${
+                open ? "" : "-rotate-90"
+              }`}
+            />
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <FolderOpen className="size-4 text-muted-foreground" />
+              <span className="font-medium text-sm">{label}</span>
+              <Badge variant="secondary" className="text-xs tabular-nums">
+                {processes.length}
+              </Badge>
+              {runningCount > 0 && (
+                <Badge
+                  variant="default"
+                  className="bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/15 text-xs"
+                >
+                  {runningCount} running
+                </Badge>
+              )}
+            </div>
+
+            {/* Group actions (only for named groups) */}
+            {!isUngrouped && onStartGroup && onStopGroup && (
+              <div
+                className="flex items-center gap-1"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs text-emerald-600 hover:text-emerald-700 hover:bg-emerald-500/10"
+                  onClick={() => onStartGroup(groupName!)}
+                >
+                  <Play className="mr-1 size-3" />
+                  Start All
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs text-destructive hover:bg-destructive/10"
+                  onClick={() => onStopGroup(groupName!)}
+                >
+                  <Square className="mr-1 size-3" />
+                  Stop All
+                </Button>
+              </div>
+            )}
+          </div>
+        </CollapsibleTrigger>
+
+        {/* Group content */}
+        <CollapsibleContent>
+          <div className="space-y-1 px-2 pb-2">
+            {processes.map((process) => (
+              <ProcessRow
+                key={process.id}
+                process={process}
+                onAction={onAction}
+                onViewLogs={onViewLogs}
+              />
+            ))}
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
 // ── Wizard Step Indicator ───────────────────────────────────────
 
 function StepIndicator({
@@ -302,6 +439,7 @@ interface ProcessFormState {
   logMaxFileSize: string;
   logMaxFiles: string;
   runAs: string;
+  instanceCount: string;
 }
 
 const defaultForm: ProcessFormState = {
@@ -320,6 +458,7 @@ const defaultForm: ProcessFormState = {
   logMaxFileSize: "10",
   logMaxFiles: "5",
   runAs: "",
+  instanceCount: "1",
 };
 
 function buildEnvFromForm(form: ProcessFormState): Record<string, string> {
@@ -375,6 +514,7 @@ function buildCreateRequest(form: ProcessFormState, isWindows: boolean): CreateP
       max_files: Number(form.logMaxFiles) || 5,
     },
     run_as: !isWindows && form.runAs.trim() ? form.runAs.trim() : undefined,
+    instance_count: Math.max(1, Math.min(100, Number(form.instanceCount) || 1)),
   };
 }
 
@@ -447,13 +587,17 @@ function buildEditRequestDiff(
 
   if (!isWindows && target.run_as !== nextRunAs) req.run_as = nextRunAs;
 
+  const nextInstanceCount = Math.max(1, Math.min(100, Number(form.instanceCount) || 1));
+  if (target.instance_count !== nextInstanceCount) req.instance_count = nextInstanceCount;
+
   const willRestart =
-    target.status === "running" &&
+    getAggregateStatus(target.instances) === "running" &&
     (req.command !== undefined ||
       req.args !== undefined ||
       req.cwd !== undefined ||
       req.env !== undefined ||
-      req.run_as !== undefined);
+      req.run_as !== undefined ||
+      req.instance_count !== undefined);
 
   return { req, hasChanges: Object.keys(req).length > 1, willRestart };
 }
@@ -476,6 +620,7 @@ function toFormState(process: ProcessInfo): ProcessFormState {
     logMaxFileSize: String(process.log_config.max_file_size / (1024 * 1024)),
     logMaxFiles: String(process.log_config.max_files),
     runAs: process.run_as ?? "",
+    instanceCount: String(process.instance_count),
   };
 }
 
@@ -484,6 +629,7 @@ function ProcessFormSections({
   step,
   isWindows,
   idPrefix,
+  existingGroups,
   updateForm,
   addEnvVar,
   removeEnvVar,
@@ -492,6 +638,7 @@ function ProcessFormSections({
   step: number;
   isWindows: boolean;
   idPrefix: string;
+  existingGroups?: string[];
   updateForm: (field: keyof ProcessFormState, value: unknown) => void;
   addEnvVar: () => void;
   removeEnvVar: (index: number) => void;
@@ -639,16 +786,66 @@ function ProcessFormSections({
     );
   }
 
+  // Combine existing groups with what user may be typing
+  const groupSuggestions = (existingGroups ?? []).filter(
+    (g) => g.toLowerCase().includes(form.groupName.toLowerCase()) && g !== form.groupName
+  );
+
   return (
     <div className="space-y-4">
+      {/* Group Name Combobox */}
       <div className="space-y-2">
         <Label htmlFor={fieldId("group")}>Group Name</Label>
+        <Combobox
+          value={form.groupName || null}
+          onValueChange={(val) => updateForm("groupName", val ?? "")}
+          onInputValueChange={(val) => updateForm("groupName", val)}
+        >
+          <ComboboxInput
+            id={fieldId("group")}
+            placeholder="web-services"
+            showClear={Boolean(form.groupName)}
+          />
+          {(groupSuggestions.length > 0 || form.groupName.trim()) && (
+            <ComboboxContent>
+              <ComboboxList>
+                {groupSuggestions.map((g) => (
+                  <ComboboxItem key={g} value={g}>
+                    {g}
+                  </ComboboxItem>
+                ))}
+                <ComboboxEmpty>No matching groups</ComboboxEmpty>
+              </ComboboxList>
+            </ComboboxContent>
+          )}
+        </Combobox>
+        <p className="text-xs text-muted-foreground">
+          Type a new group or select an existing one.
+        </p>
+      </div>
+
+      {/* Instance Count */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Label htmlFor={fieldId("instances")}>Instance Count</Label>
+          <Badge variant="outline" className="text-[10px]">
+            <Layers className="mr-1 size-3" />
+            Multi-Instance
+          </Badge>
+        </div>
         <Input
-          id={fieldId("group")}
-          value={form.groupName}
-          onChange={(e) => updateForm("groupName", e.target.value)}
-          placeholder="web-services"
+          id={fieldId("instances")}
+          type="number"
+          min="1"
+          max="100"
+          value={form.instanceCount}
+          onChange={(e) => updateForm("instanceCount", e.target.value)}
+          placeholder="1"
+          className="w-24"
         />
+        <p className="text-xs text-muted-foreground">
+          Number of instances to run (1–100). Each gets independent supervision and logs.
+        </p>
       </div>
 
       {!isWindows && (
@@ -798,7 +995,7 @@ function WizardFooter({
 
 function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
   const [open, setOpen] = useState(false);
-  const { createProcess } = useProcessStore();
+  const { createProcess, groups, fetchGroups } = useProcessStore();
   const { daemonInfo } = useSystemStore();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -904,6 +1101,7 @@ function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
               step={step}
               isWindows={isWindows}
               idPrefix="create-proc"
+              existingGroups={groups}
               updateForm={updateForm}
               addEnvVar={addEnvVar}
               removeEnvVar={removeEnvVar}
@@ -943,7 +1141,7 @@ function EditProcessDialog({
   onOpenChange: (open: boolean) => void;
   onUpdated: () => void;
 }) {
-  const { updateProcess } = useProcessStore();
+  const { updateProcess, groups, fetchGroups } = useProcessStore();
   const { daemonInfo } = useSystemStore();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1078,6 +1276,7 @@ function EditProcessDialog({
                 step={step}
                 isWindows={isWindows}
                 idPrefix="edit-proc"
+                existingGroups={groups}
                 updateForm={updateForm}
                 addEnvVar={addEnvVar}
                 removeEnvVar={removeEnvVar}
@@ -1144,10 +1343,12 @@ function EditProcessDialog({
 function LogViewer({
   processId,
   processName,
+  instanceCount,
   onClose,
 }: {
   processId: string;
   processName: string;
+  instanceCount: number;
   onClose: () => void;
 }) {
   const { fetchLogs } = useProcessStore();
@@ -1156,13 +1357,18 @@ function LogViewer({
   const [hasMore, setHasMore] = useState(false);
   const [streamFilter, setStreamFilter] = useState<"all" | "stdout" | "stderr">("all");
   const [autoScroll, setAutoScroll] = useState(true);
+  const [selectedInstance, setSelectedInstance] = useState(0);
   const logContainerRef = useRef<HTMLDivElement>(null);
 
   // Load historical logs
   const loadLogs = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetchLogs(processId, { stream: streamFilter, lines: 500 });
+      const res = await fetchLogs(processId, {
+        stream: streamFilter,
+        lines: 500,
+        instance: selectedInstance,
+      });
       setLogs(res.lines);
       setHasMore(res.has_more);
     } catch (err) {
@@ -1170,7 +1376,7 @@ function LogViewer({
     } finally {
       setLoading(false);
     }
-  }, [fetchLogs, processId, streamFilter]);
+  }, [fetchLogs, processId, streamFilter, selectedInstance]);
 
   useEffect(() => {
     loadLogs();
@@ -1180,8 +1386,14 @@ function LogViewer({
   useEffect(() => {
     const rpc = getRpcClient();
     const unsub = rpc.on("event.process.log", (params: unknown) => {
-      const data = params as { process_id: string; stream: string; line: string };
+      const data = params as {
+        process_id: string;
+        instance: number;
+        stream: string;
+        line: string;
+      };
       if (data.process_id !== processId) return;
+      if (data.instance !== selectedInstance) return;
       if (streamFilter !== "all" && data.stream !== streamFilter) return;
 
       setLogs((prev) => [
@@ -1191,7 +1403,7 @@ function LogViewer({
     });
 
     return unsub;
-  }, [processId, streamFilter]);
+  }, [processId, streamFilter, selectedInstance]);
 
   // Auto-scroll
   useEffect(() => {
@@ -1209,12 +1421,13 @@ function LogViewer({
   };
 
   const handleDownload = () => {
+    const suffix = instanceCount > 1 ? `-instance-${selectedInstance}` : "";
     const content = logs.map((l) => `[${l.stream}] ${l.line}`).join("\n");
     const blob = new Blob([content], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${processName}-logs.txt`;
+    a.download = `${processName}${suffix}-logs.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -1225,6 +1438,7 @@ function LogViewer({
         stream: streamFilter,
         lines: 500,
         offset: logs.length,
+        instance: selectedInstance,
       });
       setLogs((prev) => [...res.lines, ...prev]);
       setHasMore(res.has_more);
@@ -1249,6 +1463,26 @@ function LogViewer({
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {/* Instance selector (only for multi-instance) */}
+          {instanceCount > 1 && (
+            <Select
+              value={String(selectedInstance)}
+              onValueChange={(val) => setSelectedInstance(Number(val))}
+            >
+              <SelectTrigger size="sm" className="w-auto">
+                <Layers className="mr-1.5 size-3" />
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Array.from({ length: instanceCount }, (_, i) => (
+                  <SelectItem key={i} value={String(i)}>
+                    Instance {i}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+
           {/* Stream filter */}
           <div className="flex items-center gap-1 rounded-lg bg-muted p-0.5">
             {(["all", "stdout", "stderr"] as const).map((s) => (
@@ -1340,15 +1574,42 @@ function LogViewer({
 
 // ── Main Page ───────────────────────────────────────────────────
 
+function groupProcesses(processes: ProcessInfo[]): Map<string | null, ProcessInfo[]> {
+  const groups = new Map<string | null, ProcessInfo[]>();
+
+  // Collect all distinct groups, named groups first, then ungrouped
+  for (const p of processes) {
+    const key = p.group_name || null;
+    const list = groups.get(key) ?? [];
+    list.push(p);
+    groups.set(key, list);
+  }
+
+  // Sort: named groups alphabetically first, then ungrouped
+  const sorted = new Map<string | null, ProcessInfo[]>();
+  const keys = [...groups.keys()].sort((a, b) => {
+    if (a === null) return 1;
+    if (b === null) return -1;
+    return a.localeCompare(b);
+  });
+  for (const key of keys) {
+    sorted.set(key, groups.get(key)!);
+  }
+  return sorted;
+}
+
 export default function ProcessesPage() {
   const {
     processes,
     isLoading,
     fetchProcesses,
+    fetchGroups,
     startProcess,
     stopProcess,
     restartProcess,
     deleteProcess,
+    startGroup,
+    stopGroup,
     subscribeToEvents,
   } = useProcessStore();
 
@@ -1357,9 +1618,10 @@ export default function ProcessesPage() {
 
   useEffect(() => {
     fetchProcesses();
+    fetchGroups();
     const unsub = subscribeToEvents();
     return unsub;
-  }, [fetchProcesses, subscribeToEvents]);
+  }, [fetchProcesses, fetchGroups, subscribeToEvents]);
 
   const handleAction = async (action: string, id: string) => {
     try {
@@ -1385,12 +1647,31 @@ export default function ProcessesPage() {
     }
   };
 
+  const handleStartGroup = async (name: string) => {
+    try {
+      await startGroup(name);
+    } catch (err) {
+      console.error(`Failed to start group ${name}:`, err);
+    }
+  };
+
+  const handleStopGroup = async (name: string) => {
+    try {
+      await stopGroup(name);
+    } catch (err) {
+      console.error(`Failed to stop group ${name}:`, err);
+    }
+  };
+
   const logProcess = viewingLogs
     ? processes.find((p) => p.id === viewingLogs)
     : null;
   const editingProcess = editingProcessId
     ? processes.find((p) => p.id === editingProcessId) ?? null
     : null;
+
+  const grouped = groupProcesses(processes);
+  const hasGroups = grouped.size > 1 || (grouped.size === 1 && !grouped.has(null));
 
   // If viewing logs, show full-screen log viewer
   if (viewingLogs && logProcess) {
@@ -1401,6 +1682,7 @@ export default function ProcessesPage() {
           <LogViewer
             processId={viewingLogs}
             processName={logProcess.name}
+            instanceCount={logProcess.instance_count}
             onClose={() => setViewingLogs(null)}
           />
         </div>
@@ -1456,6 +1738,20 @@ export default function ProcessesPage() {
                 <CreateProcessDialog onCreated={fetchProcesses} />
               </CardContent>
             </Card>
+          ) : hasGroups ? (
+            <div className="space-y-4">
+              {[...grouped.entries()].map(([groupName, groupProcesses]) => (
+                <ProcessGroup
+                  key={groupName ?? "__ungrouped__"}
+                  groupName={groupName}
+                  processes={groupProcesses}
+                  onAction={handleAction}
+                  onViewLogs={setViewingLogs}
+                  onStartGroup={handleStartGroup}
+                  onStopGroup={handleStopGroup}
+                />
+              ))}
+            </div>
           ) : (
             <div className="space-y-2">
               {processes.map((process) => (
@@ -1464,6 +1760,7 @@ export default function ProcessesPage() {
                   process={process}
                   onAction={handleAction}
                   onViewLogs={setViewingLogs}
+                  showGroupBadge
                 />
               ))}
             </div>

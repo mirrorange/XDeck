@@ -14,6 +14,12 @@ struct ProcessIdParams {
     id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GroupParams {
+    group_name: String,
+}
+
 pub fn register(router: &mut RpcRouter, process_mgr: Arc<ProcessManager>) {
     let pm = process_mgr.clone();
     router.register("process.list", move |_params, _ctx| {
@@ -94,13 +100,48 @@ pub fn register(router: &mut RpcRouter, process_mgr: Arc<ProcessManager>) {
         }
     });
 
-    let pm = process_mgr;
+    let pm = process_mgr.clone();
     router.register("process.logs", move |params, _ctx| {
         let pm = pm.clone();
         async move {
             let params = parse_required_params::<GetLogsRequest>(params)?;
             let logs = pm.get_logs(params).await?;
             Ok(serde_json::to_value(&logs).unwrap())
+        }
+    });
+
+    let pm = process_mgr.clone();
+    router.register("process.group.list", move |_params, _ctx| {
+        let pm = pm.clone();
+        async move {
+            let groups = pm.list_groups().await?;
+            Ok(serde_json::to_value(&groups).unwrap())
+        }
+    });
+
+    let pm = process_mgr.clone();
+    router.register("process.group.start", move |params, _ctx| {
+        let pm = pm.clone();
+        async move {
+            let params = parse_required_params::<GroupParams>(params)?;
+            let errors = pm.start_group(&params.group_name).await?;
+            Ok(serde_json::json!({
+                "success": errors.is_empty(),
+                "errors": if errors.is_empty() { serde_json::Value::Null } else { serde_json::json!(errors) }
+            }))
+        }
+    });
+
+    let pm = process_mgr.clone();
+    router.register("process.group.stop", move |params, _ctx| {
+        let pm = pm.clone();
+        async move {
+            let params = parse_required_params::<GroupParams>(params)?;
+            let errors = pm.stop_group(&params.group_name).await?;
+            Ok(serde_json::json!({
+                "success": errors.is_empty(),
+                "errors": if errors.is_empty() { serde_json::Value::Null } else { serde_json::json!(errors) }
+            }))
         }
     });
 }

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { getRpcClient } from "~/lib/rpc-client";
 
-// ── Types mirroring the Rust ProcessInfo struct ──────────────────
+// -- Types -------------------------------------------------------
 
 export type ProcessStatus =
   | "created"
@@ -25,6 +25,15 @@ export interface ProcessLogConfig {
   max_files: number;
 }
 
+export interface InstanceInfo {
+  index: number;
+  status: ProcessStatus;
+  pid: number | null;
+  restart_count: number;
+  started_at: string | null;
+  exit_code: number | null;
+}
+
 export interface ProcessInfo {
   id: string;
   name: string;
@@ -37,13 +46,10 @@ export interface ProcessInfo {
   group_name: string | null;
   log_config: ProcessLogConfig;
   run_as: string | null;
+  instance_count: number;
   created_at: string;
   updated_at: string;
-  status: ProcessStatus;
-  pid: number | null;
-  restart_count: number;
-  started_at: string | null;
-  exit_code: number | null;
+  instances: InstanceInfo[];
 }
 
 export interface CreateProcessRequest {
@@ -57,6 +63,7 @@ export interface CreateProcessRequest {
   group_name?: string;
   log_config?: Partial<ProcessLogConfig>;
   run_as?: string;
+  instance_count?: number;
 }
 
 export interface UpdateProcessRequest {
@@ -71,6 +78,7 @@ export interface UpdateProcessRequest {
   group_name?: string | null;
   log_config?: ProcessLogConfig;
   run_as?: string | null;
+  instance_count?: number;
 }
 
 export interface LogLine {
@@ -81,28 +89,62 @@ export interface LogLine {
 
 export interface LogsResponse {
   process_id: string;
+  instance: number;
   lines: LogLine[];
   has_more: boolean;
 }
 
+interface GroupActionResponse {
+  success: boolean;
+  errors?: string[] | null;
+}
+
+export function getAggregateStatus(instances: InstanceInfo[]): ProcessStatus {
+  if (instances.some((i) => i.status === "running")) return "running";
+  if (instances.some((i) => i.status === "starting")) return "starting";
+  if (instances.some((i) => i.status === "errored")) return "errored";
+  if (instances.some((i) => i.status === "failed")) return "failed";
+  if (instances.length > 0 && instances.every((i) => i.status === "stopped")) return "stopped";
+  return "created";
+}
+
+export function getInstanceByIndex(process: ProcessInfo, index: number): InstanceInfo | undefined {
+  return process.instances.find((instance) => instance.index === index);
+}
+
 interface ProcessState {
   processes: ProcessInfo[];
+  groups: string[];
   isLoading: boolean;
   error: string | null;
 
   fetchProcesses: () => Promise<void>;
+  fetchGroups: () => Promise<void>;
   createProcess: (req: CreateProcessRequest) => Promise<ProcessInfo>;
   updateProcess: (req: UpdateProcessRequest) => Promise<ProcessInfo>;
   startProcess: (id: string) => Promise<void>;
   stopProcess: (id: string) => Promise<void>;
   restartProcess: (id: string) => Promise<void>;
   deleteProcess: (id: string) => Promise<void>;
-  fetchLogs: (id: string, options?: { stream?: string; lines?: number; offset?: number }) => Promise<LogsResponse>;
+  startGroup: (groupName: string) => Promise<void>;
+  stopGroup: (groupName: string) => Promise<void>;
+  fetchLogs: (
+    id: string,
+    options?: { stream?: string; lines?: number; offset?: number; instance?: number }
+  ) => Promise<LogsResponse>;
   subscribeToEvents: () => () => void;
 }
 
-export const useProcessStore = create<ProcessState>((set, get) => ({
+function ensureGroupActionSuccess(result: GroupActionResponse, groupName: string) {
+  if (result.success) return;
+  const errors = result.errors ?? [];
+  const suffix = errors.length > 0 ? `: ${errors.join("; ")}` : "";
+  throw new Error(`Failed to operate group ${groupName}${suffix}`);
+}
+
+export const useProcessStore = create<ProcessState>((set) => ({
   processes: [],
+  groups: [],
   isLoading: false,
   error: null,
 
@@ -117,6 +159,16 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
         isLoading: false,
         error: err instanceof Error ? err.message : "Failed to load processes",
       });
+    }
+  },
+
+  fetchGroups: async () => {
+    try {
+      const rpc = getRpcClient();
+      const groups = await rpc.call<string[]>("process.group.list");
+      set({ groups });
+    } catch {
+      set({ groups: [] });
     }
   },
 
@@ -159,6 +211,22 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
     }));
   },
 
+  startGroup: async (groupName) => {
+    const rpc = getRpcClient();
+    const result = await rpc.call<GroupActionResponse>("process.group.start", {
+      group_name: groupName,
+    });
+    ensureGroupActionSuccess(result, groupName);
+  },
+
+  stopGroup: async (groupName) => {
+    const rpc = getRpcClient();
+    const result = await rpc.call<GroupActionResponse>("process.group.stop", {
+      group_name: groupName,
+    });
+    ensureGroupActionSuccess(result, groupName);
+  },
+
   fetchLogs: async (id, options = {}) => {
     const rpc = getRpcClient();
     const params = {
@@ -166,6 +234,7 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
       stream: options.stream ?? "all",
       lines: options.lines ?? 500,
       offset: options.offset ?? 0,
+      instance: options.instance,
     };
     return await rpc.call<LogsResponse>("process.logs", params);
   },
@@ -178,21 +247,42 @@ export const useProcessStore = create<ProcessState>((set, get) => ({
       (params: unknown) => {
         const data = params as {
           process_id: string;
+          instance: number;
           status: ProcessStatus;
           pid?: number;
           exit_code?: number;
         };
         set((state) => ({
-          processes: state.processes.map((p) =>
-            p.id === data.process_id
-              ? {
-                  ...p,
-                  status: data.status,
-                  pid: data.pid ?? p.pid,
-                  exit_code: data.exit_code ?? p.exit_code,
-                }
-              : p
-          ),
+          processes: state.processes.map((process) => {
+            if (process.id !== data.process_id) {
+              return process;
+            }
+
+            const nextInstances = process.instances.map((inst) => {
+              if (inst.index !== data.instance) {
+                return inst;
+              }
+              return {
+                ...inst,
+                status: data.status,
+                pid: data.pid ?? (data.status === "stopped" ? null : inst.pid),
+                exit_code:
+                  data.exit_code ??
+                  (data.status === "running" || data.status === "starting" ? null : inst.exit_code),
+                started_at:
+                  data.status === "running"
+                    ? new Date().toISOString()
+                    : data.status === "stopped"
+                    ? null
+                    : inst.started_at,
+              };
+            });
+
+            return {
+              ...process,
+              instances: nextInstances,
+            };
+          }),
         }));
       }
     );
