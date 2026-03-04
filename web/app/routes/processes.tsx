@@ -788,7 +788,7 @@ function ProcessFormSections({
 
   // Combine existing groups with what user may be typing
   const groupSuggestions = (existingGroups ?? []).filter(
-    (g) => g.toLowerCase().includes(form.groupName.toLowerCase()) && g !== form.groupName
+    (g) => g.toLowerCase().includes(form.groupName.toLowerCase())
   );
 
   return (
