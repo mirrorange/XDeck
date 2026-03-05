@@ -23,6 +23,25 @@ export function TerminalInstance({ sessionId, isActive }: TerminalInstanceProps)
   const fitAddonRef = useRef<FitAddon | null>(null);
   const ptyClientRef = useRef<PtyClient | null>(null);
   const initRef = useRef(false);
+  const isActiveRef = useRef(isActive);
+  const lastResizeRef = useRef<{ cols: number; rows: number } | null>(null);
+
+  const sendResize = useCallback((cols: number, rows: number) => {
+    if (!isActiveRef.current) return;
+
+    const ptyClient = ptyClientRef.current;
+    if (!ptyClient || ptyClient.state !== "connected") return;
+
+    const lastResize = lastResizeRef.current;
+    if (lastResize && lastResize.cols === cols && lastResize.rows === rows) return;
+
+    ptyClient.sendResize(cols, rows);
+    lastResizeRef.current = { cols, rows };
+  }, []);
+
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
 
   // Initialize terminal + PTY connection once
   useEffect(() => {
@@ -67,11 +86,6 @@ export function TerminalInstance({ sessionId, isActive }: TerminalInstanceProps)
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
 
-    // Fit after open
-    requestAnimationFrame(() => {
-      fitAddon.fit();
-    });
-
     // Connect PTY WebSocket
     const token = getRpcClient().token;
     if (!token) {
@@ -84,6 +98,14 @@ export function TerminalInstance({ sessionId, isActive }: TerminalInstanceProps)
       token,
       onData: (data) => {
         terminal.write(data);
+      },
+      onStateChange: (state) => {
+        if (state !== "connected" || !isActiveRef.current) return;
+        lastResizeRef.current = null;
+        const dims = fitAddon.proposeDimensions();
+        if (dims) {
+          sendResize(dims.cols, dims.rows);
+        }
       },
       onClose: () => {
         terminal.writeln("\r\n\x1b[33m[Session disconnected]\x1b[0m");
@@ -109,19 +131,10 @@ export function TerminalInstance({ sessionId, isActive }: TerminalInstanceProps)
 
     // Forward resize to PTY
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
-      ptyClient.sendResize(cols, rows);
+      sendResize(cols, rows);
     });
 
-    // Send initial resize after connection
-    const initialResizeTimer = setTimeout(() => {
-      const dims = fitAddon.proposeDimensions();
-      if (dims) {
-        ptyClient.sendResize(dims.cols, dims.rows);
-      }
-    }, 200);
-
     return () => {
-      clearTimeout(initialResizeTimer);
       dataDisposable.dispose();
       binaryDisposable.dispose();
       resizeDisposable.dispose();
@@ -130,20 +143,25 @@ export function TerminalInstance({ sessionId, isActive }: TerminalInstanceProps)
       terminalRef.current = null;
       fitAddonRef.current = null;
       ptyClientRef.current = null;
+      lastResizeRef.current = null;
       initRef.current = false;
     };
-  }, [sessionId]);
+  }, [sessionId, sendResize]);
 
   // Handle fit when becoming active or window resize
   const handleResize = useCallback(() => {
     if (isActive && fitAddonRef.current && terminalRef.current) {
       try {
         fitAddonRef.current.fit();
+        const dims = fitAddonRef.current.proposeDimensions();
+        if (dims) {
+          sendResize(dims.cols, dims.rows);
+        }
       } catch {
         // ignore fit errors during transitions
       }
     }
-  }, [isActive]);
+  }, [isActive, sendResize]);
 
   useEffect(() => {
     if (isActive) {
