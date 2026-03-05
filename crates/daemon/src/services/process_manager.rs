@@ -4,8 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use nutype::nutype;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
@@ -13,7 +12,7 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::error::{AppError, ValidationIssue};
+use crate::error::AppError;
 use crate::services::event_bus::SharedEventBus;
 
 // ── Data Structures ─────────────────────────────────────────────
@@ -148,30 +147,24 @@ pub struct ProcessInfo {
 }
 
 /// Create process request payload.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct CreateProcessRequest {
     pub name: String,
     pub command: String,
-    #[serde(default)]
     pub args: Vec<String>,
     pub cwd: String,
-    #[serde(default)]
     pub env: HashMap<String, String>,
-    #[serde(default)]
     pub restart_policy: RestartPolicy,
-    #[serde(default = "default_true")]
     pub auto_start: bool,
     pub group_name: Option<String>,
-    #[serde(default)]
     pub log_config: ProcessLogConfig,
     /// Run as a specific user (username or UID). Unix only.
     pub run_as: Option<String>,
-    #[serde(default = "default_instance_count")]
     pub instance_count: u32,
 }
 
 /// Update process request payload (PATCH semantics).
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct UpdateProcessRequest {
     pub id: String,
     pub name: Option<String>,
@@ -182,113 +175,21 @@ pub struct UpdateProcessRequest {
     pub restart_policy: Option<RestartPolicy>,
     pub auto_start: Option<bool>,
     /// `Some(None)` clears group_name.
-    #[serde(default, deserialize_with = "deserialize_patch_nullable_string")]
     pub group_name: Option<Option<String>>,
     pub log_config: Option<ProcessLogConfig>,
     /// `Some(None)` clears run_as.
-    #[serde(default, deserialize_with = "deserialize_patch_nullable_string")]
     pub run_as: Option<Option<String>>,
     pub instance_count: Option<u32>,
 }
 
-fn deserialize_patch_nullable_string<'de, D>(
-    deserializer: D,
-) -> Result<Option<Option<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    match serde_json::Value::deserialize(deserializer)? {
-        serde_json::Value::Null => Ok(Some(None)),
-        serde_json::Value::String(value) => Ok(Some(Some(value))),
-        _ => Err(serde::de::Error::custom("must be a string or null")),
-    }
-}
-
-fn default_true() -> bool {
-    true
-}
-
-#[nutype(
-    sanitize(trim),
-    validate(not_empty, len_char_max = 128),
-    derive(Debug, Clone, PartialEq, Eq, AsRef, Deref)
-)]
-struct ProcessName(String);
-
-#[nutype(
-    sanitize(trim),
-    validate(not_empty),
-    derive(Debug, Clone, PartialEq, Eq, AsRef, Deref)
-)]
-struct ProcessCommand(String);
-
-#[nutype(
-    sanitize(trim),
-    validate(not_empty),
-    derive(Debug, Clone, PartialEq, Eq, AsRef, Deref)
-)]
-struct ProcessCwd(String);
-
-#[nutype(
-    sanitize(trim),
-    validate(not_empty),
-    derive(Debug, Clone, PartialEq, Eq, AsRef, Deref)
-)]
-struct ProcessId(String);
-
-#[nutype(
-    validate(greater_or_equal = 1),
-    derive(Debug, Clone, Copy, PartialEq, Eq)
-)]
-struct RestartDelayMs(u64);
-
-#[nutype(
-    validate(finite, greater_or_equal = 1.0),
-    derive(Debug, Clone, Copy, PartialEq)
-)]
-struct RestartBackoffMultiplier(f64);
-
-#[nutype(
-    validate(greater_or_equal = 1024),
-    derive(Debug, Clone, Copy, PartialEq, Eq)
-)]
-struct LogMaxFileSize(u64);
-
-#[nutype(
-    validate(greater_or_equal = 1),
-    derive(Debug, Clone, Copy, PartialEq, Eq)
-)]
-struct LogMaxFiles(u32);
-
-#[nutype(
-    validate(greater_or_equal = 1, less_or_equal = 100),
-    derive(Debug, Clone, Copy, PartialEq, Eq)
-)]
-struct InstanceCount(u32);
-
-#[nutype(
-    validate(greater_or_equal = 1, less_or_equal = 5000),
-    derive(Debug, Clone, Copy, PartialEq, Eq)
-)]
-struct LogTailLines(usize);
-
 #[derive(Debug, Clone, Copy)]
-enum LogStream {
+pub enum LogStream {
     Stdout,
     Stderr,
     All,
 }
 
 impl LogStream {
-    fn parse(value: &str) -> Result<Self, &'static str> {
-        match value.trim() {
-            "stdout" => Ok(Self::Stdout),
-            "stderr" => Ok(Self::Stderr),
-            "all" => Ok(Self::All),
-            _ => Err("must be one of stdout|stderr|all"),
-        }
-    }
-
     fn as_slices(self) -> &'static [&'static str] {
         match self {
             Self::Stdout => &["stdout"],
@@ -298,513 +199,18 @@ impl LogStream {
     }
 }
 
-#[derive(Debug)]
-struct ParsedCreateProcessRequest {
-    name: String,
-    command: String,
-    args: Vec<String>,
-    cwd: String,
-    env: HashMap<String, String>,
-    restart_policy: RestartPolicy,
-    auto_start: bool,
-    group_name: Option<String>,
-    log_config: ProcessLogConfig,
-    run_as: Option<String>,
-    instance_count: u32,
-}
-
-impl ParsedCreateProcessRequest {
-    fn parse(raw: CreateProcessRequest) -> Result<Self, AppError> {
-        let CreateProcessRequest {
-            name,
-            command,
-            args,
-            cwd,
-            env,
-            restart_policy,
-            auto_start,
-            group_name,
-            log_config,
-            run_as,
-            instance_count,
-        } = raw;
-
-        let mut issues = Vec::new();
-
-        let name = match ProcessName::try_new(name) {
-            Ok(name) => Some(name.into_inner()),
-            Err(_) => {
-                issues.push(ValidationIssue::new("name", "must not be empty"));
-                None
-            }
-        };
-
-        let command = match ProcessCommand::try_new(command) {
-            Ok(command) => Some(command.into_inner()),
-            Err(_) => {
-                issues.push(ValidationIssue::new("command", "must not be empty"));
-                None
-            }
-        };
-
-        // Command must be resolvable either as absolute path or via PATH.
-        if let Some(command) = command.as_deref() {
-            let command_path = Path::new(command);
-            if command_path.is_absolute() {
-                if !command_path.exists() {
-                    issues.push(ValidationIssue::new(
-                        "command",
-                        format!("command not found: {}", command),
-                    ));
-                }
-            } else if which::which(command).is_err() {
-                issues.push(ValidationIssue::new(
-                    "command",
-                    format!("command not found in PATH: {}", command),
-                ));
-            }
-        }
-
-        // Empty cwd is normalized to current directory for backward compatibility.
-        let cwd_raw = if cwd.trim().is_empty() {
-            ".".to_string()
-        } else {
-            cwd
-        };
-        let cwd = match ProcessCwd::try_new(cwd_raw) {
-            Ok(cwd) => Some(cwd.into_inner()),
-            Err(_) => {
-                issues.push(ValidationIssue::new("cwd", "must not be empty"));
-                None
-            }
-        };
-        if let Some(cwd) = cwd.as_deref() {
-            let cwd_path = Path::new(cwd);
-            if !cwd_path.exists() {
-                issues.push(ValidationIssue::new(
-                    "cwd",
-                    format!("working directory does not exist: {}", cwd),
-                ));
-            } else if !cwd_path.is_dir() {
-                issues.push(ValidationIssue::new(
-                    "cwd",
-                    format!("working directory is not a directory: {}", cwd),
-                ));
-            }
-        }
-
-        let delay_ms = match RestartDelayMs::try_new(restart_policy.delay_ms) {
-            Ok(delay_ms) => Some(delay_ms.into_inner()),
-            Err(_) => {
-                issues.push(ValidationIssue::new(
-                    "restart_policy.delay_ms",
-                    "must be greater than 0",
-                ));
-                None
-            }
-        };
-        let backoff_multiplier =
-            match RestartBackoffMultiplier::try_new(restart_policy.backoff_multiplier) {
-                Ok(multiplier) => Some(multiplier.into_inner()),
-                Err(_) => {
-                    issues.push(ValidationIssue::new(
-                        "restart_policy.backoff_multiplier",
-                        "must be finite and >= 1.0",
-                    ));
-                    None
-                }
-            };
-        let restart_policy =
-            if let (Some(delay_ms), Some(backoff_multiplier)) = (delay_ms, backoff_multiplier) {
-                Some(RestartPolicy {
-                    strategy: restart_policy.strategy,
-                    max_retries: restart_policy.max_retries,
-                    delay_ms,
-                    backoff_multiplier,
-                })
-            } else {
-                None
-            };
-
-        let max_file_size = match LogMaxFileSize::try_new(log_config.max_file_size) {
-            Ok(size) => Some(size.into_inner()),
-            Err(_) => {
-                issues.push(ValidationIssue::new(
-                    "log_config.max_file_size",
-                    "must be at least 1024 bytes",
-                ));
-                None
-            }
-        };
-        let max_files = match LogMaxFiles::try_new(log_config.max_files) {
-            Ok(max_files) => Some(max_files.into_inner()),
-            Err(_) => {
-                issues.push(ValidationIssue::new(
-                    "log_config.max_files",
-                    "must be greater than 0",
-                ));
-                None
-            }
-        };
-        let log_config = if let (Some(max_file_size), Some(max_files)) = (max_file_size, max_files)
-        {
-            Some(ProcessLogConfig {
-                max_file_size,
-                max_files,
-            })
-        } else {
-            None
-        };
-
-        let instance_count = match InstanceCount::try_new(instance_count) {
-            Ok(count) => Some(count.into_inner()),
-            Err(_) => {
-                issues.push(ValidationIssue::new(
-                    "instance_count",
-                    "must be in range [1, 100]",
-                ));
-                None
-            }
-        };
-
-        if !issues.is_empty() {
-            return Err(AppError::bad_request_with_details(
-                "Invalid process.create params",
-                issues,
-            ));
-        }
-
-        let group_name = group_name.and_then(trimmed_non_empty);
-        let run_as = run_as.and_then(trimmed_non_empty);
-
-        Ok(Self {
-            name: name.expect("name is present when issues is empty"),
-            command: command.expect("command is present when issues is empty"),
-            args,
-            cwd: cwd.expect("cwd is present when issues is empty"),
-            env,
-            restart_policy: restart_policy.expect("restart_policy is present when issues is empty"),
-            auto_start,
-            group_name,
-            log_config: log_config.expect("log_config is present when issues is empty"),
-            run_as,
-            instance_count: instance_count.expect("instance_count is present when issues is empty"),
-        })
-    }
-}
-
-#[derive(Debug)]
-struct ParsedUpdateProcessRequest {
-    id: String,
-    name: Option<String>,
-    command: Option<String>,
-    args: Option<Vec<String>>,
-    cwd: Option<String>,
-    env: Option<HashMap<String, String>>,
-    restart_policy: Option<RestartPolicy>,
-    auto_start: Option<bool>,
-    group_name: Option<Option<String>>,
-    log_config: Option<ProcessLogConfig>,
-    run_as: Option<Option<String>>,
-    instance_count: Option<u32>,
-}
-
-impl ParsedUpdateProcessRequest {
-    fn parse(raw: UpdateProcessRequest) -> Result<Self, AppError> {
-        let UpdateProcessRequest {
-            id,
-            name,
-            command,
-            args,
-            cwd,
-            env,
-            restart_policy,
-            auto_start,
-            group_name,
-            log_config,
-            run_as,
-            instance_count,
-        } = raw;
-
-        let mut issues = Vec::new();
-
-        let id = match ProcessId::try_new(id) {
-            Ok(id) => Some(id.into_inner()),
-            Err(_) => {
-                issues.push(ValidationIssue::new("id", "must not be empty"));
-                None
-            }
-        };
-
-        let name = match name {
-            Some(name) => match ProcessName::try_new(name) {
-                Ok(name) => Some(Some(name.into_inner())),
-                Err(_) => {
-                    issues.push(ValidationIssue::new("name", "must not be empty"));
-                    None
-                }
-            },
-            None => Some(None),
-        };
-
-        let command = match command {
-            Some(command) => match ProcessCommand::try_new(command) {
-                Ok(command) => Some(Some(command.into_inner())),
-                Err(_) => {
-                    issues.push(ValidationIssue::new("command", "must not be empty"));
-                    None
-                }
-            },
-            None => Some(None),
-        };
-
-        if let Some(Some(command)) = command.as_ref() {
-            let command_path = Path::new(command);
-            if command_path.is_absolute() {
-                if !command_path.exists() {
-                    issues.push(ValidationIssue::new(
-                        "command",
-                        format!("command not found: {}", command),
-                    ));
-                }
-            } else if which::which(command).is_err() {
-                issues.push(ValidationIssue::new(
-                    "command",
-                    format!("command not found in PATH: {}", command),
-                ));
-            }
-        }
-
-        let cwd = match cwd {
-            Some(cwd) => {
-                let cwd_raw = if cwd.trim().is_empty() {
-                    ".".to_string()
-                } else {
-                    cwd
-                };
-                match ProcessCwd::try_new(cwd_raw) {
-                    Ok(cwd) => Some(Some(cwd.into_inner())),
-                    Err(_) => {
-                        issues.push(ValidationIssue::new("cwd", "must not be empty"));
-                        None
-                    }
-                }
-            }
-            None => Some(None),
-        };
-
-        if let Some(Some(cwd)) = cwd.as_ref() {
-            let cwd_path = Path::new(cwd);
-            if !cwd_path.exists() {
-                issues.push(ValidationIssue::new(
-                    "cwd",
-                    format!("working directory does not exist: {}", cwd),
-                ));
-            } else if !cwd_path.is_dir() {
-                issues.push(ValidationIssue::new(
-                    "cwd",
-                    format!("working directory is not a directory: {}", cwd),
-                ));
-            }
-        }
-
-        let restart_policy = match restart_policy {
-            Some(restart_policy) => {
-                let delay_ms = match RestartDelayMs::try_new(restart_policy.delay_ms) {
-                    Ok(delay_ms) => Some(delay_ms.into_inner()),
-                    Err(_) => {
-                        issues.push(ValidationIssue::new(
-                            "restart_policy.delay_ms",
-                            "must be greater than 0",
-                        ));
-                        None
-                    }
-                };
-                let backoff_multiplier =
-                    match RestartBackoffMultiplier::try_new(restart_policy.backoff_multiplier) {
-                        Ok(multiplier) => Some(multiplier.into_inner()),
-                        Err(_) => {
-                            issues.push(ValidationIssue::new(
-                                "restart_policy.backoff_multiplier",
-                                "must be finite and >= 1.0",
-                            ));
-                            None
-                        }
-                    };
-
-                if let (Some(delay_ms), Some(backoff_multiplier)) = (delay_ms, backoff_multiplier) {
-                    Some(Some(RestartPolicy {
-                        strategy: restart_policy.strategy,
-                        max_retries: restart_policy.max_retries,
-                        delay_ms,
-                        backoff_multiplier,
-                    }))
-                } else {
-                    None
-                }
-            }
-            None => Some(None),
-        };
-
-        let log_config = match log_config {
-            Some(log_config) => {
-                let max_file_size = match LogMaxFileSize::try_new(log_config.max_file_size) {
-                    Ok(size) => Some(size.into_inner()),
-                    Err(_) => {
-                        issues.push(ValidationIssue::new(
-                            "log_config.max_file_size",
-                            "must be at least 1024 bytes",
-                        ));
-                        None
-                    }
-                };
-                let max_files = match LogMaxFiles::try_new(log_config.max_files) {
-                    Ok(max_files) => Some(max_files.into_inner()),
-                    Err(_) => {
-                        issues.push(ValidationIssue::new(
-                            "log_config.max_files",
-                            "must be greater than 0",
-                        ));
-                        None
-                    }
-                };
-
-                if let (Some(max_file_size), Some(max_files)) = (max_file_size, max_files) {
-                    Some(Some(ProcessLogConfig {
-                        max_file_size,
-                        max_files,
-                    }))
-                } else {
-                    None
-                }
-            }
-            None => Some(None),
-        };
-
-        let instance_count = match instance_count {
-            Some(instance_count) => match InstanceCount::try_new(instance_count) {
-                Ok(count) => Some(Some(count.into_inner())),
-                Err(_) => {
-                    issues.push(ValidationIssue::new(
-                        "instance_count",
-                        "must be in range [1, 100]",
-                    ));
-                    None
-                }
-            },
-            None => Some(None),
-        };
-
-        if !issues.is_empty() {
-            return Err(AppError::bad_request_with_details(
-                "Invalid process.update params",
-                issues,
-            ));
-        }
-
-        let group_name = group_name.map(|name| name.and_then(trimmed_non_empty));
-        let run_as = run_as.map(|user| user.and_then(trimmed_non_empty));
-
-        Ok(Self {
-            id: id.expect("id is present when issues is empty"),
-            name: name.expect("name is present when issues is empty"),
-            command: command.expect("command is present when issues is empty"),
-            args,
-            cwd: cwd.expect("cwd is present when issues is empty"),
-            env,
-            restart_policy: restart_policy.expect("restart_policy is present when issues is empty"),
-            auto_start,
-            group_name,
-            log_config: log_config.expect("log_config is present when issues is empty"),
-            run_as,
-            instance_count: instance_count.expect("instance_count is present when issues is empty"),
-        })
-    }
-}
-
 /// Request payload for fetching process logs.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct GetLogsRequest {
     pub id: String,
-    /// Which stream to fetch: "stdout", "stderr", or "all" (default)
-    #[serde(default = "default_stream")]
-    pub stream: String,
-    /// Number of lines to return from the tail (default: 200)
-    #[serde(default = "default_tail_lines")]
+    /// Which stream to fetch.
+    pub stream: LogStream,
+    /// Number of lines to return from the tail.
     pub lines: usize,
-    /// Offset from the end for pagination (default: 0)
-    #[serde(default)]
+    /// Offset from the end for pagination.
     pub offset: usize,
-    /// Instance index (default: 0)
-    #[serde(default)]
-    pub instance: Option<u32>,
-}
-
-fn default_stream() -> String {
-    "all".to_string()
-}
-
-fn default_tail_lines() -> usize {
-    200
-}
-
-#[derive(Debug)]
-struct ParsedGetLogsRequest {
-    id: String,
-    stream: LogStream,
-    lines: usize,
-    offset: usize,
-    instance: u32,
-}
-
-impl ParsedGetLogsRequest {
-    fn parse(raw: GetLogsRequest) -> Result<Self, AppError> {
-        let GetLogsRequest {
-            id,
-            stream,
-            lines,
-            offset,
-            instance,
-        } = raw;
-        let mut issues = Vec::new();
-
-        let id = match ProcessId::try_new(id) {
-            Ok(id) => Some(id.into_inner()),
-            Err(_) => {
-                issues.push(ValidationIssue::new("id", "must not be empty"));
-                None
-            }
-        };
-        let stream = match LogStream::parse(&stream) {
-            Ok(stream) => Some(stream),
-            Err(msg) => {
-                issues.push(ValidationIssue::new("stream", msg));
-                None
-            }
-        };
-        let lines = match LogTailLines::try_new(lines) {
-            Ok(lines) => Some(lines.into_inner()),
-            Err(_) => {
-                issues.push(ValidationIssue::new("lines", "must be in range [1, 5000]"));
-                None
-            }
-        };
-
-        if !issues.is_empty() {
-            return Err(AppError::bad_request_with_details(
-                "Invalid process.logs params",
-                issues,
-            ));
-        }
-
-        Ok(Self {
-            id: id.expect("id is present when issues is empty"),
-            stream: stream.expect("stream is present when issues is empty"),
-            lines: lines.expect("lines is present when issues is empty"),
-            offset,
-            instance: instance.unwrap_or(0),
-        })
-    }
+    /// Instance index.
+    pub instance: u32,
 }
 
 fn trimmed_non_empty(value: String) -> Option<String> {
@@ -899,8 +305,6 @@ impl ProcessManager {
         self: &Arc<Self>,
         req: CreateProcessRequest,
     ) -> Result<ProcessInfo, AppError> {
-        let req = ParsedCreateProcessRequest::parse(req)?;
-
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
@@ -949,8 +353,6 @@ impl ProcessManager {
         self: &Arc<Self>,
         req: UpdateProcessRequest,
     ) -> Result<ProcessInfo, AppError> {
-        let req = ParsedUpdateProcessRequest::parse(req)?;
-
         let existing = self
             .load_definition(&req.id)
             .await?
@@ -1660,8 +1062,6 @@ impl ProcessManager {
 
     /// Get logs for a process.
     pub async fn get_logs(&self, req: GetLogsRequest) -> Result<LogsResponse, AppError> {
-        let req = ParsedGetLogsRequest::parse(req)?;
-
         // Verify process exists
         let definition = self
             .load_definition(&req.id)
@@ -2329,20 +1729,20 @@ mod tests {
         let logs_0 = pm
             .get_logs(GetLogsRequest {
                 id: id.clone(),
-                stream: "stdout".to_string(),
+                stream: LogStream::Stdout,
                 lines: 100,
                 offset: 0,
-                instance: Some(0),
+                instance: 0,
             })
             .await
             .unwrap();
         let logs_1 = pm
             .get_logs(GetLogsRequest {
                 id,
-                stream: "stdout".to_string(),
+                stream: LogStream::Stdout,
                 lines: 100,
                 offset: 0,
-                instance: Some(1),
+                instance: 1,
             })
             .await
             .unwrap();
@@ -2351,95 +1751,6 @@ mod tests {
         assert_eq!(logs_1.instance, 1);
         assert!(!logs_0.lines.is_empty());
         assert!(!logs_1.lines.is_empty());
-    }
-
-    #[test]
-    fn test_update_process_parse_accepts_partial_request() {
-        let parsed = ParsedUpdateProcessRequest::parse(UpdateProcessRequest {
-            id: "process-1".to_string(),
-            name: Some("renamed".to_string()),
-            command: None,
-            args: None,
-            cwd: None,
-            env: None,
-            restart_policy: None,
-            auto_start: None,
-            group_name: None,
-            log_config: None,
-            run_as: None,
-            instance_count: None,
-        })
-        .unwrap();
-
-        assert_eq!(parsed.id, "process-1");
-        assert_eq!(parsed.name, Some("renamed".to_string()));
-        assert!(parsed.command.is_none());
-        assert!(parsed.restart_policy.is_none());
-    }
-
-    #[test]
-    fn test_update_process_parse_rejects_invalid_fields() {
-        let err = ParsedUpdateProcessRequest::parse(UpdateProcessRequest {
-            id: "   ".to_string(),
-            name: Some("   ".to_string()),
-            command: Some("/path/that/does/not/exist".to_string()),
-            args: None,
-            cwd: Some("/path/that/does/not/exist".to_string()),
-            env: None,
-            restart_policy: Some(RestartPolicy {
-                strategy: RestartStrategy::OnFailure,
-                max_retries: Some(3),
-                delay_ms: 0,
-                backoff_multiplier: 0.5,
-            }),
-            auto_start: None,
-            group_name: None,
-            log_config: Some(ProcessLogConfig {
-                max_file_size: 100,
-                max_files: 0,
-            }),
-            run_as: None,
-            instance_count: Some(0),
-        })
-        .unwrap_err();
-
-        match err {
-            AppError::BadRequestWithDetails { details, .. } => {
-                assert!(details.iter().any(|d| d.field == "id"));
-                assert!(details.iter().any(|d| d.field == "name"));
-                assert!(details.iter().any(|d| d.field == "command"));
-                assert!(details.iter().any(|d| d.field == "cwd"));
-                assert!(details.iter().any(|d| d.field == "restart_policy.delay_ms"));
-                assert!(details
-                    .iter()
-                    .any(|d| d.field == "restart_policy.backoff_multiplier"));
-                assert!(details.iter().any(|d| d.field == "log_config.max_files"));
-                assert!(details.iter().any(|d| d.field == "instance_count"));
-            }
-            other => panic!("Expected BadRequestWithDetails, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_update_process_deserialize_group_name_null_as_clear() {
-        let parsed: UpdateProcessRequest = serde_json::from_value(serde_json::json!({
-            "id": "process-1",
-            "group_name": null
-        }))
-        .unwrap();
-
-        assert_eq!(parsed.group_name, Some(None));
-    }
-
-    #[test]
-    fn test_update_process_deserialize_run_as_null_as_clear() {
-        let parsed: UpdateProcessRequest = serde_json::from_value(serde_json::json!({
-            "id": "process-1",
-            "run_as": null
-        }))
-        .unwrap();
-
-        assert_eq!(parsed.run_as, Some(None));
     }
 
     #[tokio::test]
@@ -2666,160 +1977,6 @@ mod tests {
         assert_eq!(event.payload["process_id"], serde_json::json!(id));
         assert_eq!(event.payload["restarted"], false);
         assert_eq!(event.payload["changed_fields"], serde_json::json!(["name"]));
-    }
-
-    #[tokio::test]
-    async fn test_create_process_rejects_empty_name() {
-        let (pm, _pool) = test_pm().await;
-
-        let err = pm
-            .create_process(CreateProcessRequest {
-                name: "   ".to_string(),
-                command: "echo".to_string(),
-                args: vec!["hello".to_string()],
-                cwd: "/tmp".to_string(),
-                env: HashMap::new(),
-                restart_policy: RestartPolicy::default(),
-                auto_start: false,
-                group_name: None,
-                log_config: ProcessLogConfig::default(),
-                run_as: None,
-                instance_count: 1,
-            })
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, AppError::BadRequestWithDetails { .. }));
-    }
-
-    #[tokio::test]
-    async fn test_create_process_rejects_zero_log_max_files() {
-        let (pm, _pool) = test_pm().await;
-
-        let err = pm
-            .create_process(CreateProcessRequest {
-                name: "test-log".to_string(),
-                command: "echo".to_string(),
-                args: vec!["hello".to_string()],
-                cwd: "/tmp".to_string(),
-                env: HashMap::new(),
-                restart_policy: RestartPolicy::default(),
-                auto_start: false,
-                group_name: None,
-                log_config: ProcessLogConfig {
-                    max_file_size: 1024,
-                    max_files: 0,
-                },
-                run_as: None,
-                instance_count: 1,
-            })
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, AppError::BadRequestWithDetails { .. }));
-    }
-
-    #[tokio::test]
-    async fn test_get_logs_rejects_invalid_stream() {
-        let (pm, _pool) = test_pm().await;
-
-        let err = pm
-            .get_logs(GetLogsRequest {
-                id: "proc-id".to_string(),
-                stream: "invalid".to_string(),
-                lines: 200,
-                offset: 0,
-                instance: None,
-            })
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, AppError::BadRequestWithDetails { .. }));
-    }
-
-    #[tokio::test]
-    async fn test_get_logs_rejects_zero_lines() {
-        let (pm, _pool) = test_pm().await;
-
-        let err = pm
-            .get_logs(GetLogsRequest {
-                id: "proc-id".to_string(),
-                stream: "all".to_string(),
-                lines: 0,
-                offset: 0,
-                instance: None,
-            })
-            .await
-            .unwrap_err();
-
-        assert!(matches!(err, AppError::BadRequestWithDetails { .. }));
-    }
-
-    #[tokio::test]
-    async fn test_create_process_accumulates_multiple_errors() {
-        let (pm, _pool) = test_pm().await;
-
-        let err = pm
-            .create_process(CreateProcessRequest {
-                name: "   ".to_string(),
-                command: "   ".to_string(),
-                args: vec![],
-                cwd: "/path/that/does/not/exist".to_string(),
-                env: HashMap::new(),
-                restart_policy: RestartPolicy {
-                    strategy: RestartStrategy::OnFailure,
-                    max_retries: Some(3),
-                    delay_ms: 0,
-                    backoff_multiplier: 0.5,
-                },
-                auto_start: false,
-                group_name: None,
-                log_config: ProcessLogConfig {
-                    max_file_size: 100,
-                    max_files: 0,
-                },
-                run_as: None,
-                instance_count: 0,
-            })
-            .await
-            .unwrap_err();
-
-        match err {
-            AppError::BadRequestWithDetails { details, .. } => {
-                assert!(details.len() >= 6);
-                assert!(details.iter().any(|d| d.field == "name"));
-                assert!(details.iter().any(|d| d.field == "command"));
-                assert!(details.iter().any(|d| d.field == "restart_policy.delay_ms"));
-                assert!(details.iter().any(|d| d.field == "log_config.max_files"));
-            }
-            other => panic!("Expected BadRequestWithDetails, got {:?}", other),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_get_logs_accumulates_multiple_errors() {
-        let (pm, _pool) = test_pm().await;
-
-        let err = pm
-            .get_logs(GetLogsRequest {
-                id: "   ".to_string(),
-                stream: "invalid".to_string(),
-                lines: 0,
-                offset: 0,
-                instance: None,
-            })
-            .await
-            .unwrap_err();
-
-        match err {
-            AppError::BadRequestWithDetails { details, .. } => {
-                assert_eq!(details.len(), 3);
-                assert!(details.iter().any(|d| d.field == "id"));
-                assert!(details.iter().any(|d| d.field == "stream"));
-                assert!(details.iter().any(|d| d.field == "lines"));
-            }
-            other => panic!("Expected BadRequestWithDetails, got {:?}", other),
-        }
     }
 
     #[test]

@@ -3,10 +3,11 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::rpc::params::parse_required_params;
-use crate::rpc::router::RpcRouter;
-use crate::services::process_manager::{
-    CreateProcessRequest, GetLogsRequest, ProcessManager, UpdateProcessRequest,
+use crate::rpc::process_params::{
+    parse_create_request, parse_get_logs_request, parse_update_request,
 };
+use crate::rpc::router::RpcRouter;
+use crate::services::process_manager::ProcessManager;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -44,7 +45,7 @@ pub fn register(router: &mut RpcRouter, process_mgr: Arc<ProcessManager>) {
     router.register("process.create", move |params, _ctx| {
         let pm = pm.clone();
         async move {
-            let params = parse_required_params::<CreateProcessRequest>(params)?;
+            let params = parse_create_request(params)?;
             let info = pm.create_process(params).await?;
             Ok(serde_json::to_value(&info).unwrap())
         }
@@ -54,7 +55,7 @@ pub fn register(router: &mut RpcRouter, process_mgr: Arc<ProcessManager>) {
     router.register("process.update", move |params, _ctx| {
         let pm = pm.clone();
         async move {
-            let params = parse_required_params::<UpdateProcessRequest>(params)?;
+            let params = parse_update_request(params)?;
             let info = pm.update_process(params).await?;
             Ok(serde_json::to_value(&info).unwrap())
         }
@@ -104,7 +105,7 @@ pub fn register(router: &mut RpcRouter, process_mgr: Arc<ProcessManager>) {
     router.register("process.logs", move |params, _ctx| {
         let pm = pm.clone();
         async move {
-            let params = parse_required_params::<GetLogsRequest>(params)?;
+            let params = parse_get_logs_request(params)?;
             let logs = pm.get_logs(params).await?;
             Ok(serde_json::to_value(&logs).unwrap())
         }
