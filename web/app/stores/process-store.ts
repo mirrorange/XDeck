@@ -29,6 +29,7 @@ export interface InstanceInfo {
   index: number;
   status: ProcessStatus;
   pid: number | null;
+  pty_session_id: string | null;
   restart_count: number;
   started_at: string | null;
   exit_code: number | null;
@@ -47,6 +48,7 @@ export interface ProcessInfo {
   log_config: ProcessLogConfig;
   run_as: string | null;
   instance_count: number;
+  pty_mode: boolean;
   created_at: string;
   updated_at: string;
   instances: InstanceInfo[];
@@ -64,6 +66,7 @@ export interface CreateProcessRequest {
   log_config?: Partial<ProcessLogConfig>;
   run_as?: string;
   instance_count?: number;
+  pty_mode?: boolean;
 }
 
 export interface UpdateProcessRequest {
@@ -79,6 +82,7 @@ export interface UpdateProcessRequest {
   log_config?: ProcessLogConfig;
   run_as?: string | null;
   instance_count?: number;
+  pty_mode?: boolean;
 }
 
 export interface LogLine {

@@ -1,10 +1,10 @@
 import { NavLink, useLocation } from "react-router";
 import {
   Activity,
-  Box,
   LayoutDashboard,
   LogOut,
   Server,
+  TerminalSquare,
 } from "lucide-react";
 
 import {
@@ -40,6 +40,11 @@ const navItems = [
     title: "Processes",
     url: "/processes",
     icon: Activity,
+  },
+  {
+    title: "Terminal",
+    url: "/terminal",
+    icon: TerminalSquare,
   },
 ];
 

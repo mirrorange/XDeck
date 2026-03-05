@@ -93,6 +93,10 @@ export class RpcClient {
     return this._state;
   }
 
+  get token(): string | null {
+    return this.authToken;
+  }
+
   connect() {
     this.ws.connect();
   }
@@ -242,6 +246,7 @@ export class RpcClient {
   private requiresSessionAuth(method: string): boolean {
     return (
       method.startsWith("process.") ||
+      method.startsWith("pty.") ||
       method === "system.status" ||
       method === "event.subscribe" ||
       method === "event.unsubscribe"

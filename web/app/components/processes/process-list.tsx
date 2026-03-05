@@ -9,6 +9,7 @@ import {
   ScrollText,
   Square,
   Terminal,
+  TerminalSquare,
   Trash2,
 } from "lucide-react";
 
@@ -96,6 +97,12 @@ export function ProcessRow({
                 ×{process.instance_count}
               </Badge>
             )}
+            {process.pty_mode && (
+              <Badge variant="outline" className="text-xs border-violet-500/30 text-violet-500">
+                <TerminalSquare className="mr-1 size-3" />
+                PTY
+              </Badge>
+            )}
             {showGroupBadge && process.group_name && (
               <Badge variant="outline" className="text-xs">
                 {process.group_name}
@@ -129,9 +136,9 @@ export function ProcessRow({
           size="icon"
           className="size-8 text-muted-foreground hover:text-foreground"
           onClick={() => onViewLogs(process.id)}
-          title="View Logs"
+          title={process.pty_mode ? "View Terminal" : "View Logs"}
         >
-          <ScrollText className="size-4" />
+          {process.pty_mode ? <TerminalSquare className="size-4" /> : <ScrollText className="size-4" />}
         </Button>
 
         {isStopped && (

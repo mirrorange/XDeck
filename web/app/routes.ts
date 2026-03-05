@@ -16,5 +16,6 @@ export default [
     index("routes/home.tsx"),
     route("dashboard", "routes/dashboard.tsx"),
     route("processes", "routes/processes.tsx"),
+    route("terminal", "routes/terminal.tsx"),
   ]),
 ] satisfies RouteConfig;

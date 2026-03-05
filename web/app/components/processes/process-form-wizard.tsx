@@ -211,6 +211,24 @@ export function ProcessFormSections({
             </p>
           </div>
         </div>
+
+        <div className="flex items-center gap-3 rounded-lg border p-3">
+          <input
+            type="checkbox"
+            id={fieldId("ptymode")}
+            checked={form.ptyMode}
+            onChange={(e) => updateForm("ptyMode", e.target.checked)}
+            className="size-4 rounded"
+          />
+          <div>
+            <Label htmlFor={fieldId("ptymode")} className="cursor-pointer">
+              PTY Mode
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              Run in a pseudo-terminal for interactive processes (e.g. shells, REPLs). Enables terminal view in process details.
+            </p>
+          </div>
+        </div>
       </div>
     );
   }

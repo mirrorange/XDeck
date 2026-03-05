@@ -24,6 +24,7 @@ export interface ProcessFormState {
   logMaxFiles: string;
   runAs: string;
   instanceCount: string;
+  ptyMode: boolean;
 }
 
 export const defaultForm: ProcessFormState = {
@@ -43,6 +44,7 @@ export const defaultForm: ProcessFormState = {
   logMaxFiles: "5",
   runAs: "",
   instanceCount: "1",
+  ptyMode: false,
 };
 
 function buildEnvFromForm(form: ProcessFormState): Record<string, string> {
@@ -99,6 +101,7 @@ export function buildCreateRequest(form: ProcessFormState, isWindows: boolean): 
     },
     run_as: !isWindows && form.runAs.trim() ? form.runAs.trim() : undefined,
     instance_count: Math.max(1, Math.min(100, Number(form.instanceCount) || 1)),
+    pty_mode: form.ptyMode || undefined,
   };
 }
 
@@ -174,6 +177,8 @@ export function buildEditRequestDiff(
   const nextInstanceCount = Math.max(1, Math.min(100, Number(form.instanceCount) || 1));
   if (target.instance_count !== nextInstanceCount) req.instance_count = nextInstanceCount;
 
+  if (target.pty_mode !== form.ptyMode) req.pty_mode = form.ptyMode;
+
   const willRestart =
     getAggregateStatus(target.instances) === "running" &&
     (req.command !== undefined ||
@@ -205,5 +210,6 @@ export function toFormState(process: ProcessInfo): ProcessFormState {
     logMaxFiles: String(process.log_config.max_files),
     runAs: process.run_as ?? "",
     instanceCount: String(process.instance_count),
+    ptyMode: process.pty_mode ?? false,
   };
 }

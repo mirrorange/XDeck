@@ -10,6 +10,7 @@ import {
   ProcessGroup,
   ProcessRow,
 } from "~/components/processes/process-list";
+import { ProcessPtyView, ProcessPtyPlaceholder } from "~/components/terminal/ProcessPtyView";
 import { Card, CardContent, CardDescription, CardTitle } from "~/components/ui/card";
 import { useProcessStore } from "~/stores/process-store";
 
@@ -96,6 +97,48 @@ export default function ProcessesPage() {
   const hasGroups = grouped.size > 1 || (grouped.size === 1 && !grouped.has(null));
 
   if (viewingLogs && logProcess) {
+    // PTY mode: show terminal view if there's an active PTY session
+    const ptySessionId = logProcess.pty_mode
+      ? logProcess.instances.find((i) => i.pty_session_id)?.pty_session_id ?? null
+      : null;
+
+    if (logProcess.pty_mode && ptySessionId) {
+      return (
+        <>
+          <AppHeader title="Process Terminal" />
+          <div className="flex-1 overflow-hidden">
+            <ProcessPtyView
+              sessionId={ptySessionId}
+              processName={logProcess.name}
+              onClose={() => setViewingLogs(null)}
+            />
+          </div>
+        </>
+      );
+    }
+
+    if (logProcess.pty_mode && !ptySessionId) {
+      return (
+        <>
+          <AppHeader title="Process Terminal" />
+          <div className="flex-1 overflow-hidden">
+            <div className="flex h-full flex-col">
+              <div className="flex h-10 items-center justify-between border-b bg-background/80 px-3">
+                <span className="text-sm font-medium">{logProcess.name}</span>
+                <button
+                  className="text-xs text-muted-foreground hover:text-foreground"
+                  onClick={() => setViewingLogs(null)}
+                >
+                  Back
+                </button>
+              </div>
+              <ProcessPtyPlaceholder />
+            </div>
+          </div>
+        </>
+      );
+    }
+
     return (
       <>
         <AppHeader title="Process Logs" />
