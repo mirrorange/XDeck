@@ -410,11 +410,11 @@ xdeck.system.terminal     - 执行命令
 
 > 目标：跑通核心架构，实现最小可用版本
 
-- [ ] Daemon 骨架搭建（Axum + WebSocket + SQLite）
-- [ ] 前端项目初始化（Vite + React Router v7 + shadcn/ui）
-- [ ] 进程守护基础功能（启动/停止/重启/自动重启/日志）
-- [ ] 仪表盘（系统状态监控）
-- [ ] 用户认证（登录/Token）
+- [x] Daemon 骨架搭建（Axum + WebSocket + SQLite）
+- [x] 前端项目初始化（Vite + React Router v7 + shadcn/ui）
+- [x] 进程守护基础功能（启动/停止/重启/自动重启/日志）
+- [x] 仪表盘（系统状态监控）
+- [x] 用户认证（登录/Token）
 - [ ] Tauri 桌面壳集成
 
 ### Phase 2 — 网站与证书
