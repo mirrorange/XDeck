@@ -3,17 +3,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::services::event_bus::SharedEventBus;
+use crate::services::pty_manager::{CreatePtyRequest, PtyManager, PtySessionType};
 
 // ── Data Structures ─────────────────────────────────────────────
 
@@ -119,6 +121,8 @@ pub struct ProcessDefinition {
     pub run_as: Option<String>,
     #[serde(default = "default_instance_count")]
     pub instance_count: u32,
+    #[serde(default)]
+    pub pty_mode: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -133,6 +137,8 @@ pub struct InstanceInfo {
     pub index: u32,
     pub status: ProcessStatus,
     pub pid: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pty_session_id: Option<String>,
     pub restart_count: u32,
     pub started_at: Option<String>,
     pub exit_code: Option<i32>,
@@ -161,6 +167,7 @@ pub struct CreateProcessRequest {
     /// Run as a specific user (username or UID). Unix only.
     pub run_as: Option<String>,
     pub instance_count: u32,
+    pub pty_mode: bool,
 }
 
 /// Update process request payload (PATCH semantics).
@@ -180,6 +187,7 @@ pub struct UpdateProcessRequest {
     /// `Some(None)` clears run_as.
     pub run_as: Option<Option<String>>,
     pub instance_count: Option<u32>,
+    pub pty_mode: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -242,6 +250,7 @@ pub struct LogLine {
 
 struct RunningProcess {
     child: Option<Child>,
+    pty_session_id: Option<String>,
     status: ProcessStatus,
     pid: Option<u32>,
     restart_count: u32,
@@ -259,12 +268,18 @@ pub struct ProcessManager {
     instances: RwLock<HashMap<(String, u32), Mutex<RunningProcess>>>,
     pool: SqlitePool,
     event_bus: SharedEventBus,
+    pty_manager: Arc<PtyManager>,
     /// Root directory for process log files
     log_dir: PathBuf,
 }
 
 impl ProcessManager {
-    pub fn new(pool: SqlitePool, event_bus: SharedEventBus, data_dir: &Path) -> Arc<Self> {
+    pub fn new(
+        pool: SqlitePool,
+        event_bus: SharedEventBus,
+        pty_manager: Arc<PtyManager>,
+        data_dir: &Path,
+    ) -> Arc<Self> {
         let log_dir = data_dir.join("logs").join("processes");
         // Ensure log directory exists
         if let Err(e) = std::fs::create_dir_all(&log_dir) {
@@ -274,6 +289,7 @@ impl ProcessManager {
             instances: RwLock::new(HashMap::new()),
             pool,
             event_bus,
+            pty_manager,
             log_dir,
         })
     }
@@ -332,6 +348,7 @@ impl ProcessManager {
             log_config: req.log_config,
             run_as: req.run_as,
             instance_count: req.instance_count,
+            pty_mode: req.pty_mode,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -427,11 +444,17 @@ impl ProcessManager {
                 changed_fields.push("instance_count");
             }
         }
+        if let Some(pty_mode) = req.pty_mode {
+            if updated.pty_mode != pty_mode {
+                updated.pty_mode = pty_mode;
+                changed_fields.push("pty_mode");
+            }
+        }
 
         let launch_param_changed = changed_fields.iter().any(|field| {
             matches!(
                 *field,
-                "command" | "args" | "cwd" | "env" | "run_as" | "instance_count"
+                "command" | "args" | "cwd" | "env" | "run_as" | "instance_count" | "pty_mode"
             )
         });
         let is_running = self.is_running(&req.id).await;
@@ -584,6 +607,103 @@ impl ProcessManager {
         }
     }
 
+    fn spawn_pty_log_task(
+        event_bus: SharedEventBus,
+        mut output_rx: broadcast::Receiver<Bytes>,
+        process_id: String,
+        instance_idx: u32,
+        log_dir: PathBuf,
+        log_config: ProcessLogConfig,
+    ) {
+        tokio::spawn(async move {
+            let log_path = log_dir.join("stdout.log");
+            let max_size = log_config.max_file_size;
+            let max_files = log_config.max_files;
+
+            let mut file = match tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .await
+            {
+                Ok(f) => f,
+                Err(err) => {
+                    error!("Failed to open PTY log file {:?}: {}", log_path, err);
+                    return;
+                }
+            };
+
+            let mut current_size = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+            let mut line_buf = String::new();
+
+            loop {
+                let chunk = match output_rx.recv().await {
+                    Ok(bytes) => bytes,
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(
+                            "PTY log subscriber lagged for process {} instance {} (skipped {})",
+                            process_id, instance_idx, skipped
+                        );
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+
+                line_buf.push_str(&String::from_utf8_lossy(&chunk));
+                while let Some(idx) = line_buf.find('\n') {
+                    let mut line = line_buf[..idx].to_string();
+                    if line.ends_with('\r') {
+                        let _ = line.pop();
+                    }
+
+                    let log_line = format!("{}\n", line);
+                    if let Err(err) = file.write_all(log_line.as_bytes()).await {
+                        error!("Failed to write PTY log: {}", err);
+                        return;
+                    }
+                    current_size += log_line.len() as u64;
+
+                    event_bus.publish(
+                        "process.log",
+                        serde_json::json!({
+                            "process_id": process_id,
+                            "instance": instance_idx,
+                            "stream": "stdout",
+                            "line": line,
+                            "timestamp": Utc::now().to_rfc3339(),
+                        }),
+                    );
+
+                    if current_size >= max_size {
+                        let _ = file.flush().await;
+                        drop(file);
+                        rotate_log_files(&log_path, max_files);
+                        file = match tokio::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&log_path)
+                            .await
+                        {
+                            Ok(f) => f,
+                            Err(err) => {
+                                error!("Failed to reopen PTY log file after rotation: {}", err);
+                                return;
+                            }
+                        };
+                        current_size = 0;
+                    }
+
+                    line_buf.drain(..=idx);
+                }
+            }
+
+            if !line_buf.is_empty() {
+                let final_line = std::mem::take(&mut line_buf);
+                let _ = file.write_all(final_line.as_bytes()).await;
+            }
+        });
+    }
+
     /// Internal: Actually spawn the child process and set up monitoring.
     async fn start_process_internal(self: &Arc<Self>, id: &str) -> Result<(), AppError> {
         let def = self
@@ -628,16 +748,96 @@ impl ProcessManager {
 
         proc.status = ProcessStatus::Starting;
 
-        let mut cmd = Self::build_command(def);
         let proc_log_dir = self
             .log_dir
             .join(&def.id)
             .join(format!("instance-{}", instance_idx));
         let _ = std::fs::create_dir_all(&proc_log_dir);
 
+        if def.pty_mode {
+            let pty_name = format!("{}-{}", def.name, instance_idx);
+            match self
+                .pty_manager
+                .create_session(CreatePtyRequest {
+                    name: Some(pty_name),
+                    session_type: PtySessionType::ProcessDaemon {
+                        process_id: def.id.clone(),
+                    },
+                    command: def.command.clone(),
+                    args: def.args.clone(),
+                    cwd: Some(def.cwd.clone()),
+                    env: def.env.clone(),
+                    cols: 80,
+                    rows: 24,
+                })
+                .await
+            {
+                Ok(session_info) => {
+                    let session = self
+                        .pty_manager
+                        .get_session_handle(&session_info.session_id)
+                        .ok_or_else(|| {
+                            AppError::Internal(format!(
+                                "Failed to get PTY session {} after creation",
+                                session_info.session_id
+                            ))
+                        })?;
+
+                    proc.child = None;
+                    proc.pty_session_id = Some(session_info.session_id.clone());
+                    proc.pid = session_info.pid;
+                    proc.status = ProcessStatus::Running;
+                    proc.started_at = Some(Utc::now());
+                    proc.exit_code = None;
+                    proc.cancel_tx = None;
+
+                    Self::spawn_pty_log_task(
+                        self.event_bus.clone(),
+                        session.subscribe_output(),
+                        def.id.clone(),
+                        instance_idx,
+                        proc_log_dir,
+                        def.log_config.clone(),
+                    );
+
+                    self.event_bus.publish(
+                        "process.status_changed",
+                        serde_json::json!({
+                            "process_id": def.id,
+                            "instance": instance_idx,
+                            "status": "running",
+                            "pid": session_info.pid,
+                            "pty_session_id": session_info.session_id,
+                        }),
+                    );
+
+                    info!(
+                        "Started PTY process: {} instance={} (pty_session_id={})",
+                        def.name,
+                        instance_idx,
+                        proc.pty_session_id.as_deref().unwrap_or_default()
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    proc.status = ProcessStatus::Errored;
+                    error!(
+                        "Failed to start PTY process {} instance {}: {}",
+                        def.name, instance_idx, e
+                    );
+                    return Err(AppError::Internal(format!(
+                        "Failed to start PTY process: {}",
+                        e
+                    )));
+                }
+            }
+        }
+
+        let mut cmd = Self::build_command(def);
         match cmd.spawn() {
             Ok(mut child) => {
                 let pid = child.id();
+                proc.pty_session_id = None;
                 proc.pid = pid;
                 proc.status = ProcessStatus::Running;
                 proc.started_at = Some(Utc::now());
@@ -924,6 +1124,7 @@ impl ProcessManager {
             .get(&key)
             .ok_or_else(|| AppError::NotFound(format!("Process {} not found", id)))?;
         let mut proc = instance_mutex.lock().await;
+        let pty_session_id = proc.pty_session_id.clone();
 
         if let Some(cancel_tx) = proc.cancel_tx.take() {
             let _ = cancel_tx.send(());
@@ -934,8 +1135,15 @@ impl ProcessManager {
         }
 
         proc.child = None;
+        proc.pty_session_id = None;
         proc.pid = None;
         proc.status = ProcessStatus::Stopped;
+        drop(proc);
+        drop(instances);
+
+        if let Some(session_id) = pty_session_id {
+            let _ = self.pty_manager.close_session(&session_id).await;
+        }
 
         self.event_bus.publish(
             "process.status_changed",
@@ -969,6 +1177,7 @@ impl ProcessManager {
             instances.entry(key).or_insert_with(|| {
                 Mutex::new(RunningProcess {
                     child: None,
+                    pty_session_id: None,
                     status: ProcessStatus::Created,
                     pid: None,
                     restart_count: 0,
@@ -1161,6 +1370,7 @@ impl ProcessManager {
                         index: idx,
                         status: proc.status.clone(),
                         pid: proc.pid,
+                        pty_session_id: proc.pty_session_id.clone(),
                         restart_count: proc.restart_count,
                         started_at: proc.started_at.map(|t| t.to_rfc3339()),
                         exit_code: proc.exit_code,
@@ -1170,6 +1380,7 @@ impl ProcessManager {
                         index: idx,
                         status: ProcessStatus::Created,
                         pid: None,
+                        pty_session_id: None,
                         restart_count: 0,
                         started_at: None,
                         exit_code: None,
@@ -1202,6 +1413,7 @@ impl ProcessManager {
                     index: idx,
                     status: proc.status.clone(),
                     pid: proc.pid,
+                    pty_session_id: proc.pty_session_id.clone(),
                     restart_count: proc.restart_count,
                     started_at: proc.started_at.map(|t| t.to_rfc3339()),
                     exit_code: proc.exit_code,
@@ -1211,6 +1423,7 @@ impl ProcessManager {
                     index: idx,
                     status: ProcessStatus::Created,
                     pid: None,
+                    pty_session_id: None,
                     restart_count: 0,
                     started_at: None,
                     exit_code: None,
@@ -1281,9 +1494,9 @@ impl ProcessManager {
     ) -> Result<Vec<ProcessDefinition>, AppError> {
         let rows: Vec<(
             String, String, String, String, String,
-            String, String, i32, Option<String>, String, Option<String>, i64, String, String,
+            String, String, i32, Option<String>, String, Option<String>, i64, i32, String, String,
         )> = sqlx::query_as(
-            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, created_at, updated_at FROM processes WHERE group_name = ?1 ORDER BY created_at",
+            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, created_at, updated_at FROM processes WHERE group_name = ?1 ORDER BY created_at",
         )
         .bind(group_name)
         .fetch_all(&self.pool)
@@ -1304,8 +1517,9 @@ impl ProcessManager {
                 log_config: serde_json::from_str(&r.9).unwrap_or_default(),
                 run_as: r.10,
                 instance_count: u32::try_from(r.11).unwrap_or(default_instance_count()),
-                created_at: r.12,
-                updated_at: r.13,
+                pty_mode: r.12 != 0,
+                created_at: r.13,
+                updated_at: r.14,
             })
             .collect())
     }
@@ -1317,7 +1531,7 @@ impl ProcessManager {
         let log_config_json = serde_json::to_string(&def.log_config).unwrap();
 
         sqlx::query(
-            "INSERT OR REPLACE INTO processes (id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT OR REPLACE INTO processes (id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         )
         .bind(&def.id)
         .bind(&def.name)
@@ -1331,6 +1545,7 @@ impl ProcessManager {
         .bind(&log_config_json)
         .bind(&def.run_as)
         .bind(def.instance_count as i64)
+        .bind(def.pty_mode as i32)
         .bind(&def.created_at)
         .bind(&def.updated_at)
         .execute(&self.pool)
@@ -1342,9 +1557,9 @@ impl ProcessManager {
     async fn load_definition(&self, id: &str) -> Result<Option<ProcessDefinition>, AppError> {
         let row: Option<(
             String, String, String, String, String,
-            String, String, i32, Option<String>, String, Option<String>, i64, String, String,
+            String, String, i32, Option<String>, String, Option<String>, i64, i32, String, String,
         )> = sqlx::query_as(
-            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, created_at, updated_at FROM processes WHERE id = ?1",
+            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, created_at, updated_at FROM processes WHERE id = ?1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -1363,17 +1578,18 @@ impl ProcessManager {
             log_config: serde_json::from_str(&r.9).unwrap_or_default(),
             run_as: r.10,
             instance_count: u32::try_from(r.11).unwrap_or(default_instance_count()),
-            created_at: r.12,
-            updated_at: r.13,
+            pty_mode: r.12 != 0,
+            created_at: r.13,
+            updated_at: r.14,
         }))
     }
 
     async fn load_all_definitions(&self) -> Result<Vec<ProcessDefinition>, AppError> {
         let rows: Vec<(
             String, String, String, String, String,
-            String, String, i32, Option<String>, String, Option<String>, i64, String, String,
+            String, String, i32, Option<String>, String, Option<String>, i64, i32, String, String,
         )> = sqlx::query_as(
-            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, created_at, updated_at FROM processes ORDER BY created_at",
+            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, created_at, updated_at FROM processes ORDER BY created_at",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1393,8 +1609,9 @@ impl ProcessManager {
                 log_config: serde_json::from_str(&r.9).unwrap_or_default(),
                 run_as: r.10,
                 instance_count: u32::try_from(r.11).unwrap_or(default_instance_count()),
-                created_at: r.12,
-                updated_at: r.13,
+                pty_mode: r.12 != 0,
+                created_at: r.13,
+                updated_at: r.14,
             })
             .collect();
 
@@ -1556,8 +1773,9 @@ mod tests {
         let pool = crate::db::connect_in_memory().await.unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
         let event_bus = Arc::new(EventBus::default());
+        let pty_manager = PtyManager::new(event_bus.clone(), Duration::from_secs(30 * 60));
         let tmp_dir = std::env::temp_dir().join(format!("xdeck-test-{}", uuid::Uuid::new_v4()));
-        let pm = ProcessManager::new(pool.clone(), event_bus, &tmp_dir);
+        let pm = ProcessManager::new(pool.clone(), event_bus, pty_manager, &tmp_dir);
         (pm, pool)
     }
 
@@ -1577,6 +1795,7 @@ mod tests {
             log_config: ProcessLogConfig::default(),
             run_as: None,
             instance_count: 1,
+            pty_mode: false,
         }
     }
 
@@ -1603,6 +1822,7 @@ mod tests {
                 log_config: ProcessLogConfig::default(),
                 run_as: None,
                 instance_count: 1,
+                pty_mode: false,
             })
             .await
             .unwrap();
@@ -1627,6 +1847,7 @@ mod tests {
                 log_config: ProcessLogConfig::default(),
                 run_as: None,
                 instance_count: 3,
+                pty_mode: false,
             })
             .await
             .unwrap();
@@ -1718,6 +1939,7 @@ mod tests {
                 log_config: ProcessLogConfig::default(),
                 run_as: None,
                 instance_count: 2,
+                pty_mode: false,
             })
             .await
             .unwrap();
@@ -1783,6 +2005,7 @@ mod tests {
                 log_config: None,
                 run_as: None,
                 instance_count: None,
+                pty_mode: None,
             })
             .await
             .unwrap();
@@ -1822,6 +2045,7 @@ mod tests {
                 log_config: None,
                 run_as: None,
                 instance_count: None,
+                pty_mode: None,
             })
             .await
             .unwrap();
@@ -1867,6 +2091,7 @@ mod tests {
                 log_config: None,
                 run_as: None,
                 instance_count: None,
+                pty_mode: None,
             })
             .await
             .unwrap();
@@ -1904,6 +2129,7 @@ mod tests {
                 log_config: None,
                 run_as: None,
                 instance_count: None,
+                pty_mode: None,
             })
             .await
             .unwrap();
@@ -1936,6 +2162,7 @@ mod tests {
                 log_config: None,
                 run_as: None,
                 instance_count: None,
+                pty_mode: None,
             })
             .await
             .unwrap();
@@ -1968,6 +2195,7 @@ mod tests {
             log_config: None,
             run_as: None,
             instance_count: None,
+            pty_mode: None,
         })
         .await
         .unwrap();
@@ -2016,6 +2244,7 @@ mod tests {
                 log_config: None,
                 run_as: None,
                 instance_count: Some(2),
+                pty_mode: None,
             })
             .await
             .unwrap();
@@ -2024,6 +2253,101 @@ mod tests {
         assert_eq!(instance(&updated, 0).status, ProcessStatus::Running);
         assert_eq!(instance(&updated, 1).status, ProcessStatus::Running);
         assert_ne!(instance(&updated, 0).pid, old_pid);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_create_pty_mode_process() {
+        let (pm, _pool) = test_pm().await;
+        let mut req = sleep_process_request("pty-create");
+        req.pty_mode = true;
+
+        let created = pm.create_process(req).await.unwrap();
+        assert!(created.definition.pty_mode);
+
+        pm.start_process(&created.definition.id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let running = pm.get_process(&created.definition.id).await.unwrap();
+        assert_eq!(instance(&running, 0).status, ProcessStatus::Running);
+        assert!(instance(&running, 0).pty_session_id.is_some());
+
+        pm.stop_process(&created.definition.id).await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_stop_pty_mode_cleans_session() {
+        let (pm, _pool) = test_pm().await;
+        let mut req = sleep_process_request("pty-stop-clean");
+        req.pty_mode = true;
+        let created = pm.create_process(req).await.unwrap();
+        let process_id = created.definition.id.clone();
+
+        pm.start_process(&process_id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let running = pm.get_process(&process_id).await.unwrap();
+        let session_id = instance(&running, 0)
+            .pty_session_id
+            .clone()
+            .expect("pty session should be set when pty mode is enabled");
+        assert!(pm.pty_manager.get_session_handle(&session_id).is_some());
+
+        pm.stop_process(&process_id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(pm.pty_manager.get_session_handle(&session_id).is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_pty_output_flows_to_logs() {
+        let (pm, _pool) = test_pm().await;
+        let info = pm
+            .create_process(CreateProcessRequest {
+                name: "pty-log-flow".to_string(),
+                command: "sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    "echo pty-output-line && sleep 2".to_string(),
+                ],
+                cwd: "/tmp".to_string(),
+                env: HashMap::new(),
+                restart_policy: RestartPolicy {
+                    strategy: RestartStrategy::Never,
+                    ..Default::default()
+                },
+                auto_start: false,
+                group_name: None,
+                log_config: ProcessLogConfig::default(),
+                run_as: None,
+                instance_count: 1,
+                pty_mode: true,
+            })
+            .await
+            .unwrap();
+        let id = info.definition.id;
+
+        pm.start_process(&id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        let logs = pm
+            .get_logs(GetLogsRequest {
+                id: id.clone(),
+                stream: LogStream::Stdout,
+                lines: 200,
+                offset: 0,
+                instance: 0,
+            })
+            .await
+            .unwrap();
+
+        assert!(logs
+            .lines
+            .iter()
+            .any(|line| line.line.contains("pty-output-line")));
+
+        let _ = pm.stop_process(&id).await;
     }
 
     #[tokio::test]

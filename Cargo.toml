@@ -46,6 +46,8 @@ toml = "0.8"
 dashmap = "6"
 rand = "0.8"
 dirs = "6"
+bytes = "1"
+portable-pty = "0.9"
 
 # CLI
 clap = { version = "4", features = ["derive"] }

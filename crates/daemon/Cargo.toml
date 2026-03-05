@@ -46,6 +46,8 @@ toml.workspace = true
 dashmap.workspace = true
 rand.workspace = true
 dirs.workspace = true
+bytes.workspace = true
+portable-pty.workspace = true
 
 # CLI
 clap.workspace = true

@@ -159,6 +159,7 @@ mod tests {
     use crate::rpc::types::JsonRpcRequest;
     use crate::services::event_bus::EventBus;
     use crate::services::process_manager::{ProcessLogConfig, RestartPolicy};
+    use crate::services::pty_manager::PtyManager;
 
     async fn test_ctx() -> RequestContext {
         let pool = crate::db::connect_in_memory().await.unwrap();
@@ -170,9 +171,11 @@ mod tests {
     async fn test_process_update_rpc_roundtrip() {
         let ctx = test_ctx().await;
         let event_bus = Arc::new(EventBus::default());
+        let pty_mgr = PtyManager::new(event_bus.clone(), std::time::Duration::from_secs(30 * 60));
         let process_mgr = ProcessManager::new(
             ctx.pool.clone(),
             event_bus,
+            pty_mgr,
             &std::env::temp_dir().join(format!("xdeck-rpc-{}", uuid::Uuid::new_v4())),
         );
 
@@ -228,9 +231,11 @@ mod tests {
     async fn test_process_update_rpc_can_clear_group() {
         let ctx = test_ctx().await;
         let event_bus = Arc::new(EventBus::default());
+        let pty_mgr = PtyManager::new(event_bus.clone(), std::time::Duration::from_secs(30 * 60));
         let process_mgr = ProcessManager::new(
             ctx.pool.clone(),
             event_bus,
+            pty_mgr,
             &std::env::temp_dir().join(format!("xdeck-rpc-{}", uuid::Uuid::new_v4())),
         );
 

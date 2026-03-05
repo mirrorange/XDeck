@@ -31,6 +31,8 @@ struct CreateProcessParams {
     run_as: Option<String>,
     #[serde(default = "default_instance_count")]
     instance_count: u32,
+    #[serde(default)]
+    pty_mode: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +52,7 @@ struct UpdateProcessParams {
     #[serde(default, deserialize_with = "deserialize_patch_nullable_string")]
     run_as: Option<Option<String>>,
     instance_count: Option<u32>,
+    pty_mode: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,6 +167,7 @@ fn parse_create_payload(raw: CreateProcessParams) -> Result<CreateProcessRequest
         log_config,
         run_as,
         instance_count,
+        pty_mode,
     } = raw;
 
     let mut issues = Vec::new();
@@ -210,6 +214,7 @@ fn parse_create_payload(raw: CreateProcessParams) -> Result<CreateProcessRequest
         log_config: log_config.expect("log_config is present when issues is empty"),
         run_as: run_as.and_then(trimmed_non_empty),
         instance_count: instance_count.expect("instance_count is present when issues is empty"),
+        pty_mode,
     })
 }
 
@@ -227,6 +232,7 @@ fn parse_update_payload(raw: UpdateProcessParams) -> Result<UpdateProcessRequest
         log_config,
         run_as,
         instance_count,
+        pty_mode,
     } = raw;
 
     let mut issues = Vec::new();
@@ -287,6 +293,7 @@ fn parse_update_payload(raw: UpdateProcessParams) -> Result<UpdateProcessRequest
         log_config: log_config.expect("log_config is present when issues is empty"),
         run_as: run_as.map(|v| v.and_then(trimmed_non_empty)),
         instance_count: instance_count.expect("instance_count is present when issues is empty"),
+        pty_mode,
     })
 }
 
@@ -566,6 +573,35 @@ mod tests {
         assert_eq!(parsed.name, Some("renamed".to_string()));
         assert!(parsed.command.is_none());
         assert!(parsed.restart_policy.is_none());
+        assert!(parsed.pty_mode.is_none());
+    }
+
+    #[test]
+    fn test_create_process_defaults_pty_mode_to_false() {
+        let parsed = parse_create_request(Some(serde_json::json!({
+            "name": "proc-1",
+            "command": "echo",
+            "args": ["hello"],
+            "cwd": "/tmp",
+            "env": {},
+            "restart_policy": {
+                "strategy": "never",
+                "max_retries": null,
+                "delay_ms": 1000,
+                "backoff_multiplier": 2.0
+            },
+            "auto_start": false,
+            "group_name": null,
+            "log_config": {
+                "max_file_size": 1048576,
+                "max_files": 3
+            },
+            "run_as": null,
+            "instance_count": 1
+        })))
+        .unwrap();
+
+        assert!(!parsed.pty_mode);
     }
 
     #[test]

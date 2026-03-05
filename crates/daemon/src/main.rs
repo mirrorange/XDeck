@@ -59,6 +59,7 @@ async fn main() -> Result<()> {
 
     // Build app state
     let app_state = api::AppState::new(config.clone(), pool);
+    app_state.pty_manager.start_idle_reaper();
 
     // Start system monitor
     let monitor = SystemMonitor::new(app_state.event_bus.clone(), app_state.pool.clone());
