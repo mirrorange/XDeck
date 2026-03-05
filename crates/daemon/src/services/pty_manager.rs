@@ -73,12 +73,55 @@ pub struct PtySession {
     child: Mutex<Option<Box<dyn Child + Send + Sync>>>,
     client_count: AtomicU32,
     last_client_disconnect: Mutex<Option<Instant>>,
+    resize_state: Mutex<()>,
+    client_sizes: Mutex<HashMap<String, PtySize>>,
     size: Mutex<PtySize>,
     pid: Option<u32>,
     pub created_at: DateTime<Utc>,
 }
 
 impl PtySession {
+    fn apply_size(&self, size: PtySize) -> Result<(), AppError> {
+        {
+            let current = self
+                .size
+                .lock()
+                .map_err(|_| AppError::Internal("PTY size mutex poisoned".to_string()))?;
+            if current.cols == size.cols && current.rows == size.rows {
+                return Ok(());
+            }
+        }
+
+        {
+            let master = self
+                .master
+                .lock()
+                .map_err(|_| AppError::Internal("PTY master mutex poisoned".to_string()))?;
+            master
+                .resize(size)
+                .map_err(|e| AppError::Internal(format!("Failed to resize PTY: {}", e)))?;
+        }
+
+        let mut current_size = self
+            .size
+            .lock()
+            .map_err(|_| AppError::Internal("PTY size mutex poisoned".to_string()))?;
+        *current_size = size;
+
+        Ok(())
+    }
+
+    fn min_size_from_clients(client_sizes: &HashMap<String, PtySize>) -> Option<PtySize> {
+        let cols = client_sizes.values().map(|size| size.cols).min()?;
+        let rows = client_sizes.values().map(|size| size.rows).min()?;
+        Some(PtySize {
+            cols,
+            rows,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+    }
+
     pub fn write(&self, data: &[u8]) -> Result<(), AppError> {
         let mut writer = self
             .writer
@@ -110,6 +153,10 @@ impl PtySession {
                 "PTY size cols/rows must be greater than 0".to_string(),
             ));
         }
+        let _resize_guard = self
+            .resize_state
+            .lock()
+            .map_err(|_| AppError::Internal("PTY resize mutex poisoned".to_string()))?;
 
         let size = PtySize {
             cols,
@@ -118,40 +165,105 @@ impl PtySession {
             pixel_height: 0,
         };
 
-        {
-            let master = self
-                .master
-                .lock()
-                .map_err(|_| AppError::Internal("PTY master mutex poisoned".to_string()))?;
-            master
-                .resize(size)
-                .map_err(|e| AppError::Internal(format!("Failed to resize PTY: {}", e)))?;
-        }
+        self.apply_size(size)?;
 
-        let mut current_size = self
-            .size
-            .lock()
-            .map_err(|_| AppError::Internal("PTY size mutex poisoned".to_string()))?;
-        *current_size = size;
+        if let Ok(mut client_sizes) = self.client_sizes.lock() {
+            for client_size in client_sizes.values_mut() {
+                *client_size = size;
+            }
+        }
 
         Ok(())
     }
 
-    pub fn client_connected(&self) {
-        self.client_count.fetch_add(1, Ordering::SeqCst);
-        if let Ok(mut last_disconnect) = self.last_client_disconnect.lock() {
-            *last_disconnect = None;
+    pub fn resize_for_client(&self, client_id: &str, cols: u16, rows: u16) -> Result<(), AppError> {
+        if cols == 0 || rows == 0 {
+            return Err(AppError::BadRequest(
+                "PTY size cols/rows must be greater than 0".to_string(),
+            ));
         }
+        let _resize_guard = self
+            .resize_state
+            .lock()
+            .map_err(|_| AppError::Internal("PTY resize mutex poisoned".to_string()))?;
+
+        let target_size = {
+            let mut client_sizes = self
+                .client_sizes
+                .lock()
+                .map_err(|_| AppError::Internal("PTY client size mutex poisoned".to_string()))?;
+
+            client_sizes.insert(
+                client_id.to_string(),
+                PtySize {
+                    cols,
+                    rows,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                },
+            );
+            Self::min_size_from_clients(&client_sizes).ok_or_else(|| {
+                AppError::Internal("Failed to compute PTY size from connected clients".to_string())
+            })?
+        };
+
+        self.apply_size(target_size)?;
+        Ok(())
     }
 
-    pub fn client_disconnected(&self) {
+    pub fn client_connected(&self, client_id: &str) -> Result<(), AppError> {
+        let _resize_guard = self
+            .resize_state
+            .lock()
+            .map_err(|_| AppError::Internal("PTY resize mutex poisoned".to_string()))?;
+        let size = *self
+            .size
+            .lock()
+            .map_err(|_| AppError::Internal("PTY size mutex poisoned".to_string()))?;
+        let mut client_sizes = self
+            .client_sizes
+            .lock()
+            .map_err(|_| AppError::Internal("PTY client size mutex poisoned".to_string()))?;
+        client_sizes.insert(client_id.to_string(), size);
+
+        self.client_count.fetch_add(1, Ordering::SeqCst);
+        let mut last_disconnect = self
+            .last_client_disconnect
+            .lock()
+            .map_err(|_| AppError::Internal("PTY disconnect mutex poisoned".to_string()))?;
+        *last_disconnect = None;
+        Ok(())
+    }
+
+    pub fn client_disconnected(&self, client_id: &str) -> Result<(), AppError> {
         let prev = self.client_count.fetch_sub(1, Ordering::SeqCst);
         if prev <= 1 {
             self.client_count.store(0, Ordering::SeqCst);
-            if let Ok(mut last_disconnect) = self.last_client_disconnect.lock() {
-                *last_disconnect = Some(Instant::now());
-            }
+            let mut last_disconnect = self
+                .last_client_disconnect
+                .lock()
+                .map_err(|_| AppError::Internal("PTY disconnect mutex poisoned".to_string()))?;
+            *last_disconnect = Some(Instant::now());
         }
+        let _resize_guard = self
+            .resize_state
+            .lock()
+            .map_err(|_| AppError::Internal("PTY resize mutex poisoned".to_string()))?;
+
+        let target_size = {
+            let mut client_sizes = self
+                .client_sizes
+                .lock()
+                .map_err(|_| AppError::Internal("PTY client size mutex poisoned".to_string()))?;
+            client_sizes.remove(client_id);
+            Self::min_size_from_clients(&client_sizes)
+        };
+
+        if let Some(size) = target_size {
+            self.apply_size(size)?;
+        }
+
+        Ok(())
     }
 
     pub fn client_count(&self) -> u32 {
@@ -353,6 +465,8 @@ impl PtyManager {
             child: Mutex::new(Some(child)),
             client_count: AtomicU32::new(0),
             last_client_disconnect: Mutex::new(None),
+            resize_state: Mutex::new(()),
+            client_sizes: Mutex::new(HashMap::new()),
             size: Mutex::new(size),
             pid,
             created_at: Utc::now(),
@@ -600,14 +714,51 @@ mod tests {
         let session = manager.get_session_handle(&created.session_id).unwrap();
         assert_eq!(session.client_count(), 0);
 
-        session.client_connected();
-        session.client_connected();
+        session.client_connected("client-1").unwrap();
+        session.client_connected("client-2").unwrap();
         assert_eq!(session.client_count(), 2);
 
-        session.client_disconnected();
+        session.client_disconnected("client-1").unwrap();
         assert_eq!(session.client_count(), 1);
-        session.client_disconnected();
+        session.client_disconnected("client-2").unwrap();
         assert_eq!(session.client_count(), 0);
+
+        manager.close_session(&created.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_multi_client_resize_uses_minimum_size() {
+        let manager = manager_for_test();
+        let created = manager
+            .create_session(CreatePtyRequest {
+                name: Some("multi-client-resize".to_string()),
+                session_type: PtySessionType::Terminal,
+                command: shell_command(),
+                args: vec![],
+                cwd: None,
+                env: HashMap::new(),
+                cols: 120,
+                rows: 40,
+            })
+            .await
+            .unwrap();
+
+        let session = manager.get_session_handle(&created.session_id).unwrap();
+        session.client_connected("client-1").unwrap();
+        session.resize_for_client("client-1", 120, 40).unwrap();
+
+        session.client_connected("client-2").unwrap();
+        session.resize_for_client("client-2", 80, 24).unwrap();
+
+        let info = session.info();
+        assert_eq!(info.cols, 80);
+        assert_eq!(info.rows, 24);
+
+        session.client_disconnected("client-2").unwrap();
+
+        let info = session.info();
+        assert_eq!(info.cols, 120);
+        assert_eq!(info.rows, 40);
 
         manager.close_session(&created.session_id).await.unwrap();
     }
@@ -630,8 +781,8 @@ mod tests {
             .unwrap();
 
         let session = manager.get_session_handle(&created.session_id).unwrap();
-        session.client_connected();
-        session.client_disconnected();
+        session.client_connected("client-1").unwrap();
+        session.client_disconnected("client-1").unwrap();
 
         assert!(!session.is_idle_timeout(Duration::from_secs(1)));
         tokio::time::sleep(Duration::from_millis(40)).await;

@@ -10,6 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 use super::AppState;
 
@@ -58,11 +59,18 @@ async fn handle_pty_socket(socket: WebSocket, session_id: String, state: AppStat
     let Some(session) = state.pty_manager.get_session_handle(&session_id) else {
         return;
     };
+    let client_id = Uuid::new_v4().to_string();
 
     let (mut sender, mut receiver) = socket.split();
     let mut output_rx = session.subscribe_output();
 
-    session.client_connected();
+    if let Err(err) = session.client_connected(&client_id) {
+        warn!(
+            "Failed to register PTY websocket client for {}: {}",
+            session_id, err
+        );
+        return;
+    }
     publish_client_count_event(&state, &session_id, session.client_count());
     info!("PTY websocket connected: {}", session_id);
 
@@ -73,7 +81,12 @@ async fn handle_pty_socket(socket: WebSocket, session_id: String, state: AppStat
             .await
             .is_err()
     {
-        session.client_disconnected();
+        if let Err(err) = session.client_disconnected(&client_id) {
+            warn!(
+                "Failed to unregister PTY websocket client for {}: {}",
+                session_id, err
+            );
+        }
         publish_client_count_event(&state, &session_id, session.client_count());
         return;
     }
@@ -99,7 +112,7 @@ async fn handle_pty_socket(socket: WebSocket, session_id: String, state: AppStat
                     Message::Text(text) => {
                         match serde_json::from_str::<PtyControlMessage>(&text) {
                             Ok(PtyControlMessage::Resize { cols, rows }) => {
-                                if let Err(err) = session.resize(cols, rows) {
+                                if let Err(err) = session.resize_for_client(&client_id, cols, rows) {
                                     warn!("PTY resize failed for {}: {}", session_id, err);
                                 }
                             }
@@ -133,7 +146,12 @@ async fn handle_pty_socket(socket: WebSocket, session_id: String, state: AppStat
         }
     }
 
-    session.client_disconnected();
+    if let Err(err) = session.client_disconnected(&client_id) {
+        warn!(
+            "Failed to unregister PTY websocket client for {}: {}",
+            session_id, err
+        );
+    }
     publish_client_count_event(&state, &session_id, session.client_count());
     info!("PTY websocket disconnected: {}", session_id);
 }
