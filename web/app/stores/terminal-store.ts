@@ -22,6 +22,26 @@ export interface TerminalTab {
   title: string;
 }
 
+function resolveActiveTabId(activeTabId: string | null, tabs: TerminalTab[]): string | null {
+  if (activeTabId && tabs.some((tab) => tab.id === activeTabId)) {
+    return activeTabId;
+  }
+  return tabs[tabs.length - 1]?.id ?? null;
+}
+
+function removeSessionFromState(
+  state: Pick<TerminalState, "sessions" | "tabs" | "activeTabId">,
+  sessionId: string
+) {
+  const sessions = state.sessions.filter((session) => session.session_id !== sessionId);
+  const tabs = state.tabs.filter((tab) => tab.sessionId !== sessionId);
+  return {
+    sessions,
+    tabs,
+    activeTabId: resolveActiveTabId(state.activeTabId, tabs),
+  };
+}
+
 interface TerminalState {
   /** Remote session list from server. */
   sessions: PtySessionInfo[];
@@ -89,18 +109,7 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
   closeSession: async (sessionId) => {
     const rpc = getRpcClient();
     await rpc.call("pty.close", { session_id: sessionId });
-    set((state) => {
-      const tabs = state.tabs.filter((t) => t.sessionId !== sessionId);
-      const activeTabId =
-        state.activeTabId && tabs.find((t) => t.id === state.activeTabId)
-          ? state.activeTabId
-          : tabs[tabs.length - 1]?.id ?? null;
-      return {
-        sessions: state.sessions.filter((s) => s.session_id !== sessionId),
-        tabs,
-        activeTabId,
-      };
-    });
+    set((state) => removeSessionFromState(state, sessionId));
   },
 
   openTab: (sessionId, title) => {
@@ -149,18 +158,36 @@ export const useTerminalStore = create<TerminalState>((set, get) => ({
     const unsubCreated = rpc.on("event.pty.session_created", (params) => {
       const session = params as PtySessionInfo;
       set((state) => {
-        if (state.sessions.find((s) => s.session_id === session.session_id)) {
-          return state;
+        const sessionExists = state.sessions.some(
+          (existing) => existing.session_id === session.session_id
+        );
+        const sessions = sessionExists
+          ? state.sessions.map((existing) =>
+              existing.session_id === session.session_id ? session : existing
+            )
+          : [...state.sessions, session];
+
+        let tabs = state.tabs;
+        let activeTabId = state.activeTabId;
+
+        if (
+          session.session_type === "terminal" &&
+          !tabs.some((tab) => tab.sessionId === session.session_id)
+        ) {
+          const tabId = `tab-${++tabIdCounter}`;
+          tabs = [...tabs, { id: tabId, sessionId: session.session_id, title: session.name }];
+          if (!activeTabId) {
+            activeTabId = tabId;
+          }
         }
-        return { sessions: [...state.sessions, session] };
+
+        return { sessions, tabs, activeTabId };
       });
     });
 
     const unsubClosed = rpc.on("event.pty.session_closed", (params) => {
       const { session_id } = params as { session_id: string };
-      set((state) => ({
-        sessions: state.sessions.filter((s) => s.session_id !== session_id),
-      }));
+      set((state) => removeSessionFromState(state, session_id));
     });
 
     const unsubClientCount = rpc.on("event.pty.session_client_count", (params) => {

@@ -365,10 +365,10 @@ impl PtyManager {
 
         self.event_bus.publish(
             "pty.session_created",
-            serde_json::json!({
-                "session_id": info.session_id,
-                "session_type": info.session_type,
-                "process_id": info.process_id,
+            serde_json::to_value(&info).unwrap_or_else(|_| {
+                serde_json::json!({
+                    "session_id": info.session_id,
+                })
             }),
         );
         info!("Created PTY session {}", info.session_id);
@@ -636,6 +636,41 @@ mod tests {
         assert!(!session.is_idle_timeout(Duration::from_secs(1)));
         tokio::time::sleep(Duration::from_millis(40)).await;
         assert!(session.is_idle_timeout(Duration::from_millis(10)));
+
+        manager.close_session(&created.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_session_created_event_contains_session_info() {
+        let manager = manager_for_test();
+        let mut events = manager.event_bus.subscribe();
+
+        let created = manager
+            .create_session(CreatePtyRequest {
+                name: Some("event-payload-session".to_string()),
+                session_type: PtySessionType::Terminal,
+                command: shell_command(),
+                args: vec![],
+                cwd: None,
+                env: HashMap::new(),
+                cols: 80,
+                rows: 24,
+            })
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(Duration::from_secs(3), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(event.topic, "pty.session_created");
+        assert_eq!(event.payload["session_id"], created.session_id);
+        assert_eq!(event.payload["name"], created.name);
+        assert_eq!(event.payload["command"], created.command);
+        assert_eq!(event.payload["cols"], created.cols);
+        assert_eq!(event.payload["rows"], created.rows);
+        assert_eq!(event.payload["session_type"], "terminal");
 
         manager.close_session(&created.session_id).await.unwrap();
     }
