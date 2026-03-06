@@ -108,6 +108,7 @@ export default function ProcessesPage() {
           <AppHeader title="Process Terminal" />
           <div className="flex-1 overflow-hidden">
             <ProcessPtyView
+              key={ptySessionId}
               sessionId={ptySessionId}
               processName={logProcess.name}
               onClose={() => setViewingLogs(null)}

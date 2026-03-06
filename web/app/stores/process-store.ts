@@ -253,9 +253,14 @@ export const useProcessStore = create<ProcessState>((set) => ({
           process_id: string;
           instance: number;
           status: ProcessStatus;
-          pid?: number;
-          exit_code?: number;
+          pid?: number | null;
+          exit_code?: number | null;
+          pty_session_id?: string | null;
         };
+        const hasPid = Object.prototype.hasOwnProperty.call(data, "pid");
+        const hasExitCode = Object.prototype.hasOwnProperty.call(data, "exit_code");
+        const hasPtySessionId = Object.prototype.hasOwnProperty.call(data, "pty_session_id");
+
         set((state) => ({
           processes: state.processes.map((process) => {
             if (process.id !== data.process_id) {
@@ -269,10 +274,17 @@ export const useProcessStore = create<ProcessState>((set) => ({
               return {
                 ...inst,
                 status: data.status,
-                pid: data.pid ?? (data.status === "stopped" ? null : inst.pid),
-                exit_code:
-                  data.exit_code ??
-                  (data.status === "running" || data.status === "starting" ? null : inst.exit_code),
+                pid: hasPid ? data.pid ?? null : inst.pid,
+                exit_code: hasExitCode
+                  ? data.exit_code ?? null
+                  : data.status === "running" || data.status === "starting"
+                    ? null
+                    : inst.exit_code,
+                pty_session_id: hasPtySessionId
+                  ? data.pty_session_id ?? null
+                  : data.status === "stopped" || data.status === "errored" || data.status === "failed"
+                    ? null
+                    : inst.pty_session_id,
                 started_at:
                   data.status === "running"
                     ? new Date().toISOString()
