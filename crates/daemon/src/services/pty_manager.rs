@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use serde::Serialize;
+use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -19,6 +20,7 @@ use crate::services::event_bus::SharedEventBus;
 const DEFAULT_OUTPUT_CHANNEL_CAPACITY: usize = 512;
 const DEFAULT_SCROLLBACK_CAPACITY: usize = 64 * 1024;
 const IDLE_REAPER_INTERVAL: Duration = Duration::from_secs(30);
+pub const PTY_SESSION_EXITED_TOPIC: &str = "pty.session_exited";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PtySessionType {
@@ -26,7 +28,7 @@ pub enum PtySessionType {
     ProcessDaemon { process_id: String },
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum PtySessionTypeLabel {
     Terminal,
@@ -61,8 +63,14 @@ pub struct PtySessionInfo {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PtyChildExitState {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PtySessionExitedEvent {
+    pub session_id: String,
+    pub session_type: PtySessionTypeLabel,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub process_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
     pub exit_code: i32,
     pub success: bool,
 }
@@ -76,7 +84,8 @@ pub struct PtySession {
     output_tx: broadcast::Sender<Bytes>,
     scrollback: Arc<Mutex<ScrollbackBuffer>>,
     master: Mutex<Box<dyn MasterPty + Send>>,
-    child: Mutex<Option<Box<dyn Child + Send + Sync>>>,
+    killer: Mutex<Option<Box<dyn ChildKiller + Send + Sync>>>,
+    wait_task: Mutex<Option<JoinHandle<()>>>,
     client_count: AtomicU32,
     last_client_disconnect: Mutex<Option<Instant>>,
     resize_state: Mutex<()>,
@@ -289,45 +298,28 @@ impl PtySession {
     }
 
     pub async fn close(&self) -> Result<(), AppError> {
-        let child = self
-            .child
+        if let Some(mut killer) = self
+            .killer
             .lock()
-            .map_err(|_| AppError::Internal("PTY child mutex poisoned".to_string()))?
+            .map_err(|_| AppError::Internal("PTY killer mutex poisoned".to_string()))?
+            .take()
+        {
+            let _ = killer.kill();
+        }
+
+        let wait_task = self
+            .wait_task
+            .lock()
+            .map_err(|_| AppError::Internal("PTY wait task mutex poisoned".to_string()))?
             .take();
 
-        if let Some(mut child) = child {
-            tokio::task::spawn_blocking(move || {
-                let _ = child.kill();
-                let _ = child.wait();
-            })
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to join PTY close task: {}", e)))?;
+        if let Some(wait_task) = wait_task {
+            wait_task
+                .await
+                .map_err(|e| AppError::Internal(format!("Failed to join PTY close task: {}", e)))?;
         }
 
         Ok(())
-    }
-
-    pub fn try_wait_child(&self) -> Result<Option<PtyChildExitState>, AppError> {
-        let mut child_guard = self
-            .child
-            .lock()
-            .map_err(|_| AppError::Internal("PTY child mutex poisoned".to_string()))?;
-        let Some(child) = child_guard.as_mut() else {
-            return Ok(None);
-        };
-
-        let status = child
-            .try_wait()
-            .map_err(|e| AppError::Internal(format!("Failed to poll PTY child status: {}", e)))?;
-        let Some(status) = status else {
-            return Ok(None);
-        };
-
-        let exit_code = status.exit_code().min(i32::MAX as u32) as i32;
-        let success = status.success();
-        *child_guard = None;
-
-        Ok(Some(PtyChildExitState { exit_code, success }))
     }
 
     pub fn info(&self) -> PtySessionInfo {
@@ -355,6 +347,24 @@ impl PtySession {
             client_count: self.client_count(),
             pid: self.pid,
             created_at: self.created_at.to_rfc3339(),
+        }
+    }
+
+    fn exit_event_payload(&self) -> PtySessionExitedEvent {
+        let (session_type, process_id) = match &self.session_type {
+            PtySessionType::Terminal => (PtySessionTypeLabel::Terminal, None),
+            PtySessionType::ProcessDaemon { process_id } => {
+                (PtySessionTypeLabel::ProcessDaemon, Some(process_id.clone()))
+            }
+        };
+
+        PtySessionExitedEvent {
+            session_id: self.id.clone(),
+            session_type,
+            process_id,
+            pid: self.pid,
+            exit_code: 0,
+            success: false,
         }
     }
 }
@@ -482,6 +492,7 @@ impl PtyManager {
             .await
             .map_err(|e| AppError::Internal(format!("Failed to create PTY task: {}", e)))??;
 
+        let killer = child.clone_killer();
         let session = Arc::new(PtySession {
             id: session_id.clone(),
             name: session_name,
@@ -491,7 +502,8 @@ impl PtyManager {
             output_tx: output_tx.clone(),
             scrollback: scrollback.clone(),
             master: Mutex::new(master),
-            child: Mutex::new(Some(child)),
+            killer: Mutex::new(Some(killer)),
+            wait_task: Mutex::new(None),
             client_count: AtomicU32::new(0),
             last_client_disconnect: Mutex::new(None),
             resize_state: Mutex::new(()),
@@ -502,6 +514,11 @@ impl PtyManager {
         });
 
         pty_output_loop(reader, output_tx, scrollback);
+        let wait_task =
+            pty_child_wait_loop(child, self.event_bus.clone(), session.exit_event_payload());
+        if let Ok(mut wait_task_guard) = session.wait_task.lock() {
+            *wait_task_guard = Some(wait_task);
+        }
 
         self.sessions.insert(session_id.clone(), session.clone());
         let info = session.info();
@@ -567,19 +584,6 @@ impl PtyManager {
             .map(|entry| Arc::clone(entry.value()))
     }
 
-    pub fn poll_session_exit(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<PtyChildExitState>, AppError> {
-        let Some(session) = self.get_session_handle(session_id) else {
-            return Err(AppError::NotFound(format!(
-                "PTY session not found: {}",
-                session_id
-            )));
-        };
-        session.try_wait_child()
-    }
-
     pub fn start_idle_reaper(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
@@ -641,6 +645,39 @@ fn pty_output_loop(
     });
 }
 
+fn pty_child_wait_loop(
+    mut child: Box<dyn Child + Send + Sync>,
+    event_bus: SharedEventBus,
+    mut payload: PtySessionExitedEvent,
+) -> JoinHandle<()> {
+    tokio::task::spawn_blocking(move || match child.wait() {
+        Ok(status) => {
+            payload.exit_code = status.exit_code().min(i32::MAX as u32) as i32;
+            payload.success = status.success();
+            event_bus.publish(
+                PTY_SESSION_EXITED_TOPIC,
+                serde_json::to_value(&payload).unwrap_or_else(|_| {
+                    serde_json::json!({
+                        "session_id": payload.session_id,
+                        "exit_code": payload.exit_code,
+                        "success": payload.success,
+                    })
+                }),
+            );
+            info!(
+                "PTY session {} exited with code {}",
+                payload.session_id, payload.exit_code
+            );
+        }
+        Err(err) => {
+            warn!(
+                "Failed waiting for PTY session {} child exit: {}",
+                payload.session_id, err
+            );
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -661,6 +698,32 @@ mod tests {
     #[cfg(unix)]
     fn cat_command() -> String {
         "/bin/cat".to_string()
+    }
+
+    fn exit_command_request(exit_code: i32) -> CreatePtyRequest {
+        if cfg!(windows) {
+            CreatePtyRequest {
+                name: Some("exit-session".to_string()),
+                session_type: PtySessionType::Terminal,
+                command: shell_command(),
+                args: vec!["/C".to_string(), format!("exit {}", exit_code)],
+                cwd: None,
+                env: HashMap::new(),
+                cols: 80,
+                rows: 24,
+            }
+        } else {
+            CreatePtyRequest {
+                name: Some("exit-session".to_string()),
+                session_type: PtySessionType::Terminal,
+                command: shell_command(),
+                args: vec!["-lc".to_string(), format!("exit {}", exit_code)],
+                cwd: None,
+                env: HashMap::new(),
+                cols: 80,
+                rows: 24,
+            }
+        }
     }
 
     #[test]
@@ -864,6 +927,35 @@ mod tests {
         assert_eq!(event.payload["cols"], created.cols);
         assert_eq!(event.payload["rows"], created.rows);
         assert_eq!(event.payload["session_type"], "terminal");
+
+        manager.close_session(&created.session_id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_session_exit_publishes_event() {
+        let manager = manager_for_test();
+        let mut events = manager.event_bus.subscribe();
+
+        let created = manager
+            .create_session(exit_command_request(7))
+            .await
+            .unwrap();
+
+        let exit_event = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.topic == PTY_SESSION_EXITED_TOPIC {
+                    return serde_json::from_value::<PtySessionExitedEvent>(event.payload).unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(exit_event.session_id, created.session_id);
+        assert_eq!(exit_event.session_type, PtySessionTypeLabel::Terminal);
+        assert_eq!(exit_event.exit_code, 7);
+        assert!(!exit_event.success);
 
         manager.close_session(&created.session_id).await.unwrap();
     }

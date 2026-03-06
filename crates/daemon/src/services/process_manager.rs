@@ -14,11 +14,13 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::error::AppError;
+use crate::services::event_bus::Event;
 use crate::services::event_bus::SharedEventBus;
-use crate::services::pty_manager::{CreatePtyRequest, PtyManager, PtySessionType};
+use crate::services::pty_manager::{
+    CreatePtyRequest, PtyManager, PtySessionExitedEvent, PtySessionType, PTY_SESSION_EXITED_TOPIC,
+};
 
 // ── Data Structures ─────────────────────────────────────────────
-const PTY_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -756,6 +758,7 @@ impl ProcessManager {
         let _ = std::fs::create_dir_all(&proc_log_dir);
 
         if def.pty_mode {
+            let event_rx = self.event_bus.subscribe();
             let pty_name = format!("{}-{}", def.name, instance_idx);
             match self
                 .pty_manager
@@ -830,6 +833,7 @@ impl ProcessManager {
                         instance_idx,
                         session_id,
                         cancel_rx,
+                        event_rx,
                     ));
                     return Ok(());
                 }
@@ -903,50 +907,80 @@ impl ProcessManager {
         }
     }
 
+    async fn wait_for_pty_exit_event(
+        event_rx: &mut broadcast::Receiver<Event>,
+        session_id: &str,
+    ) -> Result<PtySessionExitedEvent, broadcast::error::RecvError> {
+        loop {
+            let event = event_rx.recv().await?;
+            if event.topic != PTY_SESSION_EXITED_TOPIC {
+                continue;
+            }
+
+            match serde_json::from_value::<PtySessionExitedEvent>(event.payload) {
+                Ok(exit_event) if exit_event.session_id == session_id => return Ok(exit_event),
+                Ok(_) => continue,
+                Err(err) => {
+                    warn!(
+                        "Failed to decode PTY exit event for session {}: {}",
+                        session_id, err
+                    );
+                }
+            }
+        }
+    }
+
     async fn supervise_pty_process(
         self: Arc<Self>,
         id: String,
         instance_idx: u32,
         mut session_id: String,
         mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
+        mut event_rx: broadcast::Receiver<Event>,
     ) {
         loop {
-            tokio::select! {
+            let exit_event = tokio::select! {
                 _ = &mut cancel_rx => {
                     debug!("PTY supervisor cancelled for process {} instance {}", id, instance_idx);
                     return;
                 }
-                _ = tokio::time::sleep(PTY_EXIT_POLL_INTERVAL) => {}
+                result = Self::wait_for_pty_exit_event(&mut event_rx, &session_id) => match result {
+                    Ok(event) => event,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        warn!(
+                            "PTY supervisor event stream closed for process {} instance {}",
+                            id, instance_idx
+                        );
+                        return;
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!(
+                            "PTY supervisor lagged for process {} instance {} (skipped {})",
+                            id, instance_idx, skipped
+                        );
+                        continue;
+                    }
+                }
+            };
+
+            let exit_code = Some(exit_event.exit_code);
+            let success = exit_event.success;
+
+            if exit_event.session_id != session_id {
+                continue;
             }
 
-            let exit_state = match self.pty_manager.poll_session_exit(&session_id) {
-                Ok(exit_state) => exit_state,
-                Err(AppError::NotFound(_)) => {
-                    // Session was closed externally (for example, stop request).
-                    return;
-                }
-                Err(err) => {
-                    warn!(
-                        "Failed to poll PTY session {} for process {} instance {}: {}",
-                        session_id, id, instance_idx, err
-                    );
-                    continue;
-                }
-            };
-            let Some(exit_state) = exit_state else {
-                continue;
-            };
-
-            let exit_code = Some(exit_state.exit_code);
-            let success = exit_state.success;
+            if self.pty_manager.close_session(&session_id).await.is_err() {
+                debug!(
+                    "PTY session {} already closed for process {} instance {}",
+                    session_id, id, instance_idx
+                );
+            }
 
             info!(
                 "PTY process {} instance {} exited with code: {:?}",
                 id, instance_idx, exit_code
             );
-
-            // Close PTY session after exit to avoid stale handles.
-            let _ = self.pty_manager.close_session(&session_id).await;
 
             let def = match self.load_definition(&id).await {
                 Ok(Some(d)) => d,
