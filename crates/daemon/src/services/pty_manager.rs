@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use portable_pty::{native_pty_system, Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -421,7 +421,10 @@ impl PtyManager {
         })
     }
 
-    pub async fn create_session(&self, req: CreatePtyRequest) -> Result<PtySessionInfo, AppError> {
+    pub async fn create_session(
+        self: &Arc<Self>,
+        req: CreatePtyRequest,
+    ) -> Result<PtySessionInfo, AppError> {
         if req.cols == 0 || req.rows == 0 {
             return Err(AppError::BadRequest(
                 "cols and rows must be greater than 0".to_string(),
@@ -514,11 +517,18 @@ impl PtyManager {
         });
 
         pty_output_loop(reader, output_tx, scrollback);
-        let wait_task =
-            pty_child_wait_loop(child, self.event_bus.clone(), session.exit_event_payload());
+        let (exit_tx, exit_rx) = oneshot::channel();
+        let wait_task = pty_child_wait_loop(
+            child,
+            self.event_bus.clone(),
+            session.exit_event_payload(),
+            exit_tx,
+        );
         if let Ok(mut wait_task_guard) = session.wait_task.lock() {
             *wait_task_guard = Some(wait_task);
         }
+
+        self.spawn_exit_cleanup_task(session_id.clone(), exit_rx);
 
         self.sessions.insert(session_id.clone(), session.clone());
         let info = session.info();
@@ -582,6 +592,30 @@ impl PtyManager {
         self.sessions
             .get(session_id)
             .map(|entry| Arc::clone(entry.value()))
+    }
+
+    fn spawn_exit_cleanup_task(
+        self: &Arc<Self>,
+        session_id: String,
+        exit_rx: oneshot::Receiver<()>,
+    ) {
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            if exit_rx.await.is_err() {
+                return;
+            }
+
+            match manager.close_session(&session_id).await {
+                Ok(()) => debug!("Closed exited PTY session {}", session_id),
+                Err(AppError::NotFound(_)) => {
+                    debug!(
+                        "PTY session {} already closed before exit cleanup",
+                        session_id
+                    )
+                }
+                Err(err) => warn!("Failed to close exited PTY session {}: {}", session_id, err),
+            }
+        });
     }
 
     pub fn start_idle_reaper(self: &Arc<Self>) {
@@ -649,6 +683,7 @@ fn pty_child_wait_loop(
     mut child: Box<dyn Child + Send + Sync>,
     event_bus: SharedEventBus,
     mut payload: PtySessionExitedEvent,
+    exit_tx: oneshot::Sender<()>,
 ) -> JoinHandle<()> {
     tokio::task::spawn_blocking(move || match child.wait() {
         Ok(status) => {
@@ -668,6 +703,7 @@ fn pty_child_wait_loop(
                 "PTY session {} exited with code {}",
                 payload.session_id, payload.exit_code
             );
+            let _ = exit_tx.send(());
         }
         Err(err) => {
             warn!(
@@ -956,7 +992,72 @@ mod tests {
         assert_eq!(exit_event.session_type, PtySessionTypeLabel::Terminal);
         assert_eq!(exit_event.exit_code, 7);
         assert!(!exit_event.success);
+    }
 
-        manager.close_session(&created.session_id).await.unwrap();
+    #[tokio::test]
+    async fn test_terminal_session_exit_closes_session() {
+        let manager = manager_for_test();
+        let mut events = manager.event_bus.subscribe();
+
+        let created = manager
+            .create_session(exit_command_request(0))
+            .await
+            .unwrap();
+
+        let closed_session_id = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.topic == "pty.session_closed" {
+                    return event.payload["session_id"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(closed_session_id, created.session_id);
+        assert!(manager.get_session(&created.session_id).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_process_daemon_session_exit_closes_session() {
+        let manager = manager_for_test();
+        let mut events = manager.event_bus.subscribe();
+
+        let created = manager
+            .create_session(CreatePtyRequest {
+                name: Some("process-exit-session".to_string()),
+                session_type: PtySessionType::ProcessDaemon {
+                    process_id: "proc-exit".to_string(),
+                },
+                command: exit_command_request(0).command,
+                args: exit_command_request(0).args,
+                cwd: None,
+                env: HashMap::new(),
+                cols: 80,
+                rows: 24,
+            })
+            .await
+            .unwrap();
+
+        let closed_session_id = tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let event = events.recv().await.unwrap();
+                if event.topic == "pty.session_closed" {
+                    return event.payload["session_id"]
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap();
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(closed_session_id, created.session_id);
+        assert!(manager.get_session(&created.session_id).is_none());
     }
 }
