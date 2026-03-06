@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -6,26 +6,22 @@ import "@xterm/xterm/css/xterm.css";
 
 import { PtyClient } from "~/lib/pty-client";
 import { getRpcClient } from "~/lib/rpc-client";
-import { Loader2, TerminalSquare, Unplug } from "lucide-react";
-import { Button } from "~/components/ui/button";
+import { Loader2 } from "lucide-react";
 
 interface ProcessPtyViewProps {
   sessionId: string;
-  onClose: () => void;
-  processName: string;
+  onConnectionChange?: (connected: boolean) => void;
 }
 
 /**
- * PTY terminal view for a process detail page.
- * Similar to TerminalInstance but with a close button header.
+ * PTY terminal body for a process detail page.
  */
-export function ProcessPtyView({ sessionId, onClose, processName }: ProcessPtyViewProps) {
+export function ProcessPtyView({ sessionId, onConnectionChange }: ProcessPtyViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const ptyClientRef = useRef<PtyClient | null>(null);
   const initRef = useRef(false);
-  const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
     if (initRef.current || !containerRef.current) return;
@@ -86,9 +82,10 @@ export function ProcessPtyView({ sessionId, onClose, processName }: ProcessPtyVi
         terminal.write(data);
       },
       onStateChange: (state) => {
-        setIsConnected(state === "connected");
+        onConnectionChange?.(state === "connected");
       },
       onClose: () => {
+        onConnectionChange?.(false);
         terminal.writeln("\r\n\x1b[33m[Session disconnected]\x1b[0m");
       },
     });
@@ -130,8 +127,9 @@ export function ProcessPtyView({ sessionId, onClose, processName }: ProcessPtyVi
       fitAddonRef.current = null;
       ptyClientRef.current = null;
       initRef.current = false;
+      onConnectionChange?.(false);
     };
-  }, [sessionId]);
+  }, [onConnectionChange, sessionId]);
 
   const handleResize = useCallback(() => {
     if (fitAddonRef.current && terminalRef.current) {
@@ -153,43 +151,26 @@ export function ProcessPtyView({ sessionId, onClose, processName }: ProcessPtyVi
     return () => clearTimeout(timer);
   }, [handleResize]);
 
-  return (
-    <div className="flex h-full flex-col">
-      <div className="flex h-10 items-center justify-between border-b bg-background/80 px-3">
-        <div className="flex items-center gap-2 text-sm">
-          <TerminalSquare className="size-4 text-muted-foreground" />
-          <span className="font-medium">{processName}</span>
-          <span className="text-xs text-muted-foreground">PTY Session</span>
-          {isConnected ? (
-            <span className="ml-1 inline-flex size-2 rounded-full bg-green-500" />
-          ) : (
-            <span className="ml-1 inline-flex size-2 rounded-full bg-yellow-500" />
-          )}
-        </div>
-        <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onClose}>
-          <Unplug className="mr-1 size-3" />
-          Disconnect
-        </Button>
-      </div>
-      <div
-        ref={containerRef}
-        className="flex-1"
-        style={{ backgroundColor: "#0a0a0a" }}
-      />
-    </div>
-  );
+  return <div ref={containerRef} className="h-full" style={{ backgroundColor: "#0a0a0a" }} />;
 }
 
 /**
  * Placeholder shown when process has pty_mode but no active session.
  */
-export function ProcessPtyPlaceholder() {
+export function ProcessPtyPlaceholder({
+  title = "Waiting for PTY session…",
+  description = "Start the process to get a terminal.",
+}: {
+  title?: string;
+  description?: string;
+}) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
       <Loader2 className="size-6 animate-spin text-muted-foreground" />
-      <p className="text-sm text-muted-foreground">
-        Waiting for PTY session… Start the process to get a terminal.
-      </p>
+      <div className="space-y-1">
+        <p className="text-sm text-muted-foreground">{title}</p>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
     </div>
   );
 }
