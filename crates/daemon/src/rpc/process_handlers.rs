@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use crate::rpc::params::parse_required_params;
 use crate::rpc::process_params::{
-    parse_create_request, parse_get_logs_request, parse_update_request,
+    parse_create_request, parse_get_logs_request, parse_pty_replay_request, parse_update_request,
 };
 use crate::rpc::router::RpcRouter;
 use crate::services::process_manager::ProcessManager;
@@ -108,6 +108,16 @@ pub fn register(router: &mut RpcRouter, process_mgr: Arc<ProcessManager>) {
             let params = parse_get_logs_request(params)?;
             let logs = pm.get_logs(params).await?;
             Ok(serde_json::to_value(&logs).unwrap())
+        }
+    });
+
+    let pm = process_mgr.clone();
+    router.register("process.pty_replay", move |params, _ctx| {
+        let pm = pm.clone();
+        async move {
+            let params = parse_pty_replay_request(params)?;
+            let replay = pm.get_pty_replay(params).await?;
+            Ok(serde_json::to_value(&replay).unwrap())
         }
     });
 

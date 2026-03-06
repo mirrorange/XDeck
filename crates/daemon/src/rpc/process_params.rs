@@ -7,8 +7,8 @@ use serde::{Deserialize, Deserializer};
 use crate::error::{AppError, ValidationIssue};
 use crate::rpc::params::parse_required_params;
 use crate::services::process_manager::{
-    CreateProcessRequest, GetLogsRequest, LogStream, ProcessLogConfig, RestartPolicy,
-    UpdateProcessRequest,
+    CreateProcessRequest, GetLogsRequest, LogStream, ProcessLogConfig, PtyReplayRequest,
+    RestartPolicy, UpdateProcessRequest,
 };
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +67,18 @@ struct GetLogsParams {
     offset: usize,
     #[serde(default)]
     instance: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PtyReplayParams {
+    id: String,
+    #[serde(default)]
+    instance: Option<u32>,
+    #[serde(default)]
+    offset: u64,
+    #[serde(default = "default_replay_length")]
+    length: u64,
 }
 
 #[nutype(
@@ -152,6 +164,35 @@ pub fn parse_get_logs_request(
 ) -> Result<GetLogsRequest, AppError> {
     let raw = parse_required_params::<GetLogsParams>(params)?;
     parse_get_logs_payload(raw)
+}
+
+pub fn parse_pty_replay_request(
+    params: Option<serde_json::Value>,
+) -> Result<PtyReplayRequest, AppError> {
+    let raw = parse_required_params::<PtyReplayParams>(params)?;
+
+    let mut issues = Vec::new();
+    let id = match ProcessId::try_new(raw.id) {
+        Ok(id) => Some(id.into_inner()),
+        Err(_) => {
+            issues.push(ValidationIssue::new("id", "must not be empty"));
+            None
+        }
+    };
+
+    if !issues.is_empty() {
+        return Err(AppError::bad_request_with_details(
+            "Invalid process.pty_replay params",
+            issues,
+        ));
+    }
+
+    Ok(PtyReplayRequest {
+        id: id.expect("id is present when issues is empty"),
+        instance: raw.instance.unwrap_or(0),
+        offset: raw.offset,
+        length: raw.length,
+    })
 }
 
 fn parse_create_payload(raw: CreateProcessParams) -> Result<CreateProcessRequest, AppError> {
@@ -551,6 +592,10 @@ fn default_stream() -> String {
 
 fn default_tail_lines() -> usize {
     200
+}
+
+fn default_replay_length() -> u64 {
+    256 * 1024 // 256KB default
 }
 
 fn default_true() -> bool {

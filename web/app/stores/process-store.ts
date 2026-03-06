@@ -98,6 +98,16 @@ export interface LogsResponse {
   has_more: boolean;
 }
 
+export interface PtyReplayResponse {
+  process_id: string;
+  instance: number;
+  /** Base64-encoded raw PTY output bytes. */
+  data: string;
+  total_size: number;
+  offset: number;
+  length: number;
+}
+
 interface GroupActionResponse {
   success: boolean;
   errors?: string[] | null;
@@ -136,6 +146,10 @@ interface ProcessState {
     id: string,
     options?: { stream?: string; lines?: number; offset?: number; instance?: number }
   ) => Promise<LogsResponse>;
+  fetchPtyReplay: (
+    id: string,
+    options?: { instance?: number; offset?: number; length?: number }
+  ) => Promise<PtyReplayResponse>;
   subscribeToEvents: () => () => void;
 }
 
@@ -241,6 +255,17 @@ export const useProcessStore = create<ProcessState>((set) => ({
       instance: options.instance,
     };
     return await rpc.call<LogsResponse>("process.logs", params);
+  },
+
+  fetchPtyReplay: async (id, options = {}) => {
+    const rpc = getRpcClient();
+    const params = {
+      id,
+      instance: options.instance ?? 0,
+      offset: options.offset ?? 0,
+      length: options.length ?? 256 * 1024,
+    };
+    return await rpc.call<PtyReplayResponse>("process.pty_replay", params);
   },
 
   subscribeToEvents: () => {

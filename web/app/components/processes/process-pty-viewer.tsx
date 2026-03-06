@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, Layers, TerminalSquare } from "lucide-react";
+import { ChevronLeft, History, Layers, TerminalSquare } from "lucide-react";
 
+import { PtyReplayViewer } from "~/components/processes/pty-replay-viewer";
 import { ProcessPtyPlaceholder, ProcessPtyView } from "~/components/terminal/ProcessPtyView";
 import { Button } from "~/components/ui/button";
 import {
@@ -16,6 +17,8 @@ function getDefaultInstanceIndex(process: ProcessInfo) {
   return process.instances.find((instance) => instance.pty_session_id)?.index ?? 0;
 }
 
+type ViewMode = "live" | "replay";
+
 export function ProcessPtyViewer({
   process,
   onClose,
@@ -26,6 +29,7 @@ export function ProcessPtyViewer({
   const [selectedInstance, setSelectedInstance] = useState(() => getDefaultInstanceIndex(process));
   const [isConnected, setIsConnected] = useState(false);
   const [hasManualSelection, setHasManualSelection] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("live");
 
   useEffect(() => {
     setSelectedInstance(getDefaultInstanceIndex(process));
@@ -60,6 +64,17 @@ export function ProcessPtyViewer({
   useEffect(() => {
     setIsConnected(false);
   }, [selectedSessionId]);
+
+  // Show replay viewer when in replay mode
+  if (viewMode === "replay") {
+    return (
+      <PtyReplayViewer
+        key={`replay-${process.id}-${selectedInstance}`}
+        process={process}
+        onClose={() => setViewMode("live")}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -96,6 +111,16 @@ export function ProcessPtyViewer({
               </SelectContent>
             </Select>
           )}
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            onClick={() => setViewMode("replay")}
+          >
+            <History className="size-3" />
+            Replay
+          </Button>
 
           <div className="flex h-7 items-center gap-2 rounded-md border px-2 text-xs text-muted-foreground">
             <TerminalSquare className="size-3.5" />

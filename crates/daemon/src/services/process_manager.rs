@@ -3,11 +3,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
@@ -247,6 +248,33 @@ pub struct LogLine {
     pub stream: String,
     pub line: String,
     pub timestamp: Option<String>,
+}
+
+/// Request payload for PTY replay data.
+#[derive(Debug, Clone)]
+pub struct PtyReplayRequest {
+    pub id: String,
+    /// Instance index.
+    pub instance: u32,
+    /// Byte offset from the start of the raw log.
+    pub offset: u64,
+    /// Number of bytes to read.
+    pub length: u64,
+}
+
+/// Response for PTY replay data.
+#[derive(Debug, Serialize)]
+pub struct PtyReplayResponse {
+    pub process_id: String,
+    pub instance: u32,
+    /// Base64-encoded raw PTY output bytes.
+    pub data: String,
+    /// Total size of the raw log in bytes.
+    pub total_size: u64,
+    /// Actual byte offset from start.
+    pub offset: u64,
+    /// Actual number of bytes returned.
+    pub length: u64,
 }
 
 // ── Runtime State ───────────────────────────────────────────────
@@ -620,6 +648,7 @@ impl ProcessManager {
     ) {
         tokio::spawn(async move {
             let log_path = log_dir.join("stdout.log");
+            let raw_log_path = log_dir.join("pty_raw.log");
             let max_size = log_config.max_file_size;
             let max_files = log_config.max_files;
 
@@ -636,7 +665,22 @@ impl ProcessManager {
                 }
             };
 
+            let mut raw_file = match tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&raw_log_path)
+                .await
+            {
+                Ok(f) => f,
+                Err(err) => {
+                    error!("Failed to open PTY raw log file {:?}: {}", raw_log_path, err);
+                    return;
+                }
+            };
+
             let mut current_size = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+            let mut raw_current_size =
+                std::fs::metadata(&raw_log_path).map(|m| m.len()).unwrap_or(0);
             let mut line_buf = String::new();
 
             loop {
@@ -652,6 +696,33 @@ impl ProcessManager {
                     Err(broadcast::error::RecvError::Closed) => break,
                 };
 
+                // Write raw bytes (preserving ANSI escapes) for terminal replay
+                if let Err(err) = raw_file.write_all(&chunk).await {
+                    error!("Failed to write PTY raw log: {}", err);
+                    return;
+                }
+                raw_current_size += chunk.len() as u64;
+
+                if raw_current_size >= max_size {
+                    let _ = raw_file.flush().await;
+                    drop(raw_file);
+                    rotate_log_files(&raw_log_path, max_files);
+                    raw_file = match tokio::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&raw_log_path)
+                        .await
+                    {
+                        Ok(f) => f,
+                        Err(err) => {
+                            error!("Failed to reopen PTY raw log file after rotation: {}", err);
+                            return;
+                        }
+                    };
+                    raw_current_size = 0;
+                }
+
+                // Text log: split into lines for human-readable log viewer
                 line_buf.push_str(&String::from_utf8_lossy(&chunk));
                 while let Some(idx) = line_buf.find('\n') {
                     let mut line = line_buf[..idx].to_string();
@@ -1670,6 +1741,88 @@ impl ProcessManager {
             instance: req.instance,
             lines,
             has_more,
+        })
+    }
+
+    /// Get raw PTY output bytes for terminal replay.
+    pub async fn get_pty_replay(
+        &self,
+        req: PtyReplayRequest,
+    ) -> Result<PtyReplayResponse, AppError> {
+        // Verify process exists
+        let definition = self
+            .load_definition(&req.id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Process {} not found", req.id)))?;
+
+        if req.instance >= definition.instance_count {
+            return Err(AppError::BadRequest(format!(
+                "Instance {} out of range for process {}",
+                req.instance, req.id
+            )));
+        }
+
+        let raw_log_path = self
+            .log_dir
+            .join(&req.id)
+            .join(format!("instance-{}", req.instance))
+            .join("pty_raw.log");
+
+        if !raw_log_path.exists() {
+            return Ok(PtyReplayResponse {
+                process_id: req.id,
+                instance: req.instance,
+                data: String::new(),
+                total_size: 0,
+                offset: 0,
+                length: 0,
+            });
+        }
+
+        let total_size = tokio::fs::metadata(&raw_log_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        if req.offset >= total_size {
+            return Ok(PtyReplayResponse {
+                process_id: req.id,
+                instance: req.instance,
+                data: String::new(),
+                total_size,
+                offset: req.offset,
+                length: 0,
+            });
+        }
+
+        // Cap read length: max 512KB per request
+        const MAX_READ: u64 = 512 * 1024;
+        let actual_length = req.length.min(MAX_READ).min(total_size - req.offset);
+
+        let mut file = tokio::fs::File::open(&raw_log_path)
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to open PTY raw log: {}", e)))?;
+
+        file.seek(std::io::SeekFrom::Start(req.offset))
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to seek PTY raw log: {}", e)))?;
+
+        let mut buf = vec![0u8; actual_length as usize];
+        let bytes_read = file
+            .read(&mut buf)
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to read PTY raw log: {}", e)))?;
+        buf.truncate(bytes_read);
+
+        let data = BASE64.encode(&buf);
+
+        Ok(PtyReplayResponse {
+            process_id: req.id,
+            instance: req.instance,
+            data,
+            total_size,
+            offset: req.offset,
+            length: bytes_read as u64,
         })
     }
 
