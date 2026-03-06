@@ -18,6 +18,7 @@ use crate::services::event_bus::SharedEventBus;
 use crate::services::pty_manager::{CreatePtyRequest, PtyManager, PtySessionType};
 
 // ── Data Structures ─────────────────────────────────────────────
+const PTY_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -789,7 +790,9 @@ impl ProcessManager {
                     proc.status = ProcessStatus::Running;
                     proc.started_at = Some(Utc::now());
                     proc.exit_code = None;
-                    proc.cancel_tx = None;
+                    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+                    proc.cancel_tx = Some(cancel_tx);
+                    let session_id = session_info.session_id.clone();
 
                     Self::spawn_pty_log_task(
                         self.event_bus.clone(),
@@ -817,6 +820,17 @@ impl ProcessManager {
                         instance_idx,
                         proc.pty_session_id.as_deref().unwrap_or_default()
                     );
+                    drop(proc);
+                    drop(instances);
+
+                    let mgr = self.clone();
+                    let proc_id = def.id.clone();
+                    tokio::spawn(mgr.supervise_pty_process(
+                        proc_id,
+                        instance_idx,
+                        session_id,
+                        cancel_rx,
+                    ));
                     return Ok(());
                 }
                 Err(e) => {
@@ -886,6 +900,262 @@ impl ProcessManager {
                 );
                 Err(AppError::Internal(format!("Failed to start: {}", e)))
             }
+        }
+    }
+
+    async fn supervise_pty_process(
+        self: Arc<Self>,
+        id: String,
+        instance_idx: u32,
+        mut session_id: String,
+        mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
+    ) {
+        loop {
+            tokio::select! {
+                _ = &mut cancel_rx => {
+                    debug!("PTY supervisor cancelled for process {} instance {}", id, instance_idx);
+                    return;
+                }
+                _ = tokio::time::sleep(PTY_EXIT_POLL_INTERVAL) => {}
+            }
+
+            let exit_state = match self.pty_manager.poll_session_exit(&session_id) {
+                Ok(exit_state) => exit_state,
+                Err(AppError::NotFound(_)) => {
+                    // Session was closed externally (for example, stop request).
+                    return;
+                }
+                Err(err) => {
+                    warn!(
+                        "Failed to poll PTY session {} for process {} instance {}: {}",
+                        session_id, id, instance_idx, err
+                    );
+                    continue;
+                }
+            };
+            let Some(exit_state) = exit_state else {
+                continue;
+            };
+
+            let exit_code = Some(exit_state.exit_code);
+            let success = exit_state.success;
+
+            info!(
+                "PTY process {} instance {} exited with code: {:?}",
+                id, instance_idx, exit_code
+            );
+
+            // Close PTY session after exit to avoid stale handles.
+            let _ = self.pty_manager.close_session(&session_id).await;
+
+            let def = match self.load_definition(&id).await {
+                Ok(Some(d)) => d,
+                _ => return,
+            };
+
+            let should_restart = {
+                let instances = self.instances.read().await;
+                let key = (id.clone(), instance_idx);
+                let Some(proc_mutex) = instances.get(&key) else {
+                    return;
+                };
+                let mut proc = proc_mutex.lock().await;
+
+                if proc.pty_session_id.as_deref() != Some(session_id.as_str()) {
+                    // Runtime state has already moved on to another session.
+                    return;
+                }
+
+                proc.child = None;
+                proc.pty_session_id = None;
+                proc.pid = None;
+                proc.exit_code = exit_code;
+
+                if success {
+                    proc.status = ProcessStatus::Stopped;
+                } else {
+                    proc.status = ProcessStatus::Errored;
+                }
+
+                self.event_bus.publish(
+                    "process.status_changed",
+                    serde_json::json!({
+                        "process_id": id,
+                        "instance": instance_idx,
+                        "status": format!("{:?}", proc.status).to_lowercase(),
+                        "exit_code": exit_code,
+                    }),
+                );
+
+                let policy = &def.restart_policy;
+                match policy.strategy {
+                    RestartStrategy::Always => policy
+                        .max_retries
+                        .map_or(true, |max| proc.restart_count < max),
+                    RestartStrategy::OnFailure => {
+                        if success {
+                            false
+                        } else {
+                            policy
+                                .max_retries
+                                .map_or(true, |max| proc.restart_count < max)
+                        }
+                    }
+                    RestartStrategy::Never => false,
+                }
+            };
+
+            if !should_restart {
+                let instances = self.instances.read().await;
+                let key = (id.clone(), instance_idx);
+                if let Some(proc_mutex) = instances.get(&key) {
+                    let mut proc = proc_mutex.lock().await;
+                    if proc.status == ProcessStatus::Errored {
+                        proc.status = ProcessStatus::Failed;
+                        self.event_bus.publish(
+                            "process.status_changed",
+                            serde_json::json!({
+                                "process_id": id,
+                                "instance": instance_idx,
+                                "status": "failed",
+                                "message": "Max restart retries exceeded",
+                            }),
+                        );
+                    }
+                }
+                return;
+            }
+
+            let delay = {
+                let instances = self.instances.read().await;
+                let key = (id.clone(), instance_idx);
+                let Some(proc_mutex) = instances.get(&key) else {
+                    return;
+                };
+                let mut proc = proc_mutex.lock().await;
+                proc.restart_count += 1;
+                let base_delay = def.restart_policy.delay_ms;
+                let multiplier = def.restart_policy.backoff_multiplier;
+                let delay_ms = (base_delay as f64
+                    * multiplier.powi(proc.restart_count.saturating_sub(1) as i32))
+                    as u64;
+                Duration::from_millis(delay_ms.min(30_000))
+            };
+
+            info!(
+                "Restarting PTY process {} instance {} in {:?}",
+                def.name, instance_idx, delay
+            );
+            tokio::time::sleep(delay).await;
+
+            let proc_log_dir = self
+                .log_dir
+                .join(&id)
+                .join(format!("instance-{}", instance_idx));
+            let _ = std::fs::create_dir_all(&proc_log_dir);
+
+            let pty_name = format!("{}-{}", def.name, instance_idx);
+            match self
+                .pty_manager
+                .create_session(CreatePtyRequest {
+                    name: Some(pty_name),
+                    session_type: PtySessionType::ProcessDaemon {
+                        process_id: id.clone(),
+                    },
+                    command: def.command.clone(),
+                    args: def.args.clone(),
+                    cwd: Some(def.cwd.clone()),
+                    env: def.env.clone(),
+                    cols: 80,
+                    rows: 24,
+                })
+                .await
+            {
+                Ok(session_info) => {
+                    let session = match self
+                        .pty_manager
+                        .get_session_handle(&session_info.session_id)
+                    {
+                        Some(session) => session,
+                        None => {
+                            error!(
+                                "Failed to get PTY session {} after restart for process {} instance {}",
+                                session_info.session_id, def.name, instance_idx
+                            );
+                            let instances = self.instances.read().await;
+                            let key = (id.clone(), instance_idx);
+                            if let Some(proc_mutex) = instances.get(&key) {
+                                let mut proc = proc_mutex.lock().await;
+                                proc.status = ProcessStatus::Failed;
+                                proc.pty_session_id = None;
+                                proc.pid = None;
+                            }
+                            return;
+                        }
+                    };
+
+                    let (new_cancel_tx, new_cancel_rx) = tokio::sync::oneshot::channel();
+                    {
+                        let instances = self.instances.read().await;
+                        let key = (id.clone(), instance_idx);
+                        let Some(proc_mutex) = instances.get(&key) else {
+                            return;
+                        };
+                        let mut proc = proc_mutex.lock().await;
+                        proc.child = None;
+                        proc.pty_session_id = Some(session_info.session_id.clone());
+                        proc.pid = session_info.pid;
+                        proc.status = ProcessStatus::Running;
+                        proc.started_at = Some(Utc::now());
+                        proc.exit_code = None;
+                        proc.cancel_tx = Some(new_cancel_tx);
+                    }
+
+                    Self::spawn_pty_log_task(
+                        self.event_bus.clone(),
+                        session.subscribe_output(),
+                        id.clone(),
+                        instance_idx,
+                        proc_log_dir,
+                        def.log_config.clone(),
+                    );
+
+                    self.event_bus.publish(
+                        "process.status_changed",
+                        serde_json::json!({
+                            "process_id": id,
+                            "instance": instance_idx,
+                            "status": "running",
+                            "pid": session_info.pid,
+                            "pty_session_id": session_info.session_id,
+                        }),
+                    );
+
+                    info!(
+                        "Restarted PTY process: {} instance={} (pty_session_id={})",
+                        def.name, instance_idx, session_info.session_id
+                    );
+
+                    session_id = session_info.session_id;
+                    cancel_rx = new_cancel_rx;
+                    continue;
+                }
+                Err(err) => {
+                    error!(
+                        "Failed to restart PTY process {} instance {}: {}",
+                        def.name, instance_idx, err
+                    );
+                    let instances = self.instances.read().await;
+                    let key = (id.clone(), instance_idx);
+                    if let Some(proc_mutex) = instances.get(&key) {
+                        let mut proc = proc_mutex.lock().await;
+                        proc.status = ProcessStatus::Failed;
+                        proc.pty_session_id = None;
+                        proc.pid = None;
+                    }
+                }
+            }
+            return;
         }
     }
 
@@ -2297,6 +2567,42 @@ mod tests {
         pm.stop_process(&process_id).await.unwrap();
         tokio::time::sleep(Duration::from_millis(150)).await;
         assert!(pm.pty_manager.get_session_handle(&session_id).is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_pty_mode_process_exits_updates_status() {
+        let (pm, _pool) = test_pm().await;
+        let info = pm
+            .create_process(CreateProcessRequest {
+                name: "pty-exit-status".to_string(),
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), "exit 0".to_string()],
+                cwd: "/tmp".to_string(),
+                env: HashMap::new(),
+                restart_policy: RestartPolicy {
+                    strategy: RestartStrategy::Never,
+                    ..Default::default()
+                },
+                auto_start: false,
+                group_name: None,
+                log_config: ProcessLogConfig::default(),
+                run_as: None,
+                instance_count: 1,
+                pty_mode: true,
+            })
+            .await
+            .unwrap();
+        let id = info.definition.id;
+
+        pm.start_process(&id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(700)).await;
+
+        let exited = pm.get_process(&id).await.unwrap();
+        let state = instance(&exited, 0);
+        assert_eq!(state.status, ProcessStatus::Stopped);
+        assert!(state.pid.is_none());
+        assert!(state.pty_session_id.is_none());
     }
 
     #[cfg(unix)]

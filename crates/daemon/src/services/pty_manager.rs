@@ -61,6 +61,12 @@ pub struct PtySessionInfo {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PtyChildExitState {
+    pub exit_code: i32,
+    pub success: bool,
+}
+
 pub struct PtySession {
     pub id: String,
     pub name: String,
@@ -301,6 +307,29 @@ impl PtySession {
         Ok(())
     }
 
+    pub fn try_wait_child(&self) -> Result<Option<PtyChildExitState>, AppError> {
+        let mut child_guard = self
+            .child
+            .lock()
+            .map_err(|_| AppError::Internal("PTY child mutex poisoned".to_string()))?;
+        let Some(child) = child_guard.as_mut() else {
+            return Ok(None);
+        };
+
+        let status = child
+            .try_wait()
+            .map_err(|e| AppError::Internal(format!("Failed to poll PTY child status: {}", e)))?;
+        let Some(status) = status else {
+            return Ok(None);
+        };
+
+        let exit_code = status.exit_code().min(i32::MAX as u32) as i32;
+        let success = status.success();
+        *child_guard = None;
+
+        Ok(Some(PtyChildExitState { exit_code, success }))
+    }
+
     pub fn info(&self) -> PtySessionInfo {
         let (session_type, process_id) = match &self.session_type {
             PtySessionType::Terminal => (PtySessionTypeLabel::Terminal, None),
@@ -536,6 +565,19 @@ impl PtyManager {
         self.sessions
             .get(session_id)
             .map(|entry| Arc::clone(entry.value()))
+    }
+
+    pub fn poll_session_exit(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<PtyChildExitState>, AppError> {
+        let Some(session) = self.get_session_handle(session_id) else {
+            return Err(AppError::NotFound(format!(
+                "PTY session not found: {}",
+                session_id
+            )));
+        };
+        session.try_wait_child()
     }
 
     pub fn start_idle_reaper(self: &Arc<Self>) {
