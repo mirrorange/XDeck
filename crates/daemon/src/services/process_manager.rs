@@ -707,6 +707,30 @@ impl ProcessManager {
         });
     }
 
+    fn publish_status_changed(
+        &self,
+        process_id: &str,
+        instance_idx: u32,
+        status: &str,
+        pid: Option<u32>,
+        exit_code: Option<i32>,
+        pty_session_id: Option<&str>,
+        message: Option<&str>,
+    ) {
+        self.event_bus.publish(
+            "process.status_changed",
+            serde_json::json!({
+                "process_id": process_id,
+                "instance": instance_idx,
+                "status": status,
+                "pid": pid,
+                "exit_code": exit_code,
+                "pty_session_id": pty_session_id,
+                "message": message,
+            }),
+        );
+    }
+
     /// Internal: Actually spawn the child process and set up monitoring.
     async fn start_process_internal(self: &Arc<Self>, id: &str) -> Result<(), AppError> {
         let def = self
@@ -806,15 +830,14 @@ impl ProcessManager {
                         def.log_config.clone(),
                     );
 
-                    self.event_bus.publish(
-                        "process.status_changed",
-                        serde_json::json!({
-                            "process_id": def.id,
-                            "instance": instance_idx,
-                            "status": "running",
-                            "pid": session_info.pid,
-                            "pty_session_id": session_info.session_id,
-                        }),
+                    self.publish_status_changed(
+                        &def.id,
+                        instance_idx,
+                        "running",
+                        session_info.pid,
+                        None,
+                        Some(&session_info.session_id),
+                        None,
                     );
 
                     info!(
@@ -871,14 +894,14 @@ impl ProcessManager {
                 );
 
                 proc.child = Some(child);
-                self.event_bus.publish(
-                    "process.status_changed",
-                    serde_json::json!({
-                        "process_id": def.id,
-                        "instance": instance_idx,
-                        "status": "running",
-                        "pid": pid,
-                    }),
+                self.publish_status_changed(
+                    &def.id,
+                    instance_idx,
+                    "running",
+                    pid,
+                    None,
+                    None,
+                    None,
                 );
 
                 info!(
@@ -1011,14 +1034,14 @@ impl ProcessManager {
                     proc.status = ProcessStatus::Errored;
                 }
 
-                self.event_bus.publish(
-                    "process.status_changed",
-                    serde_json::json!({
-                        "process_id": id,
-                        "instance": instance_idx,
-                        "status": format!("{:?}", proc.status).to_lowercase(),
-                        "exit_code": exit_code,
-                    }),
+                self.publish_status_changed(
+                    &id,
+                    instance_idx,
+                    &format!("{:?}", proc.status).to_lowercase(),
+                    None,
+                    exit_code,
+                    None,
+                    None,
                 );
 
                 let policy = &def.restart_policy;
@@ -1046,14 +1069,14 @@ impl ProcessManager {
                     let mut proc = proc_mutex.lock().await;
                     if proc.status == ProcessStatus::Errored {
                         proc.status = ProcessStatus::Failed;
-                        self.event_bus.publish(
-                            "process.status_changed",
-                            serde_json::json!({
-                                "process_id": id,
-                                "instance": instance_idx,
-                                "status": "failed",
-                                "message": "Max restart retries exceeded",
-                            }),
+                        self.publish_status_changed(
+                            &id,
+                            instance_idx,
+                            "failed",
+                            None,
+                            proc.exit_code,
+                            None,
+                            Some("Max restart retries exceeded"),
                         );
                     }
                 }
@@ -1154,15 +1177,14 @@ impl ProcessManager {
                         def.log_config.clone(),
                     );
 
-                    self.event_bus.publish(
-                        "process.status_changed",
-                        serde_json::json!({
-                            "process_id": id,
-                            "instance": instance_idx,
-                            "status": "running",
-                            "pid": session_info.pid,
-                            "pty_session_id": session_info.session_id,
-                        }),
+                    self.publish_status_changed(
+                        &id,
+                        instance_idx,
+                        "running",
+                        session_info.pid,
+                        None,
+                        Some(&session_info.session_id),
+                        None,
                     );
 
                     info!(
@@ -1260,14 +1282,14 @@ impl ProcessManager {
                     proc.status = ProcessStatus::Errored;
                 }
 
-                self.event_bus.publish(
-                    "process.status_changed",
-                    serde_json::json!({
-                        "process_id": id,
-                        "instance": instance_idx,
-                        "status": format!("{:?}", proc.status).to_lowercase(),
-                        "exit_code": exit_code,
-                    }),
+                self.publish_status_changed(
+                    &id,
+                    instance_idx,
+                    &format!("{:?}", proc.status).to_lowercase(),
+                    None,
+                    exit_code,
+                    None,
+                    None,
                 );
 
                 let policy = &def.restart_policy;
@@ -1296,14 +1318,14 @@ impl ProcessManager {
                     let mut proc = proc_mutex.lock().await;
                     if proc.status == ProcessStatus::Errored {
                         proc.status = ProcessStatus::Failed;
-                        self.event_bus.publish(
-                            "process.status_changed",
-                            serde_json::json!({
-                                "process_id": id,
-                                "instance": instance_idx,
-                                "status": "failed",
-                                "message": "Max restart retries exceeded",
-                            }),
+                        self.publish_status_changed(
+                            &id,
+                            instance_idx,
+                            "failed",
+                            None,
+                            proc.exit_code,
+                            None,
+                            Some("Max restart retries exceeded"),
                         );
                     }
                 }
@@ -1370,14 +1392,14 @@ impl ProcessManager {
                         }
                     }
 
-                    self.event_bus.publish(
-                        "process.status_changed",
-                        serde_json::json!({
-                            "process_id": id,
-                            "instance": instance_idx,
-                            "status": "running",
-                            "pid": pid,
-                        }),
+                    self.publish_status_changed(
+                        &id,
+                        instance_idx,
+                        "running",
+                        pid,
+                        None,
+                        None,
+                        None,
                     );
 
                     info!(
@@ -1449,14 +1471,7 @@ impl ProcessManager {
             let _ = self.pty_manager.close_session(&session_id).await;
         }
 
-        self.event_bus.publish(
-            "process.status_changed",
-            serde_json::json!({
-                "process_id": id,
-                "instance": instance_idx,
-                "status": "stopped",
-            }),
-        );
+        self.publish_status_changed(id, instance_idx, "stopped", None, None, None, None);
         Ok(())
     }
 
@@ -2070,8 +2085,9 @@ fn resolve_username(username: &str) -> Option<(u32, u32)> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+    use tokio::sync::broadcast;
 
-    use crate::services::event_bus::EventBus;
+    use crate::services::event_bus::{Event, EventBus};
 
     async fn test_pm() -> (Arc<ProcessManager>, SqlitePool) {
         let pool = crate::db::connect_in_memory().await.unwrap();
@@ -2108,6 +2124,29 @@ mod tests {
             .iter()
             .find(|inst| inst.index == index)
             .expect("instance should exist")
+    }
+
+    async fn recv_process_status_event(
+        events: &mut broadcast::Receiver<Event>,
+        process_id: &str,
+        status: &str,
+    ) -> Event {
+        loop {
+            let event = events.recv().await.unwrap();
+            if event.topic != "process.status_changed" {
+                continue;
+            }
+
+            if event.payload["process_id"] != serde_json::json!(process_id) {
+                continue;
+            }
+
+            if event.payload["status"] != serde_json::json!(status) {
+                continue;
+            }
+
+            return event;
+        }
     }
 
     #[tokio::test]
@@ -2605,6 +2644,26 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn test_stop_pty_mode_publishes_null_session_id() {
+        let (pm, _pool) = test_pm().await;
+        let mut events = pm.event_bus.subscribe();
+        let mut req = sleep_process_request("pty-stop-event");
+        req.pty_mode = true;
+        let created = pm.create_process(req).await.unwrap();
+        let process_id = created.definition.id.clone();
+
+        pm.start_process(&process_id).await.unwrap();
+        let running_event = recv_process_status_event(&mut events, &process_id, "running").await;
+        assert!(running_event.payload["pty_session_id"].as_str().is_some());
+
+        pm.stop_process(&process_id).await.unwrap();
+        let stopped_event = recv_process_status_event(&mut events, &process_id, "stopped").await;
+        assert!(stopped_event.payload["pty_session_id"].is_null());
+        assert!(stopped_event.payload["pid"].is_null());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn test_pty_mode_process_exits_updates_status() {
         let (pm, _pool) = test_pm().await;
         let info = pm
@@ -2637,6 +2696,66 @@ mod tests {
         assert_eq!(state.status, ProcessStatus::Stopped);
         assert!(state.pid.is_none());
         assert!(state.pty_session_id.is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_pty_mode_restart_publishes_new_session_id() {
+        let (pm, _pool) = test_pm().await;
+        let mut events = pm.event_bus.subscribe();
+        let marker_path =
+            std::env::temp_dir().join(format!("xdeck-pty-restart-{}", uuid::Uuid::new_v4()));
+
+        let info = pm
+            .create_process(CreateProcessRequest {
+                name: "pty-restart-event".to_string(),
+                command: "sh".to_string(),
+                args: vec![
+                    "-c".to_string(),
+                    "if [ -f \"$0\" ]; then sleep 2; else touch \"$0\"; exit 1; fi".to_string(),
+                    marker_path.to_string_lossy().into_owned(),
+                ],
+                cwd: "/tmp".to_string(),
+                env: HashMap::new(),
+                restart_policy: RestartPolicy {
+                    strategy: RestartStrategy::OnFailure,
+                    max_retries: Some(1),
+                    delay_ms: 10,
+                    backoff_multiplier: 1.0,
+                },
+                auto_start: false,
+                group_name: None,
+                log_config: ProcessLogConfig::default(),
+                run_as: None,
+                instance_count: 1,
+                pty_mode: true,
+            })
+            .await
+            .unwrap();
+        let process_id = info.definition.id.clone();
+
+        pm.start_process(&process_id).await.unwrap();
+
+        let first_running = recv_process_status_event(&mut events, &process_id, "running").await;
+        let first_session_id = first_running.payload["pty_session_id"]
+            .as_str()
+            .expect("first running event should include PTY session id")
+            .to_string();
+
+        let errored_event = recv_process_status_event(&mut events, &process_id, "errored").await;
+        assert_eq!(errored_event.payload["exit_code"], serde_json::json!(1));
+        assert!(errored_event.payload["pty_session_id"].is_null());
+
+        let restarted_running =
+            recv_process_status_event(&mut events, &process_id, "running").await;
+        let restarted_session_id = restarted_running.payload["pty_session_id"]
+            .as_str()
+            .expect("restarted running event should include PTY session id")
+            .to_string();
+        assert_ne!(first_session_id, restarted_session_id);
+
+        let _ = pm.stop_process(&process_id).await;
+        let _ = std::fs::remove_file(&marker_path);
     }
 
     #[cfg(unix)]
