@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -674,14 +674,18 @@ impl ProcessManager {
             {
                 Ok(f) => f,
                 Err(err) => {
-                    error!("Failed to open PTY raw log file {:?}: {}", raw_log_path, err);
+                    error!(
+                        "Failed to open PTY raw log file {:?}: {}",
+                        raw_log_path, err
+                    );
                     return;
                 }
             };
 
             let mut current_size = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-            let mut raw_current_size =
-                std::fs::metadata(&raw_log_path).map(|m| m.len()).unwrap_or(0);
+            let mut raw_current_size = std::fs::metadata(&raw_log_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
             let mut line_buf = String::new();
 
             loop {
@@ -1685,6 +1689,22 @@ impl ProcessManager {
         let streams = req.stream.as_slices();
 
         for stream in streams {
+            // Also read rotated files (oldest first)
+            for i in (1..=definition.log_config.max_files).rev() {
+                let rotated = proc_log_dir.join(format!("{}.log.{}", stream, i));
+                if rotated.exists() {
+                    if let Ok(content) = tokio::fs::read_to_string(&rotated).await {
+                        for line_str in content.lines() {
+                            all_lines.push(LogLine {
+                                stream: stream.to_string(),
+                                line: line_str.to_string(),
+                                timestamp: None,
+                            });
+                        }
+                    }
+                }
+            }
+
             let log_file = proc_log_dir.join(format!("{}.log", stream));
             if log_file.exists() {
                 if let Ok(content) = tokio::fs::read_to_string(&log_file).await {
@@ -1694,25 +1714,6 @@ impl ProcessManager {
                             line: line_str.to_string(),
                             timestamp: None,
                         });
-                    }
-                }
-            }
-
-            // Also read rotated files (oldest first)
-            for i in (1..=10).rev() {
-                let rotated = proc_log_dir.join(format!("{}.log.{}", stream, i));
-                if rotated.exists() {
-                    if let Ok(content) = tokio::fs::read_to_string(&rotated).await {
-                        let rotated_lines: Vec<LogLine> = content
-                            .lines()
-                            .map(|l| LogLine {
-                                stream: stream.to_string(),
-                                line: l.to_string(),
-                                timestamp: None,
-                            })
-                            .collect();
-                        // Prepend rotated lines (older)
-                        all_lines.splice(0..0, rotated_lines);
                     }
                 }
             }
@@ -2471,6 +2472,44 @@ mod tests {
         assert_eq!(logs_1.instance, 1);
         assert!(!logs_0.lines.is_empty());
         assert!(!logs_1.lines.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_logs_orders_rotated_files_oldest_first() {
+        let (pm, _pool) = test_pm().await;
+        let mut req = sleep_process_request("rotated-log-order");
+        req.log_config = ProcessLogConfig {
+            max_file_size: 1024,
+            max_files: 3,
+        };
+
+        let info = pm.create_process(req).await.unwrap();
+        let id = info.definition.id;
+        let proc_log_dir = pm.log_dir.join(&id).join("instance-0");
+
+        std::fs::create_dir_all(&proc_log_dir).unwrap();
+        std::fs::write(proc_log_dir.join("stdout.log.2"), "oldest-1\noldest-2\n").unwrap();
+        std::fs::write(proc_log_dir.join("stdout.log.1"), "newer-1\n").unwrap();
+        std::fs::write(proc_log_dir.join("stdout.log"), "current-1\ncurrent-2\n").unwrap();
+
+        let logs = pm
+            .get_logs(GetLogsRequest {
+                id,
+                stream: LogStream::Stdout,
+                lines: 10,
+                offset: 0,
+                instance: 0,
+            })
+            .await
+            .unwrap();
+
+        let lines: Vec<&str> = logs.lines.iter().map(|line| line.line.as_str()).collect();
+        assert_eq!(
+            lines,
+            vec!["oldest-1", "oldest-2", "newer-1", "current-1", "current-2"]
+        );
+        assert_eq!(logs.total_lines, 5);
+        assert!(!logs.has_more);
     }
 
     #[tokio::test]
