@@ -252,6 +252,7 @@ export function ProcessFormSections({
             id={fieldId("group")}
             placeholder="web-services"
             showClear={Boolean(form.groupName)}
+            className="w-full overflow-hidden"
           />
           <ComboboxContent>
             <ComboboxList>
@@ -287,7 +288,6 @@ export function ProcessFormSections({
           value={form.instanceCount}
           onChange={(e) => updateForm("instanceCount", e.target.value)}
           placeholder="1"
-          className="w-24"
         />
         <p className="text-xs text-muted-foreground">
           Number of instances to run (1–100). Each gets independent supervision and logs.
