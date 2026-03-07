@@ -90,6 +90,30 @@ export function ProcessPtyViewer({
         </div>
 
         <div className="flex items-center gap-2">
+          <div className="flex h-7 items-center gap-2 rounded-md border px-2 text-xs text-muted-foreground">
+            <TerminalSquare className="size-3.5" />
+            <span>{selectedSessionId ? "PTY Session" : "No Session"}</span>
+            <span
+              className={`inline-flex size-2 rounded-full ${
+                selectedSessionId
+                  ? isConnected
+                    ? "bg-green-500"
+                    : "bg-yellow-500"
+                  : "bg-muted-foreground/30"
+              }`}
+            />
+          </div>
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1.5 text-xs"
+            onClick={() => setViewMode("replay")}
+          >
+            <History className="size-3" />
+            Replay
+          </Button>
+
           {process.instance_count > 1 && (
             <Select
               value={String(selectedInstance)}
@@ -111,30 +135,6 @@ export function ProcessPtyViewer({
               </SelectContent>
             </Select>
           )}
-
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-7 gap-1.5 text-xs"
-            onClick={() => setViewMode("replay")}
-          >
-            <History className="size-3" />
-            Replay
-          </Button>
-
-          <div className="flex h-7 items-center gap-2 rounded-md border px-2 text-xs text-muted-foreground">
-            <TerminalSquare className="size-3.5" />
-            <span>{selectedSessionId ? "PTY Session" : "No Session"}</span>
-            <span
-              className={`inline-flex size-2 rounded-full ${
-                selectedSessionId
-                  ? isConnected
-                    ? "bg-green-500"
-                    : "bg-yellow-500"
-                  : "bg-muted-foreground/30"
-              }`}
-            />
-          </div>
         </div>
       </div>
 

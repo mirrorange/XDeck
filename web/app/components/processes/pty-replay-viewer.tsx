@@ -362,6 +362,12 @@ export function PtyReplayViewer({
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Size info badge */}
+            <div className="flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground">
+              <span className="font-mono">{formatBytes(totalSize)}</span>
+              <span className="text-muted-foreground/50">total</span>
+            </div>
+
             {process.instance_count > 1 && (
               <Select
                 value={String(selectedInstance)}
@@ -385,12 +391,6 @@ export function PtyReplayViewer({
                 </SelectContent>
               </Select>
             )}
-
-            {/* Size info badge */}
-            <div className="flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs text-muted-foreground">
-              <span className="font-mono">{formatBytes(totalSize)}</span>
-              <span className="text-muted-foreground/50">total</span>
-            </div>
           </div>
         </div>
 

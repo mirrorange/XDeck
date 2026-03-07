@@ -136,25 +136,6 @@ export function LogViewer({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {instanceCount > 1 && (
-            <Select
-              value={String(selectedInstance)}
-              onValueChange={(value) => setSelectedInstance(Number(value))}
-            >
-              <SelectTrigger size="sm" className="w-auto">
-                <Layers className="mr-1.5 size-3" />
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {Array.from({ length: instanceCount }, (_, i) => (
-                  <SelectItem key={i} value={String(i)}>
-                    Instance {i}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-
           <div className="flex items-center gap-1 rounded-lg bg-muted p-0.5">
             {(["all", "stdout", "stderr"] as const).map((stream) => (
               <button
@@ -185,6 +166,25 @@ export function LogViewer({
             <Download className="mr-1 size-3" />
             Export
           </Button>
+
+          {instanceCount > 1 && (
+            <Select
+              value={String(selectedInstance)}
+              onValueChange={(value) => setSelectedInstance(Number(value))}
+            >
+              <SelectTrigger size="sm" className="w-auto">
+                <Layers className="mr-1.5 size-3" />
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {Array.from({ length: instanceCount }, (_, i) => (
+                  <SelectItem key={i} value={String(i)}>
+                    Instance {i}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </div>
       </div>
 
