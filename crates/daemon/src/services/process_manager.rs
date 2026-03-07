@@ -241,6 +241,7 @@ pub struct LogsResponse {
     pub instance: u32,
     pub lines: Vec<LogLine>,
     pub has_more: bool,
+    pub total_lines: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -1741,6 +1742,7 @@ impl ProcessManager {
             instance: req.instance,
             lines,
             has_more,
+            total_lines: total,
         })
     }
 

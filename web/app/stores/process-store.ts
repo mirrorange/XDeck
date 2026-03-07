@@ -96,6 +96,7 @@ export interface LogsResponse {
   instance: number;
   lines: LogLine[];
   has_more: boolean;
+  total_lines: number;
 }
 
 export interface PtyReplayResponse {
