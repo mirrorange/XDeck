@@ -1,13 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  ArrowDown,
   ChevronDown,
   ChevronLeft,
   Download,
   FileText,
   Layers,
   Loader2,
-  Pause,
   ScrollText,
 } from "lucide-react";
 
@@ -276,11 +274,11 @@ export function LogViewer({
   const [hasMore, setHasMore] = useState(false);
   const [totalLines, setTotalLines] = useState(0);
   const [streamFilter, setStreamFilter] = useState<StreamFilter>("all");
-  const [autoScroll, setAutoScroll] = useState(true);
   const [selectedInstance, setSelectedInstance] = useState(0);
   const [showExportRange, setShowExportRange] = useState(false);
 
   const logContainerRef = useRef<HTMLDivElement>(null);
+  const shouldAutoScrollRef = useRef(true);
   // Track the scroll position to restore after prepending older logs
   const scrollAnchorRef = useRef<{
     scrollHeight: number;
@@ -299,6 +297,7 @@ export function LogViewer({
         lines: 500,
         instance: selectedInstance,
       });
+      shouldAutoScrollRef.current = true;
       setLogs(res.lines);
       setHasMore(res.has_more);
       setTotalLines(res.total_lines);
@@ -345,10 +344,10 @@ export function LogViewer({
   // ── Auto-scroll to bottom ─────────────────────────────────
 
   useEffect(() => {
-    if (autoScroll && logContainerRef.current) {
+    if (shouldAutoScrollRef.current && logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
     }
-  }, [logs, autoScroll]);
+  }, [logs]);
 
   // ── Restore scroll after prepending older logs ────────────
 
@@ -367,8 +366,7 @@ export function LogViewer({
   const handleScroll = () => {
     if (!logContainerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = logContainerRef.current;
-    const isAtBottom = scrollHeight - scrollTop - clientHeight < 50;
-    setAutoScroll(isAtBottom);
+    shouldAutoScrollRef.current = scrollHeight - scrollTop - clientHeight < 50;
 
     // Auto-load more when near the top
     if (
@@ -497,22 +495,6 @@ export function LogViewer({
                 </button>
               ))}
             </div>
-
-            {/* Auto-scroll toggle */}
-            <Button
-              variant={autoScroll ? "default" : "outline"}
-              size="sm"
-              className="h-7 gap-1 text-xs"
-              onClick={() => setAutoScroll(!autoScroll)}
-            >
-              {autoScroll ? (
-                <ArrowDown className="size-3" />
-              ) : (
-                <Pause className="size-3" />
-              )}
-              {autoScroll ? "Auto" : "Paused"}
-            </Button>
-
             {/* Export dropdown */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
