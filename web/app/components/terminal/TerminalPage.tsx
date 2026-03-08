@@ -64,7 +64,7 @@ export function TerminalPage() {
   }, [activeTabId, tabs, setActiveSessionId]);
 
   const handleSendInputReady = useCallback(
-    (sessionId: string) => (sendInput: ((data: string) => void) | null) => {
+    (sessionId: string) => (sendInput: ((data: string | Uint8Array) => void) | null) => {
       if (sendInput) {
         registerSendInput(sessionId, sendInput);
       } else {

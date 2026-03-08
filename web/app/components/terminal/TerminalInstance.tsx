@@ -12,7 +12,7 @@ interface TerminalInstanceProps {
   /** Whether this tab is currently visible (active). */
   isActive: boolean;
   /** Called when PTY send capability is ready/gone. */
-  onSendInputReady?: (sendInput: ((data: string) => void) | null) => void;
+  onSendInputReady?: (sendInput: ((data: string | Uint8Array) => void) | null) => void;
 }
 
 /**
@@ -118,7 +118,7 @@ export function TerminalInstance({ sessionId, isActive, onSendInputReady }: Term
     ptyClient.connect();
 
     // Expose send capability to parent
-    onSendInputReady?.((data: string) => {
+    onSendInputReady?.((data: string | Uint8Array) => {
       ptyClient.sendInput(data);
     });
 

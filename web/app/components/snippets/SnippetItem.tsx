@@ -1,5 +1,13 @@
 import { useState, useRef } from "react";
-import { Copy, MoreHorizontal, Pencil, Play, Trash2 } from "lucide-react";
+import {
+  Clipboard,
+  Copy,
+  FileCode2,
+  MoreHorizontal,
+  Pencil,
+  Play,
+  Trash2,
+} from "lucide-react";
 
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -8,6 +16,9 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
 import {
@@ -16,23 +27,35 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "~/components/ui/tooltip";
+import {
+  getSnippetExecutionModeLabel,
+  type SnippetExecutionMode,
+} from "~/lib/snippet-execution";
 import type { SnippetInfo } from "~/stores/snippet-store";
 
 interface SnippetItemProps {
   snippet: SnippetInfo;
-  onExecute: (command: string) => void;
+  onExecute: (snippet: SnippetInfo, executionMode?: SnippetExecutionMode) => void;
   onEdit: (snippet: SnippetInfo) => void;
   onDelete: (id: string) => void;
 }
 
-/**
- * Format a snippet command for display.
- * Multiline commands (separated by \n) show a preview of the first line + count.
- */
 function formatCommandPreview(command: string): string {
   const lines = command.split("\n");
   if (lines.length <= 1) return command;
   return `${lines[0]} (+${lines.length - 1} lines)`;
+}
+
+function SnippetModeIcon({ executionMode }: { executionMode: SnippetExecutionMode }) {
+  switch (executionMode) {
+    case "paste_only":
+      return <Clipboard className="size-3" />;
+    case "execute_as_script":
+      return <FileCode2 className="size-3" />;
+    case "paste_and_run":
+    default:
+      return <Play className="size-3" />;
+  }
 }
 
 export function SnippetItem({ snippet, onExecute, onEdit, onDelete }: SnippetItemProps) {
@@ -56,12 +79,16 @@ export function SnippetItem({ snippet, onExecute, onEdit, onDelete }: SnippetIte
   };
 
   const lineCount = snippet.command.split("\n").length;
+  const executionModeLabel = getSnippetExecutionModeLabel(snippet.execution_mode);
 
   return (
     <div className="group rounded-md border bg-card p-2 transition-colors hover:bg-accent/50">
-      {/* Header row */}
       <div className="flex items-start justify-between gap-1">
         <div className="min-w-0 flex-1">
+          <div className="mb-1 flex items-center gap-1 text-[10px] text-muted-foreground">
+            <SnippetModeIcon executionMode={snippet.execution_mode} />
+            <span>{executionModeLabel}</span>
+          </div>
           <p className="truncate text-xs font-medium leading-tight">{snippet.name}</p>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
@@ -72,12 +99,12 @@ export function SnippetItem({ snippet, onExecute, onEdit, onDelete }: SnippetIte
                   variant="ghost"
                   size="icon-xs"
                   className="opacity-0 group-hover:opacity-100"
-                  onClick={() => onExecute(snippet.command)}
+                  onClick={() => onExecute(snippet)}
                 >
-                  <Play className="size-3" />
+                  <SnippetModeIcon executionMode={snippet.execution_mode} />
                 </Button>
               </TooltipTrigger>
-              <TooltipContent side="top">Run in terminal</TooltipContent>
+              <TooltipContent side="top">{executionModeLabel}</TooltipContent>
             </Tooltip>
           </TooltipProvider>
 
@@ -91,11 +118,20 @@ export function SnippetItem({ snippet, onExecute, onEdit, onDelete }: SnippetIte
                 <MoreHorizontal className="size-3" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-36">
-              <DropdownMenuItem onClick={() => onExecute(snippet.command)}>
-                <Play className="mr-2 size-3.5" />
-                Run
+            <DropdownMenuContent align="end" className="w-48">
+              <DropdownMenuItem onClick={() => onExecute(snippet, "paste_and_run")}>
+                <SnippetModeIcon executionMode="paste_and_run" />
+                Paste and run
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onExecute(snippet, "paste_only")}>
+                <SnippetModeIcon executionMode="paste_only" />
+                Paste only
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onExecute(snippet, "execute_as_script")}>
+                <SnippetModeIcon executionMode="execute_as_script" />
+                Execute as script
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem onClick={handleCopy}>
                 <Copy className="mr-2 size-3.5" />
                 Copy
@@ -117,16 +153,14 @@ export function SnippetItem({ snippet, onExecute, onEdit, onDelete }: SnippetIte
         </div>
       </div>
 
-      {/* Command preview */}
       <div
         className="mt-1 cursor-pointer rounded bg-muted/60 px-1.5 py-1 font-mono text-[11px] leading-snug text-muted-foreground"
-        onClick={() => onExecute(snippet.command)}
-        title="Click to run"
+        onClick={() => onExecute(snippet)}
+        title={`Click to ${executionModeLabel.toLowerCase()}`}
       >
         <span className="line-clamp-2 break-all">{formatCommandPreview(snippet.command)}</span>
       </div>
 
-      {/* Tags + meta */}
       {(snippet.tags.length > 0 || lineCount > 1) && (
         <div className="mt-1.5 flex flex-wrap items-center gap-1">
           {lineCount > 1 && (

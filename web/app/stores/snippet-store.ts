@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { getRpcClient } from "~/lib/rpc-client";
+import type { SnippetExecutionMode } from "~/lib/snippet-execution";
 
 // -- Types -------------------------------------------------------
 
@@ -8,6 +9,7 @@ export interface SnippetInfo {
   name: string;
   command: string;
   tags: string[];
+  execution_mode: SnippetExecutionMode;
   created_at: string;
   updated_at: string;
 }
@@ -21,12 +23,14 @@ interface SnippetState {
     name: string;
     command: string;
     tags?: string[];
+    execution_mode?: SnippetExecutionMode;
   }) => Promise<SnippetInfo>;
   updateSnippet: (params: {
     id: string;
     name?: string;
     command?: string;
     tags?: string[];
+    execution_mode?: SnippetExecutionMode;
   }) => Promise<SnippetInfo>;
   deleteSnippet: (id: string) => Promise<void>;
 }

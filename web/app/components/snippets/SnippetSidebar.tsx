@@ -4,12 +4,13 @@ import { Plus, Search, Code2, Loader2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import type { SnippetExecutionMode } from "~/lib/snippet-execution";
 import { useSnippetStore, type SnippetInfo } from "~/stores/snippet-store";
 import { SnippetItem } from "./SnippetItem";
 import { SnippetFormDialog } from "./SnippetFormDialog";
 
 interface SnippetSidebarProps {
-  onExecute: (command: string) => void;
+  onExecute: (snippet: SnippetInfo, executionMode?: SnippetExecutionMode) => void;
 }
 
 export function SnippetSidebar({ onExecute }: SnippetSidebarProps) {

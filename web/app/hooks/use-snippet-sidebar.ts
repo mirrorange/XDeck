@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSnippetStore } from "~/stores/snippet-store";
+import {
+  buildSnippetTerminalInput,
+  type SnippetExecutionMode,
+} from "~/lib/snippet-execution";
+import { useSnippetStore, type SnippetInfo } from "~/stores/snippet-store";
+
+type SendInput = (data: string | Uint8Array) => void;
 
 /**
  * Hook to manage snippet sidebar state and execution for terminal views.
@@ -7,12 +13,12 @@ import { useSnippetStore } from "~/stores/snippet-store";
  * Provides:
  * - `snippetOpen` / `toggleSnippet` for sidebar visibility
  * - `registerSendInput` / `unregisterSendInput` for tracking per-session send fns
- * - `executeSnippet` sends a multiline snippet to the active terminal
+ * - `executeSnippet` applies a snippet using its selected execution mode
  */
 export function useSnippetSidebar() {
   const [snippetOpen, setSnippetOpen] = useState(false);
   const { fetchSnippets } = useSnippetStore();
-  const sendInputMap = useRef<Map<string, (data: string) => void>>(new Map());
+  const sendInputMap = useRef<Map<string, SendInput>>(new Map());
   const [activeSessionId, setActiveSessionIdState] = useState<string | null>(null);
 
   // Fetch snippets on first open
@@ -32,7 +38,7 @@ export function useSnippetSidebar() {
     setActiveSessionIdState(id);
   }, []);
 
-  const registerSendInput = useCallback((sessionId: string, sendInput: (data: string) => void) => {
+  const registerSendInput = useCallback((sessionId: string, sendInput: SendInput) => {
     sendInputMap.current.set(sessionId, sendInput);
   }, []);
 
@@ -41,20 +47,25 @@ export function useSnippetSidebar() {
   }, []);
 
   /**
-   * Execute a snippet command in the active terminal.
-   * Multiline commands (newline-separated) are sent line-by-line,
-   * each terminated with \r to simulate pressing Enter.
+   * Apply a snippet to the active terminal using either its default mode,
+   * or a one-off mode selected from the overflow menu.
    */
   const executeSnippet = useCallback(
-    (command: string) => {
+    (
+      snippet: Pick<SnippetInfo, "command" | "execution_mode">,
+      overrideMode?: SnippetExecutionMode
+    ) => {
       if (!activeSessionId) return;
       const sendInput = sendInputMap.current.get(activeSessionId);
       if (!sendInput) return;
 
-      const lines = command.split("\n");
-      for (const line of lines) {
-        sendInput(line + "\r");
-      }
+      const input = buildSnippetTerminalInput(
+        snippet.command,
+        overrideMode ?? snippet.execution_mode
+      );
+      if (!input) return;
+
+      sendInput(input);
     },
     [activeSessionId]
   );

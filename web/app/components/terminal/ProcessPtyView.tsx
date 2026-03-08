@@ -11,7 +11,7 @@ import { Loader2 } from "lucide-react";
 interface ProcessPtyViewProps {
   sessionId: string;
   onConnectionChange?: (connected: boolean) => void;
-  onSendInputReady?: (sendInput: ((data: string) => void) | null) => void;
+  onSendInputReady?: (sendInput: ((data: string | Uint8Array) => void) | null) => void;
 }
 
 /**
@@ -94,7 +94,7 @@ export function ProcessPtyView({ sessionId, onConnectionChange, onSendInputReady
     ptyClientRef.current = ptyClient;
     ptyClient.connect();
 
-    onSendInputReady?.((data: string) => {
+    onSendInputReady?.((data: string | Uint8Array) => {
       ptyClient.sendInput(data);
     });
 

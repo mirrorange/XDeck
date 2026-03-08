@@ -12,7 +12,18 @@ import {
 } from "~/components/responsive-modal";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
 import { Textarea } from "~/components/ui/textarea";
+import {
+  SNIPPET_EXECUTION_MODE_OPTIONS,
+  type SnippetExecutionMode,
+} from "~/lib/snippet-execution";
 import { useSnippetStore, type SnippetInfo } from "~/stores/snippet-store";
 
 interface SnippetFormDialogProps {
@@ -26,6 +37,7 @@ export function SnippetFormDialog({ open, onOpenChange, snippet }: SnippetFormDi
 
   const [name, setName] = useState("");
   const [command, setCommand] = useState("");
+  const [executionMode, setExecutionMode] = useState<SnippetExecutionMode>("paste_and_run");
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
   const [isSaving, setIsSaving] = useState(false);
@@ -38,6 +50,7 @@ export function SnippetFormDialog({ open, onOpenChange, snippet }: SnippetFormDi
     if (open) {
       setName(snippet?.name ?? "");
       setCommand(snippet?.command ?? "");
+      setExecutionMode(snippet?.execution_mode ?? "paste_and_run");
       setTags(snippet?.tags ?? []);
       setTagInput("");
       setIsSaving(false);
@@ -77,12 +90,14 @@ export function SnippetFormDialog({ open, onOpenChange, snippet }: SnippetFormDi
           id: snippet.id,
           name: name.trim(),
           command,
+          execution_mode: executionMode,
           tags,
         });
       } else {
         await createSnippet({
           name: name.trim(),
           command,
+          execution_mode: executionMode,
           tags,
         });
       }
@@ -129,8 +144,30 @@ export function SnippetFormDialog({ open, onOpenChange, snippet }: SnippetFormDi
               value={command}
               onChange={(e) => setCommand(e.target.value)}
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="snippet-execution-mode">Default behavior</Label>
+            <Select
+              value={executionMode}
+              onValueChange={(value) => setExecutionMode(value as SnippetExecutionMode)}
+            >
+              <SelectTrigger id="snippet-execution-mode" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SNIPPET_EXECUTION_MODE_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <p className="text-[11px] text-muted-foreground">
-              Each line will be sent as a separate command to the terminal.
+              {
+                SNIPPET_EXECUTION_MODE_OPTIONS.find((option) => option.value === executionMode)
+                  ?.description
+              }
             </p>
           </div>
 

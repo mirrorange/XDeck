@@ -86,7 +86,7 @@ export function ProcessPtyViewer({
   }, [selectedSessionId, setActiveSessionId]);
 
   const handleSendInputReady = useCallback(
-    (sendInput: ((data: string) => void) | null) => {
+    (sendInput: ((data: string | Uint8Array) => void) | null) => {
       if (!selectedSessionId) return;
       if (sendInput) {
         registerSendInput(selectedSessionId, sendInput);
