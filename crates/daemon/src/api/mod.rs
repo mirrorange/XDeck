@@ -15,6 +15,7 @@ use crate::rpc::process_handlers;
 use crate::rpc::pty_handlers;
 use crate::rpc::router::RpcRouter;
 use crate::rpc::snippet_handlers;
+use crate::rpc::snippet_store_handlers;
 use crate::rpc::system_handlers;
 use crate::services::auth::AuthService;
 use crate::services::event_bus::{EventBus, SharedEventBus};
@@ -82,6 +83,7 @@ impl AppState {
         process_handlers::register(&mut router, process_mgr);
         pty_handlers::register(&mut router, pty_mgr);
         snippet_handlers::register(&mut router);
+        snippet_store_handlers::register(&mut router);
 
         router
     }

@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { Plus, Search, Code2, Loader2 } from "lucide-react";
+import { Plus, Search, Code2, Loader2, Store } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
@@ -8,6 +8,7 @@ import type { SnippetExecutionMode } from "~/lib/snippet-execution";
 import { useSnippetStore, type SnippetInfo } from "~/stores/snippet-store";
 import { SnippetItem } from "./SnippetItem";
 import { SnippetFormDialog } from "./SnippetFormDialog";
+import { SnippetStoreDialog } from "./SnippetStoreDialog";
 
 interface SnippetSidebarProps {
   onExecute: (snippet: SnippetInfo, executionMode?: SnippetExecutionMode) => void;
@@ -17,6 +18,7 @@ export function SnippetSidebar({ onExecute }: SnippetSidebarProps) {
   const { snippets, isLoading, deleteSnippet } = useSnippetStore();
   const [search, setSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
+  const [storeOpen, setStoreOpen] = useState(false);
   const [editingSnippet, setEditingSnippet] = useState<SnippetInfo | null>(null);
 
   const filtered = snippets.filter((s) => {
@@ -48,14 +50,24 @@ export function SnippetSidebar({ onExecute }: SnippetSidebarProps) {
           <Code2 className="size-4 text-muted-foreground" />
           <span className="text-sm font-medium">Snippets</span>
         </div>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          onClick={() => setCreateOpen(true)}
-          title="New Snippet"
-        >
-          <Plus className="size-3.5" />
-        </Button>
+        <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => setStoreOpen(true)}
+            title="Snippet Store"
+          >
+            <Store className="size-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            onClick={() => setCreateOpen(true)}
+            title="New Snippet"
+          >
+            <Plus className="size-3.5" />
+          </Button>
+        </div>
       </div>
 
       {/* Search */}
@@ -121,6 +133,9 @@ export function SnippetSidebar({ onExecute }: SnippetSidebarProps) {
         }}
         snippet={editingSnippet}
       />
+
+      {/* Snippet Store Dialog */}
+      <SnippetStoreDialog open={storeOpen} onOpenChange={setStoreOpen} />
     </div>
   );
 }
