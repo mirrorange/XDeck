@@ -11,13 +11,15 @@ interface TerminalInstanceProps {
   sessionId: string;
   /** Whether this tab is currently visible (active). */
   isActive: boolean;
+  /** Called when PTY send capability is ready/gone. */
+  onSendInputReady?: (sendInput: ((data: string) => void) | null) => void;
 }
 
 /**
  * A single xterm.js terminal instance connected to a PTY session via WebSocket.
  * Preserves terminal state when hidden (not unmounted, just display:none).
  */
-export function TerminalInstance({ sessionId, isActive }: TerminalInstanceProps) {
+export function TerminalInstance({ sessionId, isActive, onSendInputReady }: TerminalInstanceProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -115,6 +117,11 @@ export function TerminalInstance({ sessionId, isActive }: TerminalInstanceProps)
     ptyClientRef.current = ptyClient;
     ptyClient.connect();
 
+    // Expose send capability to parent
+    onSendInputReady?.((data: string) => {
+      ptyClient.sendInput(data);
+    });
+
     // Forward terminal input to PTY
     const dataDisposable = terminal.onData((data) => {
       ptyClient.sendInput(data);
@@ -135,6 +142,7 @@ export function TerminalInstance({ sessionId, isActive }: TerminalInstanceProps)
     });
 
     return () => {
+      onSendInputReady?.(null);
       dataDisposable.dispose();
       binaryDisposable.dispose();
       resizeDisposable.dispose();

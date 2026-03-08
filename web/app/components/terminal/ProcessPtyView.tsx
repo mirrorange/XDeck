@@ -11,12 +11,13 @@ import { Loader2 } from "lucide-react";
 interface ProcessPtyViewProps {
   sessionId: string;
   onConnectionChange?: (connected: boolean) => void;
+  onSendInputReady?: (sendInput: ((data: string) => void) | null) => void;
 }
 
 /**
  * PTY terminal body for a process detail page.
  */
-export function ProcessPtyView({ sessionId, onConnectionChange }: ProcessPtyViewProps) {
+export function ProcessPtyView({ sessionId, onConnectionChange, onSendInputReady }: ProcessPtyViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
@@ -93,6 +94,10 @@ export function ProcessPtyView({ sessionId, onConnectionChange }: ProcessPtyView
     ptyClientRef.current = ptyClient;
     ptyClient.connect();
 
+    onSendInputReady?.((data: string) => {
+      ptyClient.sendInput(data);
+    });
+
     const dataDisposable = terminal.onData((data) => {
       ptyClient.sendInput(data);
     });
@@ -117,6 +122,7 @@ export function ProcessPtyView({ sessionId, onConnectionChange }: ProcessPtyView
     }, 200);
 
     return () => {
+      onSendInputReady?.(null);
       clearTimeout(initialResizeTimer);
       dataDisposable.dispose();
       binaryDisposable.dispose();
@@ -129,7 +135,7 @@ export function ProcessPtyView({ sessionId, onConnectionChange }: ProcessPtyView
       initRef.current = false;
       onConnectionChange?.(false);
     };
-  }, [onConnectionChange, sessionId]);
+  }, [onConnectionChange, onSendInputReady, sessionId]);
 
   const handleResize = useCallback(() => {
     if (fitAddonRef.current && terminalRef.current) {

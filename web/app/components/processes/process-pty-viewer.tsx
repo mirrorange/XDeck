@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, History, Layers, TerminalSquare } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronLeft, Code2, History, Layers, TerminalSquare } from "lucide-react";
 
 import { PtyReplayViewer } from "~/components/processes/pty-replay-viewer";
 import { ProcessPtyPlaceholder, ProcessPtyView } from "~/components/terminal/ProcessPtyView";
+import { SnippetSidebar } from "~/components/snippets/SnippetSidebar";
 import { Button } from "~/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "~/components/ui/tooltip";
 import {
   Select,
   SelectContent,
@@ -12,6 +19,7 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { getInstanceByIndex, type ProcessInfo } from "~/stores/process-store";
+import { useSnippetSidebar } from "~/hooks/use-snippet-sidebar";
 
 function getDefaultInstanceIndex(process: ProcessInfo) {
   return process.instances.find((instance) => instance.pty_session_id)?.index ?? 0;
@@ -30,6 +38,14 @@ export function ProcessPtyViewer({
   const [isConnected, setIsConnected] = useState(false);
   const [hasManualSelection, setHasManualSelection] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("live");
+  const {
+    snippetOpen,
+    toggleSnippet,
+    setActiveSessionId,
+    registerSendInput,
+    unregisterSendInput,
+    executeSnippet,
+  } = useSnippetSidebar();
 
   useEffect(() => {
     setSelectedInstance(getDefaultInstanceIndex(process));
@@ -64,6 +80,22 @@ export function ProcessPtyViewer({
   useEffect(() => {
     setIsConnected(false);
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    setActiveSessionId(selectedSessionId);
+  }, [selectedSessionId, setActiveSessionId]);
+
+  const handleSendInputReady = useCallback(
+    (sendInput: ((data: string) => void) | null) => {
+      if (!selectedSessionId) return;
+      if (sendInput) {
+        registerSendInput(selectedSessionId, sendInput);
+      } else {
+        unregisterSendInput(selectedSessionId);
+      }
+    },
+    [selectedSessionId, registerSendInput, unregisterSendInput]
+  );
 
   // Show replay viewer when in replay mode
   if (viewMode === "replay") {
@@ -135,22 +167,44 @@ export function ProcessPtyViewer({
               </SelectContent>
             </Select>
           )}
+
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={snippetOpen ? "secondary" : "outline"}
+                  size="sm"
+                  className="h-7 gap-1.5 text-xs"
+                  onClick={toggleSnippet}
+                >
+                  <Code2 className="size-3" />
+                  Snippets
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Toggle snippet sidebar</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
 
-      <div className="flex-1 overflow-hidden">
-        {selectedSessionId ? (
-          <ProcessPtyView
-            key={selectedSessionId}
-            sessionId={selectedSessionId}
-            onConnectionChange={setIsConnected}
-          />
-        ) : (
-          <ProcessPtyPlaceholder
-            title={`Instance ${selectedInstance} terminal is not available`}
-            description="Start or restart this instance to create a PTY session, then reconnect here."
-          />
-        )}
+      <div className="flex flex-1 overflow-hidden">
+        <div className="flex-1 overflow-hidden">
+          {selectedSessionId ? (
+            <ProcessPtyView
+              key={selectedSessionId}
+              sessionId={selectedSessionId}
+              onConnectionChange={setIsConnected}
+              onSendInputReady={handleSendInputReady}
+            />
+          ) : (
+            <ProcessPtyPlaceholder
+              title={`Instance ${selectedInstance} terminal is not available`}
+              description="Start or restart this instance to create a PTY session, then reconnect here."
+            />
+          )}
+        </div>
+
+        {snippetOpen && <SnippetSidebar onExecute={executeSnippet} />}
       </div>
     </div>
   );

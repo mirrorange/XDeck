@@ -1,0 +1,180 @@
+import { useState, useEffect, useCallback, useRef, type KeyboardEvent } from "react";
+import { X } from "lucide-react";
+
+import { Button } from "~/components/ui/button";
+import { Badge } from "~/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "~/components/ui/dialog";
+import { Input } from "~/components/ui/input";
+import { Label } from "~/components/ui/label";
+import { Textarea } from "~/components/ui/textarea";
+import { useSnippetStore, type SnippetInfo } from "~/stores/snippet-store";
+
+interface SnippetFormDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  snippet?: SnippetInfo | null;
+}
+
+export function SnippetFormDialog({ open, onOpenChange, snippet }: SnippetFormDialogProps) {
+  const { createSnippet, updateSnippet } = useSnippetStore();
+
+  const [name, setName] = useState("");
+  const [command, setCommand] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  const isEdit = !!snippet;
+
+  // Reset form when opening or snippet changes
+  useEffect(() => {
+    if (open) {
+      setName(snippet?.name ?? "");
+      setCommand(snippet?.command ?? "");
+      setTags(snippet?.tags ?? []);
+      setTagInput("");
+      setIsSaving(false);
+      // Focus name input after open animation
+      setTimeout(() => nameInputRef.current?.focus(), 100);
+    }
+  }, [open, snippet]);
+
+  const addTag = useCallback(() => {
+    const trimmed = tagInput.trim().toLowerCase();
+    if (trimmed && !tags.includes(trimmed)) {
+      setTags((prev) => [...prev, trimmed]);
+    }
+    setTagInput("");
+  }, [tagInput, tags]);
+
+  const removeTag = useCallback((tag: string) => {
+    setTags((prev) => prev.filter((t) => t !== tag));
+  }, []);
+
+  const handleTagKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      addTag();
+    } else if (e.key === "Backspace" && !tagInput && tags.length > 0) {
+      setTags((prev) => prev.slice(0, -1));
+    }
+  };
+
+  const handleSave = async () => {
+    if (!name.trim() || !command) return;
+
+    setIsSaving(true);
+    try {
+      if (isEdit && snippet) {
+        await updateSnippet({
+          id: snippet.id,
+          name: name.trim(),
+          command,
+          tags,
+        });
+      } else {
+        await createSnippet({
+          name: name.trim(),
+          command,
+          tags,
+        });
+      }
+      onOpenChange(false);
+    } catch (err) {
+      console.error("Failed to save snippet:", err);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{isEdit ? "Edit Snippet" : "New Snippet"}</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          {/* Name */}
+          <div className="space-y-2">
+            <Label htmlFor="snippet-name">Name</Label>
+            <Input
+              ref={nameInputRef}
+              id="snippet-name"
+              placeholder="e.g. Deploy to production"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
+
+          {/* Command */}
+          <div className="space-y-2">
+            <Label htmlFor="snippet-command">
+              Command
+              <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                (multiline supported)
+              </span>
+            </Label>
+            <Textarea
+              id="snippet-command"
+              placeholder={"echo \"Hello World\"\nls -la"}
+              className="min-h-24 font-mono text-sm"
+              value={command}
+              onChange={(e) => setCommand(e.target.value)}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Each line will be sent as a separate command to the terminal.
+            </p>
+          </div>
+
+          {/* Tags */}
+          <div className="space-y-2">
+            <Label htmlFor="snippet-tags">Tags</Label>
+            <div className="flex flex-wrap items-center gap-1 rounded-md border px-2 py-1.5">
+              {tags.map((tag) => (
+                <Badge key={tag} variant="secondary" className="h-5 gap-0.5 pl-1.5 pr-0.5 text-xs">
+                  {tag}
+                  <button
+                    type="button"
+                    onClick={() => removeTag(tag)}
+                    className="ml-0.5 rounded-full p-0.5 hover:bg-muted-foreground/20"
+                  >
+                    <X className="size-2.5" />
+                  </button>
+                </Badge>
+              ))}
+              <Input
+                id="snippet-tags"
+                className="h-5 min-w-16 flex-1 border-0 px-0 py-0 text-xs shadow-none focus-visible:ring-0"
+                placeholder={tags.length === 0 ? "Add tags…" : ""}
+                value={tagInput}
+                onChange={(e) => setTagInput(e.target.value)}
+                onKeyDown={handleTagKeyDown}
+                onBlur={addTag}
+              />
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSave}
+            disabled={!name.trim() || !command || isSaving}
+          >
+            {isSaving ? "Saving…" : isEdit ? "Save Changes" : "Create"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

@@ -1,4 +1,5 @@
 import { Plus, Terminal, X } from "lucide-react";
+import type { ReactNode } from "react";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import type { TerminalTab } from "~/stores/terminal-store";
@@ -10,6 +11,7 @@ interface TerminalTabBarProps {
   onCloseTab: (tabId: string) => void;
   onNewTab: () => void;
   isCreating?: boolean;
+  extraActions?: ReactNode;
 }
 
 export function TerminalTabBar({
@@ -19,6 +21,7 @@ export function TerminalTabBar({
   onCloseTab,
   onNewTab,
   isCreating,
+  extraActions,
 }: TerminalTabBarProps) {
   return (
     <div className="flex h-10 items-center gap-0 border-b bg-background/80 px-1">
@@ -63,6 +66,12 @@ export function TerminalTabBar({
       >
         <Plus className="size-3.5" />
       </Button>
+
+      {extraActions && (
+        <div className="ml-0.5 flex items-center gap-0.5 border-l pl-1.5">
+          {extraActions}
+        </div>
+      )}
     </div>
   );
 }

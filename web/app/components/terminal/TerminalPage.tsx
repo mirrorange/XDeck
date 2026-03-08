@@ -1,9 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Terminal } from "lucide-react";
+import { Code2, Loader2, Terminal } from "lucide-react";
 
 import { TerminalTabBar } from "./TerminalTabBar";
 import { TerminalInstance } from "./TerminalInstance";
 import { useTerminalStore } from "~/stores/terminal-store";
+import { SnippetSidebar } from "~/components/snippets/SnippetSidebar";
+import { useSnippetSidebar } from "~/hooks/use-snippet-sidebar";
+import { Button } from "~/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "~/components/ui/tooltip";
 
 export function TerminalPage() {
   const {
@@ -21,6 +30,49 @@ export function TerminalPage() {
   } = useTerminalStore();
 
   const [isCreating, setIsCreating] = useState(false);
+  const {
+    snippetOpen,
+    toggleSnippet,
+    setActiveSessionId,
+    registerSendInput,
+    unregisterSendInput,
+    executeSnippet,
+  } = useSnippetSidebar();
+
+  useEffect(() => {
+    void fetchSessions();
+    const unsubscribe = subscribeToEvents();
+    return unsubscribe;
+  }, [fetchSessions, subscribeToEvents]);
+
+  // On first load, restore tabs for existing terminal sessions
+  useEffect(() => {
+    if (sessions.length > 0 && tabs.length === 0) {
+      const terminalSessions = sessions.filter((s) => s.session_type === "terminal");
+      for (const session of terminalSessions) {
+        openTab(session.session_id, session.name);
+      }
+    }
+    // Only run this once when sessions first load
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions.length > 0 && tabs.length === 0]);
+
+  // Track active session for snippet execution
+  useEffect(() => {
+    const activeTab = tabs.find((t) => t.id === activeTabId);
+    setActiveSessionId(activeTab?.sessionId ?? null);
+  }, [activeTabId, tabs, setActiveSessionId]);
+
+  const handleSendInputReady = useCallback(
+    (sessionId: string) => (sendInput: ((data: string) => void) | null) => {
+      if (sendInput) {
+        registerSendInput(sessionId, sendInput);
+      } else {
+        unregisterSendInput(sessionId);
+      }
+    },
+    [registerSendInput, unregisterSendInput]
+  );
 
   useEffect(() => {
     void fetchSessions();
@@ -116,16 +168,37 @@ export function TerminalPage() {
         onCloseTab={handleCloseTab}
         onNewTab={handleNewTab}
         isCreating={isCreating}
+        extraActions={
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant={snippetOpen ? "secondary" : "ghost"}
+                  size="icon-xs"
+                  onClick={toggleSnippet}
+                >
+                  <Code2 className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">Snippets</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        }
       />
 
-      <div className="relative flex-1 overflow-hidden">
-        {tabs.map((tab) => (
-          <TerminalInstance
-            key={tab.sessionId}
-            sessionId={tab.sessionId}
-            isActive={tab.id === activeTabId}
-          />
-        ))}
+      <div className="relative flex flex-1 overflow-hidden">
+        <div className="flex-1 overflow-hidden">
+          {tabs.map((tab) => (
+            <TerminalInstance
+              key={tab.sessionId}
+              sessionId={tab.sessionId}
+              isActive={tab.id === activeTabId}
+              onSendInputReady={handleSendInputReady(tab.sessionId)}
+            />
+          ))}
+        </div>
+
+        {snippetOpen && <SnippetSidebar onExecute={executeSnippet} />}
       </div>
     </div>
   );
