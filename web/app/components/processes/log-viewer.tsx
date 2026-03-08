@@ -449,7 +449,7 @@ export function LogViewer({
       <div className="flex h-full flex-col">
         {/* ── Toolbar ── */}
         <div className="flex items-center justify-between border-b bg-background/95 px-4 py-2.5 backdrop-blur-sm">
-          {/* Left: back + title + log size indicator */}
+          {/* Left: back + title */}
           <div className="flex items-center gap-2">
             <Button
               variant="ghost"
@@ -463,9 +463,13 @@ export function LogViewer({
               <h3 className="font-medium leading-tight">{processName}</h3>
               <p className="text-xs text-muted-foreground">Process Logs</p>
             </div>
+          </div>
+
+          {/* Right: controls */}
+          <div className="flex items-center gap-2">
             {/* Total log size indicator */}
             {!loading && totalLines > 0 && (
-              <div className="ml-1 flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
+              <div className="flex items-center gap-1.5 rounded-md border bg-muted/40 px-2 py-1 text-xs text-muted-foreground">
                 <ScrollText className="size-3 shrink-0" />
                 <span>
                   <span className="font-mono font-medium text-foreground">
@@ -475,10 +479,6 @@ export function LogViewer({
                 </span>
               </div>
             )}
-          </div>
-
-          {/* Right: controls */}
-          <div className="flex items-center gap-2">
             {/* Stream filter */}
             <div className="flex items-center gap-0.5 rounded-lg bg-muted p-0.5">
               {(["all", "stdout", "stderr"] as const).map((stream) => (
