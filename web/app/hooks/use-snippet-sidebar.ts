@@ -4,6 +4,7 @@ import {
   type SnippetExecutionMode,
 } from "~/lib/snippet-execution";
 import { useSnippetStore, type SnippetInfo } from "~/stores/snippet-store";
+import { useSystemStore } from "~/stores/system-store";
 
 type SendInput = (data: string | Uint8Array) => void;
 
@@ -18,6 +19,7 @@ type SendInput = (data: string | Uint8Array) => void;
 export function useSnippetSidebar() {
   const [snippetOpen, setSnippetOpen] = useState(false);
   const { fetchSnippets } = useSnippetStore();
+  const daemonInfo = useSystemStore((state) => state.daemonInfo);
   const sendInputMap = useRef<Map<string, SendInput>>(new Map());
   const [activeSessionId, setActiveSessionIdState] = useState<string | null>(null);
 
@@ -61,13 +63,14 @@ export function useSnippetSidebar() {
 
       const input = buildSnippetTerminalInput(
         snippet.command,
-        overrideMode ?? snippet.execution_mode
+        overrideMode ?? snippet.execution_mode,
+        { isWindows: daemonInfo?.os_type === "windows" }
       );
       if (!input) return;
 
       sendInput(input);
     },
-    [activeSessionId]
+    [activeSessionId, daemonInfo?.os_type]
   );
 
   return {

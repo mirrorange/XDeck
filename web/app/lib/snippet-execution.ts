@@ -3,6 +3,10 @@ export type SnippetExecutionMode =
   | "paste_only"
   | "execute_as_script";
 
+interface SnippetExecutionContext {
+  isWindows?: boolean;
+}
+
 export const SNIPPET_EXECUTION_MODE_OPTIONS = [
   {
     value: "paste_and_run",
@@ -17,7 +21,8 @@ export const SNIPPET_EXECUTION_MODE_OPTIONS = [
   {
     value: "execute_as_script",
     label: "Execute as script",
-    description: "Run via the current terminal shell using its `-c` flag.",
+    description:
+      "Run as a script in the terminal environment.",
   },
 ] as const satisfies ReadonlyArray<{
   value: SnippetExecutionMode;
@@ -37,7 +42,8 @@ export function getSnippetExecutionModeLabel(mode: SnippetExecutionMode): string
 
 export function buildSnippetTerminalInput(
   command: string,
-  executionMode: SnippetExecutionMode
+  executionMode: SnippetExecutionMode,
+  context: SnippetExecutionContext = {}
 ): string {
   const normalizedCommand = command.replace(/\r\n/g, "\n");
   if (!normalizedCommand) {
@@ -48,7 +54,7 @@ export function buildSnippetTerminalInput(
     case "paste_only":
       return buildPasteInput(normalizedCommand, false);
     case "execute_as_script":
-      return buildPasteInput(buildScriptExecutionCommand(normalizedCommand), true);
+      return buildPasteInput(buildScriptExecutionCommand(normalizedCommand, context), true);
     case "paste_and_run":
     default:
       return buildPasteInput(normalizedCommand, true);
@@ -63,8 +69,39 @@ function buildPasteInput(command: string, shouldSubmit: boolean): string {
   return shouldSubmit ? `${command}\r` : command;
 }
 
-function buildScriptExecutionCommand(command: string): string {
+function buildScriptExecutionCommand(
+  command: string,
+  context: SnippetExecutionContext
+): string {
+  if (context.isWindows) {
+    return buildPowerShellExecutionCommand(command);
+  }
+
   return "env sh -c 'exec \"${SHELL:-/bin/sh}\" -c \"$1\"' sh " + quoteForShellArgument(command);
+}
+
+function buildPowerShellExecutionCommand(command: string): string {
+  return `powershell.exe -NoProfile -EncodedCommand ${encodePowerShellCommand(command)}`;
+}
+
+function encodePowerShellCommand(command: string): string {
+  const bytes: number[] = [];
+
+  for (let index = 0; index < command.length; index += 1) {
+    const codeUnit = command.charCodeAt(index);
+    bytes.push(codeUnit & 0xff, codeUnit >> 8);
+  }
+
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  if (typeof btoa === "function") {
+    return btoa(binary);
+  }
+
+  return Buffer.from(binary, "binary").toString("base64");
 }
 
 function quoteForShellArgument(value: string): string {
