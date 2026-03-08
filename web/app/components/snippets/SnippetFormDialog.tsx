@@ -4,12 +4,12 @@ import { X } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Badge } from "~/components/ui/badge";
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "~/components/ui/dialog";
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalFooter,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "~/components/responsive-modal";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Textarea } from "~/components/ui/textarea";
@@ -95,13 +95,13 @@ export function SnippetFormDialog({ open, onOpenChange, snippet }: SnippetFormDi
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>{isEdit ? "Edit Snippet" : "New Snippet"}</DialogTitle>
-        </DialogHeader>
+    <ResponsiveModal open={open} onOpenChange={onOpenChange}>
+      <ResponsiveModalContent className="sm:max-w-md">
+        <ResponsiveModalHeader>
+          <ResponsiveModalTitle>{isEdit ? "Edit Snippet" : "New Snippet"}</ResponsiveModalTitle>
+        </ResponsiveModalHeader>
 
-        <div className="space-y-4">
+        <div className="space-y-4 px-4 md:px-0">
           {/* Name */}
           <div className="space-y-2">
             <Label htmlFor="snippet-name">Name</Label>
@@ -163,7 +163,7 @@ export function SnippetFormDialog({ open, onOpenChange, snippet }: SnippetFormDi
           </div>
         </div>
 
-        <DialogFooter>
+        <ResponsiveModalFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isSaving}>
             Cancel
           </Button>
@@ -173,8 +173,8 @@ export function SnippetFormDialog({ open, onOpenChange, snippet }: SnippetFormDi
           >
             {isSaving ? "Saving…" : isEdit ? "Save Changes" : "Create"}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveModalFooter>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
   );
 }
