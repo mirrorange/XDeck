@@ -114,6 +114,14 @@ interface GroupActionResponse {
   errors?: string[] | null;
 }
 
+function collectProcessGroups(processes: ProcessInfo[]): string[] {
+  return [...new Set(
+    processes
+      .map((process) => process.group_name?.trim())
+      .filter((groupName): groupName is string => Boolean(groupName))
+  )].sort((a, b) => a.localeCompare(b));
+}
+
 export function getAggregateStatus(instances: InstanceInfo[]): ProcessStatus {
   if (instances.some((i) => i.status === "running")) return "running";
   if (instances.some((i) => i.status === "starting")) return "starting";
@@ -172,7 +180,7 @@ export const useProcessStore = create<ProcessState>((set) => ({
     try {
       const rpc = getRpcClient();
       const result = await rpc.call<ProcessInfo[]>("process.list");
-      set({ processes: result, isLoading: false });
+      set({ processes: result, groups: collectProcessGroups(result), isLoading: false });
     } catch (err) {
       set({
         isLoading: false,
@@ -194,16 +202,20 @@ export const useProcessStore = create<ProcessState>((set) => ({
   createProcess: async (req) => {
     const rpc = getRpcClient();
     const result = await rpc.call<ProcessInfo>("process.create", req as unknown as Record<string, unknown>);
-    set((state) => ({ processes: [...state.processes, result] }));
+    set((state) => {
+      const processes = [...state.processes, result];
+      return { processes, groups: collectProcessGroups(processes) };
+    });
     return result;
   },
 
   updateProcess: async (req) => {
     const rpc = getRpcClient();
     const result = await rpc.call<ProcessInfo>("process.update", req as unknown as Record<string, unknown>);
-    set((state) => ({
-      processes: state.processes.map((p) => (p.id === result.id ? result : p)),
-    }));
+    set((state) => {
+      const processes = state.processes.map((p) => (p.id === result.id ? result : p));
+      return { processes, groups: collectProcessGroups(processes) };
+    });
     return result;
   },
 
@@ -225,9 +237,10 @@ export const useProcessStore = create<ProcessState>((set) => ({
   deleteProcess: async (id) => {
     const rpc = getRpcClient();
     await rpc.call("process.delete", { id });
-    set((state) => ({
-      processes: state.processes.filter((p) => p.id !== id),
-    }));
+    set((state) => {
+      const processes = state.processes.filter((p) => p.id !== id);
+      return { processes, groups: collectProcessGroups(processes) };
+    });
   },
 
   startGroup: async (groupName) => {
@@ -338,9 +351,10 @@ export const useProcessStore = create<ProcessState>((set) => ({
         void rpc
           .call<ProcessInfo>("process.get", { id: data.process_id })
           .then((updated) => {
-            set((state) => ({
-              processes: state.processes.map((p) => (p.id === updated.id ? updated : p)),
-            }));
+            set((state) => {
+              const processes = state.processes.map((p) => (p.id === updated.id ? updated : p));
+              return { processes, groups: collectProcessGroups(processes) };
+            });
           })
           .catch((err) => {
             console.error("Failed to sync updated process:", err);
