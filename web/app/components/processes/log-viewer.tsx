@@ -11,12 +11,12 @@ import {
 
 import { Button } from "~/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "~/components/ui/dialog";
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalFooter,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "~/components/responsive-modal";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -127,16 +127,16 @@ function ExportRangeModal({
   const lineCount = range[1] - range[0];
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+    <ResponsiveModal open={open} onOpenChange={onOpenChange}>
+      <ResponsiveModalContent className="sm:max-w-md">
+        <ResponsiveModalHeader>
+          <ResponsiveModalTitle className="flex items-center gap-2">
             <FileText className="size-4 text-muted-foreground" />
             Export Log Range
-          </DialogTitle>
-        </DialogHeader>
+          </ResponsiveModalTitle>
+        </ResponsiveModalHeader>
 
-        <div className="space-y-5 py-1">
+        <div className="space-y-5 px-4 py-1 md:px-0">
           {/* Stream filter */}
           <div className="space-y-2">
             <label className="text-sm font-medium">Stream</label>
@@ -227,7 +227,7 @@ function ExportRangeModal({
           )}
         </div>
 
-        <DialogFooter>
+        <ResponsiveModalFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
@@ -248,9 +248,9 @@ function ExportRangeModal({
               </>
             )}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveModalFooter>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
   );
 }
 
