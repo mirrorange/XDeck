@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState } from "react";
 import {
   Clipboard,
   Copy,
@@ -9,6 +9,16 @@ import {
   Trash2,
 } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "~/components/ui/alert-dialog";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
@@ -59,19 +69,7 @@ function SnippetModeIcon({ executionMode }: { executionMode: SnippetExecutionMod
 }
 
 export function SnippetItem({ snippet, onExecute, onEdit, onDelete }: SnippetItemProps) {
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const deleteTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-
-  const handleDelete = () => {
-    if (!confirmDelete) {
-      setConfirmDelete(true);
-      deleteTimerRef.current = setTimeout(() => setConfirmDelete(false), 3000);
-      return;
-    }
-    clearTimeout(deleteTimerRef.current);
-    setConfirmDelete(false);
-    onDelete(snippet.id);
-  };
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   const handleCopy = () => {
     const text = snippet.command.replace(/\n/g, "\r\n");
@@ -143,10 +141,10 @@ export function SnippetItem({ snippet, onExecute, onEdit, onDelete }: SnippetIte
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 className="text-destructive focus:text-destructive"
-                onClick={handleDelete}
+                onClick={() => setDeleteDialogOpen(true)}
               >
                 <Trash2 className="mr-2 size-3.5" />
-                {confirmDelete ? "Confirm Delete" : "Delete"}
+                Delete
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -175,6 +173,26 @@ export function SnippetItem({ snippet, onExecute, onEdit, onDelete }: SnippetIte
           ))}
         </div>
       )}
+
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Snippet</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{snippet.name}"? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => onDelete(snippet.id)}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

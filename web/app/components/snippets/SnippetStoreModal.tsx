@@ -22,6 +22,16 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "~/components/ui/alert-dialog";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import {
@@ -75,6 +85,7 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
   const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [selectedSnippet, setSelectedSnippet] = useState<RemoteSnippet & { sourceName: string } | null>(null);
   const [editingSnippet, setEditingSnippet] = useState<RemoteSnippet & { sourceName: string } | null>(null);
+  const [snippetToDelete, setSnippetToDelete] = useState<{ id: string; name: string } | null>(null);
 
   // Source form
   const [newSourceName, setNewSourceName] = useState("");
@@ -154,18 +165,28 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
   );
 
   const handleUninstall = useCallback(
-    async (storeSnippetId: string) => {
+    (storeSnippetId: string, snippetName: string) => {
       const installed = installedMap.get(storeSnippetId);
       if (!installed) return;
+      setSnippetToDelete({ id: installed.id, name: snippetName });
+    },
+    [installedMap]
+  );
+
+  const confirmUninstall = useCallback(
+    async () => {
+      if (!snippetToDelete) return;
       try {
-        await deleteSnippet(installed.id);
+        await deleteSnippet(snippetToDelete.id);
         await fetchSnippets();
         toast.success("Snippet removed");
       } catch (err) {
         toast.error(`Failed to remove: ${err instanceof Error ? err.message : "Unknown error"}`);
+      } finally {
+        setSnippetToDelete(null);
       }
     },
-    [installedMap, deleteSnippet, fetchSnippets]
+    [snippetToDelete, deleteSnippet, fetchSnippets]
   );
 
   const handleAddSource = useCallback(async () => {
@@ -264,7 +285,7 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
             status={getSnippetStatus(selectedSnippet)}
             isInstalling={installingIds.has(selectedSnippet.id)}
             onInstall={() => handleInstall(selectedSnippet)}
-            onUninstall={() => handleUninstall(selectedSnippet.id)}
+            onUninstall={() => handleUninstall(selectedSnippet.id, selectedSnippet.name)}
             onEditAndInstall={() => {
               setEditingSnippet(selectedSnippet);
               setSelectedSnippet(null);
@@ -344,7 +365,7 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
                           status={getSnippetStatus(snippet)}
                           isInstalling={installingIds.has(snippet.id)}
                           onInstall={() => handleInstall(snippet)}
-                          onUninstall={() => handleUninstall(snippet.id)}
+                          onUninstall={() => handleUninstall(snippet.id, snippet.name)}
                           onViewDetail={() => handleSelectSnippet(snippet)}
                         />
                       ))}
@@ -482,6 +503,26 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
           </>
         )}
       </ResponsiveModalContent>
+
+      <AlertDialog open={!!snippetToDelete} onOpenChange={(open) => { if (!open) setSnippetToDelete(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Snippet</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to remove "{snippetToDelete?.name}"? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmUninstall}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Remove
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </ResponsiveModal>
   );
 }
