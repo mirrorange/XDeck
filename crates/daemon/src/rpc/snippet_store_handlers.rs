@@ -17,13 +17,18 @@ pub struct SnippetSourceInfo {
 }
 
 /// A single snippet entry from a remote source index.
+/// When `content_url` is set, `command` may be an empty string and
+/// the actual script should be fetched on demand via that URL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteSnippet {
     pub id: String,
     pub name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_url: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default = "default_execution_mode")]
@@ -80,6 +85,12 @@ struct InstallSnippetParams {
     tags: Vec<String>,
     #[serde(default = "default_execution_mode")]
     execution_mode: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FetchSnippetContentParams {
+    url: String,
 }
 
 // ── Handler Registration ────────────────────────────────────────
@@ -250,6 +261,45 @@ pub fn register(router: &mut RpcRouter) {
         }
 
         Ok(serde_json::json!({ "results": results }))
+    });
+
+    // Fetch raw content of a single snippet by URL (lazy loading)
+    router.register("snippet_store.fetch_snippet_content", move |params, _ctx| async move {
+        let params = parse_required_params::<FetchSnippetContentParams>(params)?;
+
+        if params.url.trim().is_empty() {
+            return Err(AppError::BadRequest("URL is required".into()));
+        }
+        if !params.url.starts_with("https://") && !params.url.starts_with("http://") {
+            return Err(AppError::BadRequest(
+                "URL must start with http:// or https://".into(),
+            ));
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {e}")))?;
+
+        let response = client
+            .get(&params.url)
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to fetch content: {e}")))?;
+
+        if !response.status().is_success() {
+            return Err(AppError::Internal(format!(
+                "HTTP {}",
+                response.status()
+            )));
+        }
+
+        let content = response
+            .text()
+            .await
+            .map_err(|e| AppError::Internal(format!("Failed to read response: {e}")))?;
+
+        Ok(serde_json::json!({ "content": content }))
     });
 
     // Install a snippet from the store (creates a local snippet)

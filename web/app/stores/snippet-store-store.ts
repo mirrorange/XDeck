@@ -18,6 +18,7 @@ export interface RemoteSnippet {
   name: string;
   description: string;
   command: string;
+  content_url?: string;
   tags: string[];
   execution_mode: string;
   author: string;
@@ -36,12 +37,16 @@ interface SnippetStoreState {
   isLoadingSources: boolean;
   isFetchingSnippets: boolean;
   installingIds: Set<string>;
+  /** Cache of fetched content keyed by content_url */
+  contentCache: Map<string, string>;
 
   fetchSources: () => Promise<void>;
   addSource: (name: string, url: string) => Promise<SnippetSourceInfo>;
   removeSource: (id: string) => Promise<void>;
   fetchRemoteSnippets: () => Promise<void>;
-  installSnippet: (snippet: RemoteSnippet) => Promise<SnippetInfo>;
+  /** Fetches and caches a snippet's script content from its content_url. */
+  fetchSnippetContent: (snippet: RemoteSnippet) => Promise<string>;
+  installSnippet: (snippet: RemoteSnippet, resolvedCommand?: string) => Promise<SnippetInfo>;
 }
 
 // ── Store ───────────────────────────────────────────────────────
@@ -52,6 +57,7 @@ export const useSnippetStoreStore = create<SnippetStoreState>((set, get) => ({
   isLoadingSources: false,
   isFetchingSnippets: false,
   installingIds: new Set(),
+  contentCache: new Map(),
 
   fetchSources: async () => {
     set({ isLoadingSources: true });
@@ -100,7 +106,34 @@ export const useSnippetStoreStore = create<SnippetStoreState>((set, get) => ({
     }
   },
 
-  installSnippet: async (snippet: RemoteSnippet) => {
+  fetchSnippetContent: async (snippet: RemoteSnippet) => {
+    // If there's inline content, return it directly
+    if (snippet.command) return snippet.command;
+
+    // If no content_url, nothing to fetch
+    if (!snippet.content_url) return "";
+
+    // Check cache first
+    const cached = get().contentCache.get(snippet.content_url);
+    if (cached !== undefined) return cached;
+
+    const rpc = getRpcClient();
+    const result = await rpc.call<{ content: string }>(
+      "snippet_store.fetch_snippet_content",
+      { url: snippet.content_url }
+    );
+
+    const content = result.content;
+    set((state) => {
+      const newCache = new Map(state.contentCache);
+      newCache.set(snippet.content_url!, content);
+      return { contentCache: newCache };
+    });
+
+    return content;
+  },
+
+  installSnippet: async (snippet: RemoteSnippet, resolvedCommand?: string) => {
     const installing = new Set(get().installingIds);
     installing.add(snippet.id);
     set({ installingIds: installing });
@@ -109,7 +142,7 @@ export const useSnippetStoreStore = create<SnippetStoreState>((set, get) => ({
       const rpc = getRpcClient();
       const result = await rpc.call<SnippetInfo>("snippet_store.install", {
         name: snippet.name,
-        command: snippet.command,
+        command: resolvedCommand ?? snippet.command,
         tags: snippet.tags,
         execution_mode: snippet.execution_mode,
       });
