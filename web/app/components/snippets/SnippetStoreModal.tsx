@@ -672,14 +672,6 @@ function SnippetDetailView({
               </div>
             )}
           </div>
-
-          {/* content_url indicator */}
-          {snippet.content_url && (
-            <p className="text-[10px] text-muted-foreground/60 flex items-center gap-1">
-              <ExternalLink className="size-2.5" />
-              Content loaded from remote URL
-            </p>
-          )}
         </div>
       </ScrollArea>
     </div>
