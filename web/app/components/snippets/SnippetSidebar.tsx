@@ -7,8 +7,8 @@ import { ScrollArea } from "~/components/ui/scroll-area";
 import type { SnippetExecutionMode } from "~/lib/snippet-execution";
 import { useSnippetStore, type SnippetInfo } from "~/stores/snippet-store";
 import { SnippetItem } from "./SnippetItem";
-import { SnippetFormDialog } from "./SnippetFormDialog";
-import { SnippetStoreDialog } from "./SnippetStoreDialog";
+import { SnippetFormDialog } from "./SnippetFormModal";
+import { SnippetStoreDialog } from "./SnippetStoreModal";
 
 interface SnippetSidebarProps {
   onExecute: (snippet: SnippetInfo, executionMode?: SnippetExecutionMode) => void;
