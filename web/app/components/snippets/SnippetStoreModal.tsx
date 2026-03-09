@@ -1,12 +1,15 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   AlertCircle,
   ArrowLeft,
+  ArrowUpCircle,
   Check,
   ChevronRight,
   Copy,
   Download,
+  Edit,
   ExternalLink,
+  Filter,
   Globe,
   Loader2,
   Plus,
@@ -16,7 +19,6 @@ import {
   Tag,
   Trash2,
   User,
-  X,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -33,12 +35,17 @@ import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { Separator } from "~/components/ui/separator";
+import { Switch } from "~/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
+import { Textarea } from "~/components/ui/textarea";
 import { useSnippetStore } from "~/stores/snippet-store";
 import {
   useSnippetStoreStore,
+  compareVersions,
   type RemoteSnippet,
 } from "~/stores/snippet-store-store";
+
+type FilterMode = "all" | "installed" | "not_installed";
 
 interface SnippetStoreDialogProps {
   open: boolean;
@@ -55,36 +62,53 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
     fetchSources,
     addSource,
     removeSource,
+    toggleSource,
     fetchRemoteSnippets,
     installSnippet,
     fetchSnippetContent,
   } = useSnippetStoreStore();
 
-  const { fetchSnippets } = useSnippetStore();
+  const { snippets: installedSnippets, fetchSnippets, deleteSnippet } = useSnippetStore();
 
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("browse");
+  const [filterMode, setFilterMode] = useState<FilterMode>("all");
   const [selectedSnippet, setSelectedSnippet] = useState<RemoteSnippet & { sourceName: string } | null>(null);
+  const [editingSnippet, setEditingSnippet] = useState<RemoteSnippet & { sourceName: string } | null>(null);
 
   // Source form
   const [newSourceName, setNewSourceName] = useState("");
   const [newSourceUrl, setNewSourceUrl] = useState("");
   const [isAddingSource, setIsAddingSource] = useState(false);
 
+  // Build a map of store_snippet_id -> installed snippet info
+  const installedMap = useMemo(() => {
+    const map = new Map<string, { id: string; version?: string | null }>();
+    for (const s of installedSnippets) {
+      if (s.store_snippet_id) {
+        map.set(s.store_snippet_id, { id: s.id, version: s.store_version });
+      }
+    }
+    return map;
+  }, [installedSnippets]);
+
   // Load data on open
   useEffect(() => {
     if (open) {
       void fetchSources();
       void fetchRemoteSnippets();
+      void fetchSnippets();
     }
-  }, [open, fetchSources, fetchRemoteSnippets]);
+  }, [open, fetchSources, fetchRemoteSnippets, fetchSnippets]);
 
   // Reset selection when closing
   useEffect(() => {
     if (!open) {
       setSelectedSnippet(null);
+      setEditingSnippet(null);
       setSearch("");
       setTab("browse");
+      setFilterMode("all");
     }
   }, [open]);
 
@@ -92,21 +116,33 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
     r.snippets.map((s) => ({ ...s, sourceName: r.source.name }))
   );
 
-  const filtered = allSnippets.filter((s) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return (
-      s.name.toLowerCase().includes(q) ||
-      s.description.toLowerCase().includes(q) ||
-      s.tags.some((t) => t.toLowerCase().includes(q)) ||
-      s.author.toLowerCase().includes(q)
-    );
-  });
+  const filtered = useMemo(() => {
+    return allSnippets.filter((s) => {
+      if (search) {
+        const q = search.toLowerCase();
+        const matchesSearch =
+          s.name.toLowerCase().includes(q) ||
+          s.description.toLowerCase().includes(q) ||
+          s.tags.some((t) => t.toLowerCase().includes(q)) ||
+          s.author.toLowerCase().includes(q);
+        if (!matchesSearch) return false;
+      }
+
+      if (filterMode === "installed") {
+        return installedMap.has(s.id);
+      }
+      if (filterMode === "not_installed") {
+        return !installedMap.has(s.id);
+      }
+
+      return true;
+    });
+  }, [allSnippets, search, filterMode, installedMap]);
 
   const handleInstall = useCallback(
-    async (snippet: RemoteSnippet) => {
+    async (snippet: RemoteSnippet, customCommand?: string) => {
       try {
-        const resolvedCommand = await fetchSnippetContent(snippet);
+        const resolvedCommand = customCommand ?? await fetchSnippetContent(snippet);
         await installSnippet(snippet, resolvedCommand || undefined);
         await fetchSnippets();
         toast.success(`Installed "${snippet.name}"`);
@@ -115,6 +151,21 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
       }
     },
     [installSnippet, fetchSnippets, fetchSnippetContent]
+  );
+
+  const handleUninstall = useCallback(
+    async (storeSnippetId: string) => {
+      const installed = installedMap.get(storeSnippetId);
+      if (!installed) return;
+      try {
+        await deleteSnippet(installed.id);
+        await fetchSnippets();
+        toast.success("Snippet removed");
+      } catch (err) {
+        toast.error(`Failed to remove: ${err instanceof Error ? err.message : "Unknown error"}`);
+      }
+    },
+    [installedMap, deleteSnippet, fetchSnippets]
   );
 
   const handleAddSource = useCallback(async () => {
@@ -147,6 +198,22 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
     [removeSource]
   );
 
+  const handleToggleSource = useCallback(
+    async (id: string, enabled: boolean) => {
+      try {
+        await toggleSource(id, enabled);
+        if (enabled) {
+          void fetchRemoteSnippets();
+        }
+      } catch (err) {
+        toast.error(
+          `Failed to toggle source: ${err instanceof Error ? err.message : "Unknown error"}`
+        );
+      }
+    },
+    [toggleSource, fetchRemoteSnippets]
+  );
+
   const handleRefresh = useCallback(() => {
     void fetchRemoteSnippets();
   }, [fetchRemoteSnippets]);
@@ -160,17 +227,48 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
 
   const handleBack = useCallback(() => {
     setSelectedSnippet(null);
+    setEditingSnippet(null);
   }, []);
+
+  const getSnippetStatus = useCallback(
+    (snippet: RemoteSnippet) => {
+      const installed = installedMap.get(snippet.id);
+      if (!installed) return "not_installed" as const;
+      if (
+        snippet.version &&
+        installed.version &&
+        compareVersions(snippet.version, installed.version) > 0
+      ) {
+        return "update_available" as const;
+      }
+      return "installed" as const;
+    },
+    [installedMap]
+  );
 
   return (
     <ResponsiveModal open={open} onOpenChange={onOpenChange}>
       <ResponsiveModalContent className="w-full sm:max-w-2xl overflow-hidden">
-        {selectedSnippet ? (
+        {editingSnippet ? (
+          <EditAndInstallView
+            snippet={editingSnippet}
+            isInstalling={installingIds.has(editingSnippet.id)}
+            onInstall={(command) => handleInstall(editingSnippet, command)}
+            onBack={handleBack}
+            fetchSnippetContent={fetchSnippetContent}
+          />
+        ) : selectedSnippet ? (
           /* ── Detail View ─────────────────────────────────────── */
           <SnippetDetailView
             snippet={selectedSnippet}
+            status={getSnippetStatus(selectedSnippet)}
             isInstalling={installingIds.has(selectedSnippet.id)}
             onInstall={() => handleInstall(selectedSnippet)}
+            onUninstall={() => handleUninstall(selectedSnippet.id)}
+            onEditAndInstall={() => {
+              setEditingSnippet(selectedSnippet);
+              setSelectedSnippet(null);
+            }}
             onBack={handleBack}
             fetchSnippetContent={fetchSnippetContent}
           />
@@ -209,6 +307,7 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
                       className="h-8 pl-8 text-sm"
                     />
                   </div>
+                  <FilterDropdown value={filterMode} onChange={setFilterMode} />
                   <Button
                     variant="outline"
                     size="sm"
@@ -242,8 +341,10 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
                           key={`${snippet.sourceName}-${snippet.id}`}
                           snippet={snippet}
                           sourceName={snippet.sourceName}
+                          status={getSnippetStatus(snippet)}
                           isInstalling={installingIds.has(snippet.id)}
                           onInstall={() => handleInstall(snippet)}
+                          onUninstall={() => handleUninstall(snippet.id)}
                           onViewDetail={() => handleSelectSnippet(snippet)}
                         />
                       ))}
@@ -317,7 +418,7 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
                 <Separator />
 
                 {/* Source list */}
-                <ScrollArea className="flex-1 -mx-6 px-6" style={{ maxHeight: "40vh" }}>
+                <div className="flex-1 -mx-6 px-6 overflow-y-auto" style={{ maxHeight: "40vh" }}>
                   {isLoadingSources ? (
                     <div className="flex items-center justify-center py-8">
                       <Loader2 className="size-4 animate-spin text-muted-foreground" />
@@ -335,35 +436,47 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
                           className="flex items-center justify-between gap-3 rounded-lg border p-3"
                         >
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 min-w-0">
                               <Globe className="size-3.5 shrink-0 text-muted-foreground" />
                               <span className="truncate text-sm font-medium">{source.name}</span>
                               {source.id === "official" && (
-                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
                                   Official
                                 </Badge>
                               )}
+                              {!source.enabled && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground shrink-0">
+                                  Disabled
+                                </Badge>
+                              )}
                             </div>
-                            <p className="mt-0.5 truncate text-xs text-muted-foreground pl-5.5">
+                            <p className="mt-0.5 text-xs text-muted-foreground pl-5.5 truncate" title={source.url}>
                               {source.url}
                             </p>
                           </div>
-                          {source.id !== "official" && (
-                            <Button
-                              variant="ghost"
-                              size="icon-xs"
-                              onClick={() => handleRemoveSource(source.id)}
-                              title="Remove source"
-                              className="text-muted-foreground hover:text-destructive"
-                            >
-                              <Trash2 className="size-3.5" />
-                            </Button>
-                          )}
+                          <div className="flex items-center gap-2 shrink-0">
+                            <Switch
+                              checked={source.enabled}
+                              onCheckedChange={(checked) => handleToggleSource(source.id, checked)}
+                              aria-label={`Toggle ${source.name}`}
+                            />
+                            {source.id !== "official" && (
+                              <Button
+                                variant="ghost"
+                                size="icon-xs"
+                                onClick={() => handleRemoveSource(source.id)}
+                                title="Remove source"
+                                className="text-muted-foreground hover:text-destructive"
+                              >
+                                <Trash2 className="size-3.5" />
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>
                   )}
-                </ScrollArea>
+                </div>
               </TabsContent>
             </Tabs>
           </>
@@ -373,21 +486,79 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
   );
 }
 
+// ── Filter Dropdown ───────────────────────────────────────────────
+
+function FilterDropdown({
+  value,
+  onChange,
+}: {
+  value: FilterMode;
+  onChange: (v: FilterMode) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  const labels: Record<FilterMode, string> = {
+    all: "All",
+    installed: "Installed",
+    not_installed: "Not Installed",
+  };
+
+  return (
+    <div className="relative">
+      <Button
+        variant={value !== "all" ? "secondary" : "outline"}
+        size="sm"
+        className="h-8 text-xs gap-1"
+        onClick={() => setOpen(!open)}
+      >
+        <Filter className="size-3" />
+        {labels[value]}
+      </Button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full z-50 mt-1 w-36 rounded-md border bg-popover p-1 shadow-md">
+            {(Object.keys(labels) as FilterMode[]).map((mode) => (
+              <button
+                key={mode}
+                className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-xs hover:bg-accent"
+                onClick={() => {
+                  onChange(mode);
+                  setOpen(false);
+                }}
+              >
+                {value === mode && <Check className="size-3" />}
+                <span className={value !== mode ? "pl-5" : ""}>{labels[mode]}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Snippet List Item ─────────────────────────────────────────────
+
+type SnippetStatus = "not_installed" | "installed" | "update_available";
 
 interface SnippetStoreItemProps {
   snippet: RemoteSnippet;
   sourceName: string;
+  status: SnippetStatus;
   isInstalling: boolean;
   onInstall: () => void;
+  onUninstall: () => void;
   onViewDetail: () => void;
 }
 
 function SnippetStoreItem({
   snippet,
   sourceName,
+  status,
   isInstalling,
   onInstall,
+  onUninstall,
   onViewDetail,
 }: SnippetStoreItemProps) {
   const hasLazyContent = !!snippet.content_url && !snippet.command;
@@ -410,6 +581,16 @@ function SnippetStoreItem({
               {hasLazyContent && (
                 <Badge variant="outline" className="text-[9px] px-1 py-0 h-3.5 shrink-0">
                   script
+                </Badge>
+              )}
+              {status === "installed" && (
+                <Badge variant="secondary" className="text-[9px] px-1 py-0 h-3.5 shrink-0 bg-green-500/15 text-green-600 dark:text-green-400 border-green-500/20">
+                  Installed
+                </Badge>
+              )}
+              {status === "update_available" && (
+                <Badge variant="secondary" className="text-[9px] px-1 py-0 h-3.5 shrink-0 bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/20">
+                  Update
                 </Badge>
               )}
             </div>
@@ -437,23 +618,56 @@ function SnippetStoreItem({
       </button>
 
       <div className="flex items-center justify-end gap-2 px-3 pb-2.5 -mt-1">
-        <Button
-          variant="default"
-          size="sm"
-          onClick={(e) => {
-            e.stopPropagation();
-            onInstall();
-          }}
-          disabled={isInstalling}
-          className="h-7 shrink-0 text-xs"
-        >
-          {isInstalling ? (
-            <Loader2 className="mr-1 size-3 animate-spin" />
-          ) : (
-            <Download className="mr-1 size-3" />
-          )}
-          Install
-        </Button>
+        {status === "installed" ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              onUninstall();
+            }}
+            className="h-7 shrink-0 text-xs text-destructive hover:text-destructive"
+          >
+            <Trash2 className="mr-1 size-3" />
+            Remove
+          </Button>
+        ) : status === "update_available" ? (
+          <Button
+            variant="default"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              onInstall();
+            }}
+            disabled={isInstalling}
+            className="h-7 shrink-0 text-xs"
+          >
+            {isInstalling ? (
+              <Loader2 className="mr-1 size-3 animate-spin" />
+            ) : (
+              <ArrowUpCircle className="mr-1 size-3" />
+            )}
+            Update
+          </Button>
+        ) : (
+          <Button
+            variant="default"
+            size="sm"
+            onClick={(e) => {
+              e.stopPropagation();
+              onInstall();
+            }}
+            disabled={isInstalling}
+            className="h-7 shrink-0 text-xs"
+          >
+            {isInstalling ? (
+              <Loader2 className="mr-1 size-3 animate-spin" />
+            ) : (
+              <Download className="mr-1 size-3" />
+            )}
+            Install
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -463,16 +677,22 @@ function SnippetStoreItem({
 
 interface SnippetDetailViewProps {
   snippet: RemoteSnippet & { sourceName: string };
+  status: SnippetStatus;
   isInstalling: boolean;
   onInstall: () => void;
+  onUninstall: () => void;
+  onEditAndInstall: () => void;
   onBack: () => void;
   fetchSnippetContent: (snippet: RemoteSnippet) => Promise<string>;
 }
 
 function SnippetDetailView({
   snippet,
+  status,
   isInstalling,
   onInstall,
+  onUninstall,
+  onEditAndInstall,
   onBack,
   fetchSnippetContent,
 }: SnippetDetailViewProps) {
@@ -485,9 +705,9 @@ function SnippetDetailView({
 
   // Load content when the detail view opens (lazy load if needed)
   useEffect(() => {
-    if (content !== null) return; // already have inline content
+    if (content !== null) return;
     if (!snippet.content_url) {
-      setContent(""); // no content at all
+      setContent("");
       return;
     }
 
@@ -538,6 +758,16 @@ function SnippetDetailView({
                 v{snippet.version}
               </Badge>
             )}
+            {status === "installed" && (
+              <Badge variant="secondary" className="text-[10px] px-1.5 bg-green-500/15 text-green-600 dark:text-green-400">
+                Installed
+              </Badge>
+            )}
+            {status === "update_available" && (
+              <Badge variant="secondary" className="text-[10px] px-1.5 bg-blue-500/15 text-blue-600 dark:text-blue-400">
+                Update Available
+              </Badge>
+            )}
           </div>
           {snippet.description && (
             <p className="mt-1 text-sm text-muted-foreground leading-snug">
@@ -546,24 +776,69 @@ function SnippetDetailView({
           )}
         </div>
 
-        <Button
-          onClick={onInstall}
-          disabled={isInstalling || isLoadingContent}
-          size="sm"
-          className="shrink-0 h-8"
-        >
-          {isInstalling ? (
-            <>
-              <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-              Installing…
-            </>
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onEditAndInstall}
+            disabled={isLoadingContent}
+            className="h-8"
+            title="Edit script before installing"
+          >
+            <Edit className="mr-1.5 size-3.5" />
+            Edit
+          </Button>
+
+          {status === "installed" ? (
+            <Button
+              variant="outline"
+              onClick={onUninstall}
+              size="sm"
+              className="shrink-0 h-8 text-destructive hover:text-destructive"
+            >
+              <Trash2 className="mr-1.5 size-3.5" />
+              Remove
+            </Button>
+          ) : status === "update_available" ? (
+            <Button
+              onClick={onInstall}
+              disabled={isInstalling || isLoadingContent}
+              size="sm"
+              className="shrink-0 h-8"
+            >
+              {isInstalling ? (
+                <>
+                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                  Updating…
+                </>
+              ) : (
+                <>
+                  <ArrowUpCircle className="mr-1.5 size-3.5" />
+                  Update
+                </>
+              )}
+            </Button>
           ) : (
-            <>
-              <Download className="mr-1.5 size-3.5" />
-              Install
-            </>
+            <Button
+              onClick={onInstall}
+              disabled={isInstalling || isLoadingContent}
+              size="sm"
+              className="shrink-0 h-8"
+            >
+              {isInstalling ? (
+                <>
+                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                  Installing…
+                </>
+              ) : (
+                <>
+                  <Download className="mr-1.5 size-3.5" />
+                  Install
+                </>
+              )}
+            </Button>
           )}
-        </Button>
+        </div>
       </div>
 
       <ScrollArea style={{ maxHeight: "calc(80vh - 10rem)" }}>
@@ -648,7 +923,6 @@ function SnippetDetailView({
               </div>
             ) : content ? (
               <div className="relative rounded-lg border bg-muted/30 overflow-hidden">
-                {/* Line numbers + code */}
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs font-mono leading-relaxed border-collapse">
                     <tbody>
@@ -674,6 +948,125 @@ function SnippetDetailView({
           </div>
         </div>
       </ScrollArea>
+    </div>
+  );
+}
+
+// ── Edit and Install View ─────────────────────────────────────────
+
+interface EditAndInstallViewProps {
+  snippet: RemoteSnippet & { sourceName: string };
+  isInstalling: boolean;
+  onInstall: (command: string) => void;
+  onBack: () => void;
+  fetchSnippetContent: (snippet: RemoteSnippet) => Promise<string>;
+}
+
+function EditAndInstallView({
+  snippet,
+  isInstalling,
+  onInstall,
+  onBack,
+  fetchSnippetContent,
+}: EditAndInstallViewProps) {
+  const [content, setContent] = useState<string>("");
+  const [isLoadingContent, setIsLoadingContent] = useState(false);
+  const [contentError, setContentError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (snippet.command) {
+      setContent(snippet.command);
+      return;
+    }
+    if (!snippet.content_url) {
+      setContent("");
+      return;
+    }
+
+    setIsLoadingContent(true);
+    setContentError(null);
+
+    fetchSnippetContent(snippet)
+      .then((c) => {
+        setContent(c);
+      })
+      .catch((err) => {
+        setContentError(err instanceof Error ? err.message : "Failed to load content");
+      })
+      .finally(() => {
+        setIsLoadingContent(false);
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snippet.id, snippet.content_url]);
+
+  return (
+    <div className="flex flex-col min-h-0 flex-1">
+      <div className="flex items-start gap-3 pb-4 border-b">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          onClick={onBack}
+          className="mt-0.5 shrink-0"
+          title="Back"
+        >
+          <ArrowLeft className="size-4" />
+        </Button>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="text-base font-semibold leading-tight">Edit & Install</h2>
+            <Badge variant="secondary" className="text-[10px] px-1.5">
+              {snippet.name}
+            </Badge>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground leading-snug">
+            Edit the script content before installing
+          </p>
+        </div>
+
+        <Button
+          onClick={() => onInstall(content)}
+          disabled={isInstalling || isLoadingContent || !content.trim()}
+          size="sm"
+          className="shrink-0 h-8"
+        >
+          {isInstalling ? (
+            <>
+              <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+              Installing…
+            </>
+          ) : (
+            <>
+              <Download className="mr-1.5 size-3.5" />
+              Install
+            </>
+          )}
+        </Button>
+      </div>
+
+      <div className="pt-4 flex-1 flex flex-col min-h-0">
+        {isLoadingContent ? (
+          <div className="flex items-center justify-center gap-2 rounded-lg border bg-muted/30 py-10">
+            <Loader2 className="size-4 animate-spin text-muted-foreground" />
+            <span className="text-sm text-muted-foreground">Loading script…</span>
+          </div>
+        ) : contentError ? (
+          <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm">
+            <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
+            <div>
+              <p className="font-medium text-destructive">Failed to load content</p>
+              <p className="text-muted-foreground text-xs mt-0.5">{contentError}</p>
+            </div>
+          </div>
+        ) : (
+          <Textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            className="flex-1 font-mono text-xs min-h-[200px] max-h-[50vh] resize-none"
+            placeholder="Enter script content…"
+          />
+        )}
+      </div>
     </div>
   );
 }

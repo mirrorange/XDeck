@@ -43,10 +43,25 @@ interface SnippetStoreState {
   fetchSources: () => Promise<void>;
   addSource: (name: string, url: string) => Promise<SnippetSourceInfo>;
   removeSource: (id: string) => Promise<void>;
+  toggleSource: (id: string, enabled: boolean) => Promise<void>;
   fetchRemoteSnippets: () => Promise<void>;
   /** Fetches and caches a snippet's script content from its content_url. */
   fetchSnippetContent: (snippet: RemoteSnippet) => Promise<string>;
   installSnippet: (snippet: RemoteSnippet, resolvedCommand?: string) => Promise<SnippetInfo>;
+}
+
+// ── Helpers ─────────────────────────────────────────────────────
+
+/** Compare two semver-like version strings. Returns >0 if a > b. */
+export function compareVersions(a: string, b: string): number {
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const na = pa[i] ?? 0;
+    const nb = pb[i] ?? 0;
+    if (na !== nb) return na - nb;
+  }
+  return 0;
 }
 
 // ── Store ───────────────────────────────────────────────────────
@@ -89,6 +104,16 @@ export const useSnippetStoreStore = create<SnippetStoreState>((set, get) => ({
     set((state) => ({
       sources: state.sources.filter((s) => s.id !== id),
       results: state.results.filter((r) => r.source.id !== id),
+    }));
+  },
+
+  toggleSource: async (id: string, enabled: boolean) => {
+    const rpc = getRpcClient();
+    await rpc.call("snippet_store.toggle_source", { id, enabled });
+    set((state) => ({
+      sources: state.sources.map((s) =>
+        s.id === id ? { ...s, enabled } : s
+      ),
     }));
   },
 
@@ -145,6 +170,8 @@ export const useSnippetStoreStore = create<SnippetStoreState>((set, get) => ({
         command: resolvedCommand ?? snippet.command,
         tags: snippet.tags,
         execution_mode: snippet.execution_mode,
+        store_snippet_id: snippet.id,
+        store_version: snippet.version || undefined,
       });
 
       const done = new Set(get().installingIds);

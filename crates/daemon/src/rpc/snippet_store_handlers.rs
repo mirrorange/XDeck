@@ -78,6 +78,13 @@ struct SourceIdParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ToggleSourceParams {
+    id: String,
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct InstallSnippetParams {
     name: String,
     command: String,
@@ -85,6 +92,10 @@ struct InstallSnippetParams {
     tags: Vec<String>,
     #[serde(default = "default_execution_mode")]
     execution_mode: String,
+    #[serde(default)]
+    store_snippet_id: Option<String>,
+    #[serde(default)]
+    store_version: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,6 +197,28 @@ pub fn register(router: &mut RpcRouter) {
             .execute(&ctx.pool)
             .await
             .map_err(AppError::Database)?;
+
+        if result.rows_affected() == 0 {
+            return Err(AppError::NotFound(format!("Source '{}'", params.id)));
+        }
+
+        Ok(serde_json::json!({ "ok": true }))
+    });
+
+    // Toggle a snippet source enabled/disabled
+    router.register("snippet_store.toggle_source", move |params, ctx| async move {
+        let params = parse_required_params::<ToggleSourceParams>(params)?;
+
+        let enabled_val: i32 = if params.enabled { 1 } else { 0 };
+
+        let result = sqlx::query(
+            "UPDATE snippet_sources SET enabled = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(enabled_val)
+        .bind(&params.id)
+        .execute(&ctx.pool)
+        .await
+        .map_err(AppError::Database)?;
 
         if result.rows_affected() == 0 {
             return Err(AppError::NotFound(format!("Source '{}'", params.id)));
@@ -320,24 +353,77 @@ pub fn register(router: &mut RpcRouter) {
             "paste_and_run".to_string()
         };
 
-        let id = uuid::Uuid::new_v4().to_string();
         let tags_json =
             serde_json::to_string(&params.tags).unwrap_or_else(|_| "[]".into());
 
+        // If store_snippet_id is provided, check if already installed (update instead)
+        if let Some(ref store_id) = params.store_snippet_id {
+            let existing = sqlx::query_as::<_, (String,)>(
+                "SELECT id FROM snippets WHERE store_snippet_id = ?",
+            )
+            .bind(store_id)
+            .fetch_optional(&ctx.pool)
+            .await
+            .map_err(AppError::Database)?;
+
+            if let Some((existing_id,)) = existing {
+                // Update existing snippet
+                sqlx::query(
+                    "UPDATE snippets SET name = ?, command = ?, tags = ?, execution_mode = ?, store_version = ?, updated_at = datetime('now') WHERE id = ?",
+                )
+                .bind(&params.name)
+                .bind(&params.command)
+                .bind(&tags_json)
+                .bind(&execution_mode)
+                .bind(&params.store_version)
+                .bind(&existing_id)
+                .execute(&ctx.pool)
+                .await
+                .map_err(AppError::Database)?;
+
+                let row = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, Option<String>, String, String)>(
+                    "SELECT id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at FROM snippets WHERE id = ?",
+                )
+                .bind(&existing_id)
+                .fetch_one(&ctx.pool)
+                .await
+                .map_err(AppError::Database)?;
+
+                let tags: Vec<String> = serde_json::from_str(&row.3).unwrap_or_default();
+                let snippet = serde_json::json!({
+                    "id": row.0,
+                    "name": row.1,
+                    "command": row.2,
+                    "tags": tags,
+                    "execution_mode": row.4,
+                    "store_snippet_id": row.5,
+                    "store_version": row.6,
+                    "created_at": row.7,
+                    "updated_at": row.8,
+                });
+
+                return Ok(snippet);
+            }
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+
         sqlx::query(
-            "INSERT INTO snippets (id, name, command, tags, execution_mode) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO snippets (id, name, command, tags, execution_mode, store_snippet_id, store_version) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&id)
         .bind(&params.name)
         .bind(&params.command)
         .bind(&tags_json)
         .bind(&execution_mode)
+        .bind(&params.store_snippet_id)
+        .bind(&params.store_version)
         .execute(&ctx.pool)
         .await
         .map_err(AppError::Database)?;
 
-        let row = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-            "SELECT id, name, command, tags, execution_mode, created_at, updated_at FROM snippets WHERE id = ?",
+        let row = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, Option<String>, String, String)>(
+            "SELECT id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at FROM snippets WHERE id = ?",
         )
         .bind(&id)
         .fetch_one(&ctx.pool)
@@ -351,8 +437,10 @@ pub fn register(router: &mut RpcRouter) {
             "command": row.2,
             "tags": tags,
             "execution_mode": row.4,
-            "created_at": row.5,
-            "updated_at": row.6,
+            "store_snippet_id": row.5,
+            "store_version": row.6,
+            "created_at": row.7,
+            "updated_at": row.8,
         });
 
         Ok(snippet)

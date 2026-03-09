@@ -39,6 +39,10 @@ pub struct SnippetInfo {
     pub command: String,
     pub tags: Vec<String>,
     pub execution_mode: SnippetExecutionMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store_snippet_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub store_version: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -82,6 +86,8 @@ fn row_to_snippet(
     command: String,
     tags_json: String,
     execution_mode: String,
+    store_snippet_id: Option<String>,
+    store_version: Option<String>,
     created_at: String,
     updated_at: String,
 ) -> SnippetInfo {
@@ -92,6 +98,8 @@ fn row_to_snippet(
         command,
         tags,
         execution_mode: SnippetExecutionMode::from_db(&execution_mode),
+        store_snippet_id,
+        store_version,
         created_at,
         updated_at,
     }
@@ -101,8 +109,8 @@ fn row_to_snippet(
 
 pub fn register(router: &mut RpcRouter) {
     router.register("snippet.list", move |_params, ctx| async move {
-        let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-            "SELECT id, name, command, tags, execution_mode, created_at, updated_at FROM snippets ORDER BY updated_at DESC",
+        let rows = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, Option<String>, String, String)>(
+            "SELECT id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at FROM snippets ORDER BY updated_at DESC",
         )
         .fetch_all(&ctx.pool)
         .await
@@ -110,8 +118,8 @@ pub fn register(router: &mut RpcRouter) {
 
         let snippets: Vec<SnippetInfo> = rows
             .into_iter()
-            .map(|(id, name, command, tags, execution_mode, created_at, updated_at)| {
-                row_to_snippet(id, name, command, tags, execution_mode, created_at, updated_at)
+            .map(|(id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at)| {
+                row_to_snippet(id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at)
             })
             .collect();
 
@@ -147,15 +155,15 @@ pub fn register(router: &mut RpcRouter) {
         .await
         .map_err(crate::error::AppError::Database)?;
 
-        let row = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-            "SELECT id, name, command, tags, execution_mode, created_at, updated_at FROM snippets WHERE id = ?",
+        let row = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, Option<String>, String, String)>(
+            "SELECT id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at FROM snippets WHERE id = ?",
         )
         .bind(&id)
         .fetch_one(&ctx.pool)
         .await
         .map_err(crate::error::AppError::Database)?;
 
-        let snippet = row_to_snippet(row.0, row.1, row.2, row.3, row.4, row.5, row.6);
+        let snippet = row_to_snippet(row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8);
         Ok(serde_json::to_value(&snippet).unwrap())
     });
 
@@ -224,15 +232,15 @@ pub fn register(router: &mut RpcRouter) {
             .map_err(crate::error::AppError::Database)?;
         }
 
-        let row = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
-            "SELECT id, name, command, tags, execution_mode, created_at, updated_at FROM snippets WHERE id = ?",
+        let row = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, Option<String>, String, String)>(
+            "SELECT id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at FROM snippets WHERE id = ?",
         )
         .bind(&params.id)
         .fetch_one(&ctx.pool)
         .await
         .map_err(crate::error::AppError::Database)?;
 
-        let snippet = row_to_snippet(row.0, row.1, row.2, row.3, row.4, row.5, row.6);
+        let snippet = row_to_snippet(row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8);
         Ok(serde_json::to_value(&snippet).unwrap())
     });
 

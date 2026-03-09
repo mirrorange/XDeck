@@ -10,6 +10,8 @@ export interface SnippetInfo {
   command: string;
   tags: string[];
   execution_mode: SnippetExecutionMode;
+  store_snippet_id?: string | null;
+  store_version?: string | null;
   created_at: string;
   updated_at: string;
 }
