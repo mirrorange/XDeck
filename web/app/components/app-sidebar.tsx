@@ -1,6 +1,7 @@
 import { NavLink, useLocation } from "react-router";
 import {
   Activity,
+  Container,
   LayoutDashboard,
   LogOut,
   Server,
@@ -40,6 +41,11 @@ const navItems = [
     title: "Processes",
     url: "/processes",
     icon: Activity,
+  },
+  {
+    title: "Docker",
+    url: "/docker",
+    icon: Container,
   },
   {
     title: "Terminal",

@@ -10,6 +10,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::config::AppConfig;
 use crate::rpc::auth_handlers;
+use crate::rpc::docker_handlers;
 use crate::rpc::event_handlers;
 use crate::rpc::process_handlers;
 use crate::rpc::pty_handlers;
@@ -18,6 +19,7 @@ use crate::rpc::snippet_handlers;
 use crate::rpc::snippet_store_handlers;
 use crate::rpc::system_handlers;
 use crate::services::auth::AuthService;
+use crate::services::docker_manager::DockerManager;
 use crate::services::event_bus::{EventBus, SharedEventBus};
 use crate::services::process_manager::ProcessManager;
 use crate::services::pty_manager::PtyManager;
@@ -32,6 +34,7 @@ pub struct AppState {
     pub auth_service: Arc<AuthService>,
     pub pty_manager: Arc<PtyManager>,
     pub process_manager: Arc<ProcessManager>,
+    pub docker_manager: Arc<DockerManager>,
 }
 
 impl AppState {
@@ -52,10 +55,12 @@ impl AppState {
             pty_manager.clone(),
             &config.data_dir,
         );
+        let docker_manager = DockerManager::new(event_bus.clone());
         let rpc_router = Arc::new(Self::build_rpc_router(
             auth_service.clone(),
             process_manager.clone(),
             pty_manager.clone(),
+            docker_manager.clone(),
         ));
 
         Self {
@@ -66,6 +71,7 @@ impl AppState {
             auth_service,
             pty_manager,
             process_manager,
+            docker_manager,
         }
     }
 
@@ -74,6 +80,7 @@ impl AppState {
         auth: Arc<AuthService>,
         process_mgr: Arc<ProcessManager>,
         pty_mgr: Arc<PtyManager>,
+        docker_mgr: Arc<DockerManager>,
     ) -> RpcRouter {
         let mut router = RpcRouter::new();
 
@@ -84,6 +91,7 @@ impl AppState {
         pty_handlers::register(&mut router, pty_mgr);
         snippet_handlers::register(&mut router);
         snippet_store_handlers::register(&mut router);
+        docker_handlers::register(&mut router, docker_mgr);
 
         router
     }

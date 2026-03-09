@@ -60,6 +60,9 @@ tokio-stream = "0.1"
 # HTTP client
 reqwest.workspace = true
 
+# Docker
+bollard.workspace = true
+
 # System utilities
 which.workspace = true
 libc.workspace = true

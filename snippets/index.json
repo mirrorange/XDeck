@@ -1,5 +1,94 @@
 {
   "name": "XDeck Official Snippets",
   "description": "Official snippet collection for XDeck",
-  "snippets": []
+  "snippets": [
+    {
+      "id": "docker-install-linux-deb",
+      "name": "Install Docker (Ubuntu/Debian)",
+      "description": "Install Docker Engine on Ubuntu or Debian via official APT repository",
+      "command": "",
+      "content_url": "docker-install-linux-deb.sh",
+      "tags": ["docker", "install", "linux", "ubuntu", "debian"],
+      "execution_mode": "execute_as_script",
+      "author": "XDeck",
+      "version": "1.0.0"
+    },
+    {
+      "id": "docker-install-linux-rpm",
+      "name": "Install Docker (RHEL/CentOS/Fedora)",
+      "description": "Install Docker Engine on RHEL, CentOS, or Fedora via official YUM repository",
+      "command": "",
+      "content_url": "docker-install-linux-rpm.sh",
+      "tags": ["docker", "install", "linux", "rhel", "centos", "fedora"],
+      "execution_mode": "execute_as_script",
+      "author": "XDeck",
+      "version": "1.0.0"
+    },
+    {
+      "id": "docker-install-macos",
+      "name": "Install Docker Desktop (macOS)",
+      "description": "Download and install Docker Desktop on macOS (Intel & Apple Silicon)",
+      "command": "",
+      "content_url": "docker-install-macos.sh",
+      "tags": ["docker", "install", "macos", "desktop"],
+      "execution_mode": "execute_as_script",
+      "author": "XDeck",
+      "version": "1.0.0"
+    },
+    {
+      "id": "docker-install-windows",
+      "name": "Install Docker Desktop (Windows)",
+      "description": "Download and silently install Docker Desktop on Windows",
+      "command": "",
+      "content_url": "docker-install-windows.ps1",
+      "tags": ["docker", "install", "windows", "desktop"],
+      "execution_mode": "execute_as_script",
+      "author": "XDeck",
+      "version": "1.0.0"
+    },
+    {
+      "id": "podman-install-linux-deb",
+      "name": "Install Podman (Ubuntu/Debian)",
+      "description": "Install Podman on Ubuntu or Debian",
+      "command": "",
+      "content_url": "podman-install-linux-deb.sh",
+      "tags": ["podman", "install", "linux", "ubuntu", "debian"],
+      "execution_mode": "execute_as_script",
+      "author": "XDeck",
+      "version": "1.0.0"
+    },
+    {
+      "id": "podman-install-linux-rpm",
+      "name": "Install Podman (RHEL/CentOS/Fedora)",
+      "description": "Install Podman on RHEL, CentOS, or Fedora",
+      "command": "",
+      "content_url": "podman-install-linux-rpm.sh",
+      "tags": ["podman", "install", "linux", "rhel", "centos", "fedora"],
+      "execution_mode": "execute_as_script",
+      "author": "XDeck",
+      "version": "1.0.0"
+    },
+    {
+      "id": "podman-install-macos",
+      "name": "Install Podman Desktop (macOS)",
+      "description": "Install Podman and Podman Desktop on macOS via Homebrew",
+      "command": "",
+      "content_url": "podman-install-macos.sh",
+      "tags": ["podman", "install", "macos", "desktop"],
+      "execution_mode": "execute_as_script",
+      "author": "XDeck",
+      "version": "1.0.0"
+    },
+    {
+      "id": "podman-install-windows",
+      "name": "Install Podman Desktop (Windows)",
+      "description": "Install Podman Desktop on Windows via winget or direct download",
+      "command": "",
+      "content_url": "podman-install-windows.ps1",
+      "tags": ["podman", "install", "windows", "desktop"],
+      "execution_mode": "execute_as_script",
+      "author": "XDeck",
+      "version": "1.0.0"
+    }
+  ]
 }
