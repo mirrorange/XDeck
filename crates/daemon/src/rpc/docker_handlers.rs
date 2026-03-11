@@ -340,9 +340,7 @@ async fn get_compose_project_paths(
     .fetch_optional(pool)
     .await
     .map_err(crate::error::AppError::Database)?
-    .ok_or_else(|| {
-        crate::error::AppError::NotFound(format!("Compose project '{}'", project_id))
-    })?;
+    .ok_or_else(|| crate::error::AppError::NotFound(format!("Compose project '{}'", project_id)))?;
 
     Ok(row)
 }

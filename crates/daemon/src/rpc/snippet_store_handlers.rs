@@ -185,47 +185,55 @@ pub fn register(router: &mut RpcRouter) {
     });
 
     // Remove a snippet source
-    router.register("snippet_store.remove_source", move |params, ctx| async move {
-        let params = parse_required_params::<SourceIdParams>(params)?;
+    router.register(
+        "snippet_store.remove_source",
+        move |params, ctx| async move {
+            let params = parse_required_params::<SourceIdParams>(params)?;
 
-        if params.id == "official" {
-            return Err(AppError::BadRequest("Cannot remove the official source".into()));
-        }
+            if params.id == "official" {
+                return Err(AppError::BadRequest(
+                    "Cannot remove the official source".into(),
+                ));
+            }
 
-        let result = sqlx::query("DELETE FROM snippet_sources WHERE id = ?")
+            let result = sqlx::query("DELETE FROM snippet_sources WHERE id = ?")
+                .bind(&params.id)
+                .execute(&ctx.pool)
+                .await
+                .map_err(AppError::Database)?;
+
+            if result.rows_affected() == 0 {
+                return Err(AppError::NotFound(format!("Source '{}'", params.id)));
+            }
+
+            Ok(serde_json::json!({ "ok": true }))
+        },
+    );
+
+    // Toggle a snippet source enabled/disabled
+    router.register(
+        "snippet_store.toggle_source",
+        move |params, ctx| async move {
+            let params = parse_required_params::<ToggleSourceParams>(params)?;
+
+            let enabled_val: i32 = if params.enabled { 1 } else { 0 };
+
+            let result = sqlx::query(
+                "UPDATE snippet_sources SET enabled = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(enabled_val)
             .bind(&params.id)
             .execute(&ctx.pool)
             .await
             .map_err(AppError::Database)?;
 
-        if result.rows_affected() == 0 {
-            return Err(AppError::NotFound(format!("Source '{}'", params.id)));
-        }
+            if result.rows_affected() == 0 {
+                return Err(AppError::NotFound(format!("Source '{}'", params.id)));
+            }
 
-        Ok(serde_json::json!({ "ok": true }))
-    });
-
-    // Toggle a snippet source enabled/disabled
-    router.register("snippet_store.toggle_source", move |params, ctx| async move {
-        let params = parse_required_params::<ToggleSourceParams>(params)?;
-
-        let enabled_val: i32 = if params.enabled { 1 } else { 0 };
-
-        let result = sqlx::query(
-            "UPDATE snippet_sources SET enabled = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(enabled_val)
-        .bind(&params.id)
-        .execute(&ctx.pool)
-        .await
-        .map_err(AppError::Database)?;
-
-        if result.rows_affected() == 0 {
-            return Err(AppError::NotFound(format!("Source '{}'", params.id)));
-        }
-
-        Ok(serde_json::json!({ "ok": true }))
-    });
+            Ok(serde_json::json!({ "ok": true }))
+        },
+    );
 
     // Fetch snippets from all enabled sources
     router.register("snippet_store.fetch_snippets", move |_params, ctx| async move {
@@ -297,43 +305,43 @@ pub fn register(router: &mut RpcRouter) {
     });
 
     // Fetch raw content of a single snippet by URL (lazy loading)
-    router.register("snippet_store.fetch_snippet_content", move |params, _ctx| async move {
-        let params = parse_required_params::<FetchSnippetContentParams>(params)?;
+    router.register(
+        "snippet_store.fetch_snippet_content",
+        move |params, _ctx| async move {
+            let params = parse_required_params::<FetchSnippetContentParams>(params)?;
 
-        if params.url.trim().is_empty() {
-            return Err(AppError::BadRequest("URL is required".into()));
-        }
-        if !params.url.starts_with("https://") && !params.url.starts_with("http://") {
-            return Err(AppError::BadRequest(
-                "URL must start with http:// or https://".into(),
-            ));
-        }
+            if params.url.trim().is_empty() {
+                return Err(AppError::BadRequest("URL is required".into()));
+            }
+            if !params.url.starts_with("https://") && !params.url.starts_with("http://") {
+                return Err(AppError::BadRequest(
+                    "URL must start with http:// or https://".into(),
+                ));
+            }
 
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {e}")))?;
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .map_err(|e| AppError::Internal(format!("Failed to create HTTP client: {e}")))?;
 
-        let response = client
-            .get(&params.url)
-            .send()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to fetch content: {e}")))?;
+            let response = client
+                .get(&params.url)
+                .send()
+                .await
+                .map_err(|e| AppError::Internal(format!("Failed to fetch content: {e}")))?;
 
-        if !response.status().is_success() {
-            return Err(AppError::Internal(format!(
-                "HTTP {}",
-                response.status()
-            )));
-        }
+            if !response.status().is_success() {
+                return Err(AppError::Internal(format!("HTTP {}", response.status())));
+            }
 
-        let content = response
-            .text()
-            .await
-            .map_err(|e| AppError::Internal(format!("Failed to read response: {e}")))?;
+            let content = response
+                .text()
+                .await
+                .map_err(|e| AppError::Internal(format!("Failed to read response: {e}")))?;
 
-        Ok(serde_json::json!({ "content": content }))
-    });
+            Ok(serde_json::json!({ "content": content }))
+        },
+    );
 
     // Install a snippet from the store (creates a local snippet)
     router.register("snippet_store.install", move |params, ctx| async move {
