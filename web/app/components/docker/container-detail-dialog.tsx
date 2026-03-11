@@ -50,7 +50,7 @@ export function ContainerDetailDialog({
 
   return (
     <Dialog open={!!containerId} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-w-3xl max-h-[80vh]">
+      <DialogContent className="max-h-[80vh] w-full max-w-3xl overflow-hidden">
         <DialogHeader>
           <DialogTitle>
             {detail ? detail.name : "Container Details"}
@@ -63,7 +63,7 @@ export function ContainerDetailDialog({
             <span className="text-muted-foreground">Loading…</span>
           </div>
         ) : detail ? (
-          <Tabs defaultValue="overview" className="w-full">
+          <Tabs defaultValue="overview" className="w-full min-w-0">
             <TabsList className="grid w-full grid-cols-4">
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="env">Environment</TabsTrigger>
@@ -71,8 +71,8 @@ export function ContainerDetailDialog({
               <TabsTrigger value="networks">Networks</TabsTrigger>
             </TabsList>
 
-            <TabsContent value="overview" className="mt-4">
-              <ScrollArea className="h-[50vh]">
+            <TabsContent value="overview" className="mt-4 min-w-0">
+              <ScrollArea className="h-[50vh] w-full">
                 <div className="space-y-3 text-sm">
                   <Row label="ID" value={detail.id} mono />
                   <Row label="Image" value={detail.image} mono />
@@ -129,8 +129,8 @@ export function ContainerDetailDialog({
               </ScrollArea>
             </TabsContent>
 
-            <TabsContent value="env" className="mt-4">
-              <ScrollArea className="h-[50vh]">
+            <TabsContent value="env" className="mt-4 min-w-0">
+              <ScrollArea className="h-[50vh] w-full">
                 {detail.env.length > 0 ? (
                   <div className="space-y-1">
                     {detail.env.map((e, i) => {
@@ -151,29 +151,31 @@ export function ContainerDetailDialog({
               </ScrollArea>
             </TabsContent>
 
-            <TabsContent value="mounts" className="mt-4">
-              <ScrollArea className="h-[50vh]">
+            <TabsContent value="mounts" className="mt-4 min-w-0">
+              <ScrollArea className="h-[50vh] w-full">
                 {detail.mounts.length > 0 ? (
-                  <Table>
+                  <Table className="table-fixed">
                     <TableHeader>
                       <TableRow>
-                        <TableHead>Source</TableHead>
-                        <TableHead>Destination</TableHead>
-                        <TableHead>Mode</TableHead>
-                        <TableHead>RW</TableHead>
+                        <TableHead className="whitespace-normal">Source</TableHead>
+                        <TableHead className="w-28 whitespace-normal">Destination</TableHead>
+                        <TableHead className="w-20">Mode</TableHead>
+                        <TableHead className="w-16">RW</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {detail.mounts.map((m, i) => (
                         <TableRow key={i}>
-                          <TableCell className="font-mono text-xs break-all">
+                          <TableCell className="max-w-0 align-top whitespace-normal break-all font-mono text-xs">
                             {m.source}
                           </TableCell>
-                          <TableCell className="font-mono text-xs break-all">
+                          <TableCell className="max-w-0 align-top whitespace-normal break-all font-mono text-xs">
                             {m.destination}
                           </TableCell>
-                          <TableCell className="text-xs">{m.mode || "—"}</TableCell>
-                          <TableCell>
+                          <TableCell className="align-top text-xs whitespace-normal break-all">
+                            {m.mode || "—"}
+                          </TableCell>
+                          <TableCell className="align-top">
                             <Badge variant={m.rw ? "default" : "secondary"} className="text-xs">
                               {m.rw ? "RW" : "RO"}
                             </Badge>
@@ -188,8 +190,8 @@ export function ContainerDetailDialog({
               </ScrollArea>
             </TabsContent>
 
-            <TabsContent value="networks" className="mt-4">
-              <ScrollArea className="h-[50vh]">
+            <TabsContent value="networks" className="mt-4 min-w-0">
+              <ScrollArea className="h-[50vh] w-full">
                 {Object.keys(detail.networks).length > 0 ? (
                   <Table>
                     <TableHeader>
