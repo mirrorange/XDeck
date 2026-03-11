@@ -719,7 +719,7 @@ impl DockerManager {
                 repo_tags: img.repo_tags,
                 size: img.size,
                 created: img.created,
-                in_use: used_images.contains(&img.id),
+                in_use: Self::image_in_use(&img.id, img.containers, &used_images),
             })
             .collect();
 
@@ -759,6 +759,14 @@ impl DockerManager {
         let mut filters = HashMap::new();
         filters.insert("dangling".to_string(), vec!["false".to_string()]);
         PruneImagesOptions { filters }
+    }
+
+    fn image_in_use(
+        image_id: &str,
+        container_count: i64,
+        used_images: &std::collections::HashSet<String>,
+    ) -> bool {
+        container_count > 0 || used_images.contains(image_id)
     }
 
     // ── Network Operations ──────────────────────────────────────
@@ -1128,5 +1136,19 @@ mod tests {
         let options = DockerManager::prune_all_unused_image_options();
 
         assert_eq!(options.filters.get("dangling"), Some(&vec!["false".to_string()]));
+    }
+
+    #[test]
+    fn image_is_in_use_when_runtime_reports_container_references() {
+        let used_images = std::collections::HashSet::new();
+
+        assert!(DockerManager::image_in_use("sha256:demo", 1, &used_images));
+    }
+
+    #[test]
+    fn image_is_in_use_when_container_image_ids_match() {
+        let used_images = std::collections::HashSet::from(["sha256:demo".to_string()]);
+
+        assert!(DockerManager::image_in_use("sha256:demo", 0, &used_images));
     }
 }
