@@ -43,7 +43,6 @@ import {
 } from "~/components/responsive-modal";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
-import { ScrollArea } from "~/components/ui/scroll-area";
 import { Separator } from "~/components/ui/separator";
 import { Switch } from "~/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
@@ -306,7 +305,7 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
               </ResponsiveModalDescription>
             </ResponsiveModalHeader>
 
-            <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
+            <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 min-w-0 flex-1 flex-col">
               <TabsList className="w-full">
                 <TabsTrigger value="browse" className="flex-1">
                   Browse
@@ -317,7 +316,7 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
               </TabsList>
 
               {/* ── Browse Tab ─────────────────────────────────── */}
-              <TabsContent value="browse" className="flex min-h-0 flex-1 flex-col gap-3">
+              <TabsContent value="browse" className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
                 <div className="flex items-center gap-2">
                   <div className="relative flex-1">
                     <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -342,56 +341,58 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
                   </Button>
                 </div>
 
-                <ScrollArea className="flex-1 -mx-6 px-6" style={{ maxHeight: "50vh" }}>
-                  {isFetchingSnippets && allSnippets.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center gap-2 py-12">
-                      <Loader2 className="size-6 animate-spin text-muted-foreground" />
-                      <p className="text-sm text-muted-foreground">Loading snippets…</p>
-                    </div>
-                  ) : filtered.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center gap-2 py-12">
-                      <Store className="size-8 text-muted-foreground/50" />
-                      <p className="text-sm text-muted-foreground">
-                        {search ? "No matching snippets found" : "No snippets available"}
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-2 pb-2">
-                      {filtered.map((snippet) => (
-                        <SnippetStoreItem
-                          key={`${snippet.sourceName}-${snippet.id}`}
-                          snippet={snippet}
-                          sourceName={snippet.sourceName}
-                          status={getSnippetStatus(snippet)}
-                          isInstalling={installingIds.has(snippet.id)}
-                          onInstall={() => handleInstall(snippet)}
-                          onUninstall={() => handleUninstall(snippet.id, snippet.name)}
-                          onViewDetail={() => handleSelectSnippet(snippet)}
-                        />
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Source errors */}
-                  {results
-                    .filter((r) => r.error)
-                    .map((r) => (
-                      <div
-                        key={r.source.id}
-                        className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"
-                      >
-                        <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
-                        <div>
-                          <p className="font-medium text-destructive">{r.source.name}</p>
-                          <p className="text-muted-foreground">{r.error}</p>
-                        </div>
+                <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+                  <div className="space-y-3 pb-2 pr-1">
+                    {isFetchingSnippets && allSnippets.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center gap-2 py-12">
+                        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+                        <p className="text-sm text-muted-foreground">Loading snippets…</p>
                       </div>
-                    ))}
-                </ScrollArea>
+                    ) : filtered.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center gap-2 py-12">
+                        <Store className="size-8 text-muted-foreground/50" />
+                        <p className="text-sm text-muted-foreground">
+                          {search ? "No matching snippets found" : "No snippets available"}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {filtered.map((snippet) => (
+                          <SnippetStoreItem
+                            key={`${snippet.sourceName}-${snippet.id}`}
+                            snippet={snippet}
+                            sourceName={snippet.sourceName}
+                            status={getSnippetStatus(snippet)}
+                            isInstalling={installingIds.has(snippet.id)}
+                            onInstall={() => handleInstall(snippet)}
+                            onUninstall={() => handleUninstall(snippet.id, snippet.name)}
+                            onViewDetail={() => handleSelectSnippet(snippet)}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Source errors */}
+                    {results
+                      .filter((r) => r.error)
+                      .map((r) => (
+                        <div
+                          key={r.source.id}
+                          className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"
+                        >
+                          <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
+                          <div>
+                            <p className="font-medium text-destructive">{r.source.name}</p>
+                            <p className="text-muted-foreground">{r.error}</p>
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                </div>
               </TabsContent>
 
               {/* ── Sources Tab ────────────────────────────────── */}
-              <TabsContent value="sources" className="flex min-h-0 flex-1 flex-col gap-3">
+              <TabsContent value="sources" className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
                 {/* Add source form */}
                 <div className="space-y-3 rounded-lg border p-3">
                   <p className="text-sm font-medium">Add Source</p>
@@ -439,64 +440,66 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
                 <Separator />
 
                 {/* Source list */}
-                <div className="flex-1 -mx-6 px-6 overflow-y-auto" style={{ maxHeight: "40vh" }}>
-                  {isLoadingSources ? (
-                    <div className="flex items-center justify-center py-8">
-                      <Loader2 className="size-4 animate-spin text-muted-foreground" />
-                    </div>
-                  ) : sources.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center gap-2 py-8">
-                      <Globe className="size-8 text-muted-foreground/50" />
-                      <p className="text-sm text-muted-foreground">No sources configured</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-2 pb-2">
-                      {sources.map((source) => (
-                        <div
-                          key={source.id}
-                          className="flex items-center justify-between gap-3 rounded-lg border p-3"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <Globe className="size-3.5 shrink-0 text-muted-foreground" />
-                              <span className="truncate text-sm font-medium">{source.name}</span>
-                              {source.id === "official" && (
-                                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
-                                  Official
-                                </Badge>
-                              )}
-                              {!source.enabled && (
-                                <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground shrink-0">
-                                  Disabled
-                                </Badge>
+                <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+                  <div className="space-y-2 pb-2 pr-1">
+                    {isLoadingSources ? (
+                      <div className="flex items-center justify-center py-8">
+                        <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                      </div>
+                    ) : sources.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center gap-2 py-8">
+                        <Globe className="size-8 text-muted-foreground/50" />
+                        <p className="text-sm text-muted-foreground">No sources configured</p>
+                      </div>
+                    ) : (
+                      <>
+                        {sources.map((source) => (
+                          <div
+                            key={source.id}
+                            className="flex items-center justify-between gap-3 rounded-lg border p-3"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex min-w-0 items-center gap-2">
+                                <Globe className="size-3.5 shrink-0 text-muted-foreground" />
+                                <span className="truncate text-sm font-medium">{source.name}</span>
+                                {source.id === "official" && (
+                                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0 shrink-0">
+                                    Official
+                                  </Badge>
+                                )}
+                                {!source.enabled && (
+                                  <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-muted-foreground shrink-0">
+                                    Disabled
+                                  </Badge>
+                                )}
+                              </div>
+                              <p className="mt-0.5 truncate pl-5.5 text-xs text-muted-foreground" title={source.url}>
+                                {source.url}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <Switch
+                                checked={source.enabled}
+                                onCheckedChange={(checked) => handleToggleSource(source.id, checked)}
+                                aria-label={`Toggle ${source.name}`}
+                              />
+                              {source.id !== "official" && (
+                                <Button
+                                  variant="ghost"
+                                  size="icon-xs"
+                                  onClick={() => handleRemoveSource(source.id)}
+                                  title="Remove source"
+                                  className="text-muted-foreground hover:text-destructive"
+                                >
+                                  <Trash2 className="size-3.5" />
+                                </Button>
                               )}
                             </div>
-                            <p className="mt-0.5 text-xs text-muted-foreground pl-5.5 truncate" title={source.url}>
-                              {source.url}
-                            </p>
                           </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            <Switch
-                              checked={source.enabled}
-                              onCheckedChange={(checked) => handleToggleSource(source.id, checked)}
-                              aria-label={`Toggle ${source.name}`}
-                            />
-                            {source.id !== "official" && (
-                              <Button
-                                variant="ghost"
-                                size="icon-xs"
-                                onClick={() => handleRemoveSource(source.id)}
-                                title="Remove source"
-                                className="text-muted-foreground hover:text-destructive"
-                              >
-                                <Trash2 className="size-3.5" />
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                        ))}
+                      </>
+                    )}
+                  </div>
                 </div>
               </TabsContent>
             </Tabs>
@@ -882,8 +885,8 @@ function SnippetDetailView({
         </div>
       </div>
 
-      <ScrollArea style={{ maxHeight: "calc(80vh - 10rem)" }}>
-        <div className="pt-4 space-y-4">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="space-y-4 pt-4 pr-1">
           {/* Metadata row */}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
             {snippet.author && (
@@ -988,7 +991,7 @@ function SnippetDetailView({
             )}
           </div>
         </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 }
