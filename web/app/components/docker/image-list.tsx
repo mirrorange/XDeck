@@ -249,8 +249,8 @@ export function ImageList() {
           <AlertDialogHeader>
             <AlertDialogTitle>Prune Unused Images</AlertDialogTitle>
             <AlertDialogDescription>
-              This will remove all unused (dangling) images. This action cannot
-              be undone. Currently {unusedCount} unused image{unusedCount !== 1 ? "s" : ""} found.
+              This will remove all unused images that are not referenced by any
+              container. This action cannot be undone. Currently {unusedCount} unused image{unusedCount !== 1 ? "s" : ""} found.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

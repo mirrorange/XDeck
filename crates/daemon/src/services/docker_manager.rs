@@ -6,7 +6,7 @@ use bollard::container::{
     InspectContainerOptions, ListContainersOptions, LogsOptions, RemoveContainerOptions,
     RestartContainerOptions, StartContainerOptions, StopContainerOptions,
 };
-use bollard::image::{ListImagesOptions, RemoveImageOptions};
+use bollard::image::{ListImagesOptions, PruneImagesOptions, RemoveImageOptions};
 use bollard::network::ListNetworksOptions;
 use bollard::system::EventsOptions;
 use bollard::Docker;
@@ -745,7 +745,7 @@ impl DockerManager {
     pub async fn prune_images(&self) -> Result<serde_json::Value, AppError> {
         let client = self.get_client().await?;
         let result = client
-            .prune_images(None::<bollard::image::PruneImagesOptions<String>>)
+            .prune_images(Some(Self::prune_all_unused_image_options()))
             .await
             .map_err(|e| AppError::Internal(format!("Failed to prune images: {}", e)))?;
 
@@ -753,6 +753,12 @@ impl DockerManager {
             "images_deleted": result.images_deleted.unwrap_or_default().len(),
             "space_reclaimed": result.space_reclaimed,
         }))
+    }
+
+    fn prune_all_unused_image_options() -> PruneImagesOptions<String> {
+        let mut filters = HashMap::new();
+        filters.insert("dangling".to_string(), vec!["false".to_string()]);
+        PruneImagesOptions { filters }
     }
 
     // ── Network Operations ──────────────────────────────────────
@@ -1110,5 +1116,17 @@ impl DockerManager {
         });
 
         self.event_bus.publish("docker.container.state", data);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DockerManager;
+
+    #[test]
+    fn prune_images_targets_all_unused_images() {
+        let options = DockerManager::prune_all_unused_image_options();
+
+        assert_eq!(options.filters.get("dangling"), Some(&vec!["false".to_string()]));
     }
 }
