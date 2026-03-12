@@ -70,3 +70,8 @@ libc.workspace = true
 # File transfer
 tokio-util.workspace = true
 mime_guess.workspace = true
+
+# Compression
+zip.workspace = true
+flate2.workspace = true
+tar.workspace = true

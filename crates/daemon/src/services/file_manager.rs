@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::fs;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::error::AppError;
 
@@ -542,6 +542,254 @@ async fn search_recursive(
             }
         }
     }
+
+    Ok(())
+}
+
+// ── Compression ─────────────────────────────────────────────────
+
+/// Supported archive formats.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArchiveFormat {
+    Zip,
+    TarGz,
+}
+
+impl ArchiveFormat {
+    pub fn extension(&self) -> &str {
+        match self {
+            ArchiveFormat::Zip => ".zip",
+            ArchiveFormat::TarGz => ".tar.gz",
+        }
+    }
+
+    /// Detect format from file extension.
+    pub fn from_path(path: &Path) -> Option<Self> {
+        let name = path.file_name()?.to_string_lossy().to_lowercase();
+        if name.ends_with(".zip") {
+            Some(ArchiveFormat::Zip)
+        } else if name.ends_with(".tar.gz") || name.ends_with(".tgz") {
+            Some(ArchiveFormat::TarGz)
+        } else {
+            None
+        }
+    }
+}
+
+/// Compress files/directories into an archive.
+pub async fn compress(
+    paths: &[String],
+    output_path: &str,
+    format: ArchiveFormat,
+) -> Result<FileEntry, AppError> {
+    if paths.is_empty() {
+        return Err(AppError::BadRequest("No paths to compress".into()));
+    }
+
+    let output = resolve_safe_path(output_path)?;
+    if output.exists() {
+        return Err(AppError::AlreadyExists(format!(
+            "Output already exists: {}",
+            output.display()
+        )));
+    }
+
+    let resolved_paths: Vec<PathBuf> = paths
+        .iter()
+        .map(|p| resolve_safe_path(p))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for p in &resolved_paths {
+        if !p.exists() {
+            return Err(AppError::NotFound(format!(
+                "Path not found: {}",
+                p.display()
+            )));
+        }
+    }
+
+    let output_clone = output.clone();
+
+    tokio::task::spawn_blocking(move || match format {
+        ArchiveFormat::Zip => compress_zip(&resolved_paths, &output_clone),
+        ArchiveFormat::TarGz => compress_tar_gz(&resolved_paths, &output_clone),
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("Compression task failed: {}", e)))??;
+
+    info!("Compressed {} file(s) to {}", paths.len(), output.display());
+    build_file_entry(&output).await
+}
+
+fn compress_zip(paths: &[PathBuf], output: &Path) -> Result<(), AppError> {
+    let file = std::fs::File::create(output)
+        .map_err(|e| AppError::BadRequest(format!("Cannot create archive: {}", e)))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    for path in paths {
+        if path.is_file() {
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            zip.start_file(&name, options)
+                .map_err(|e| AppError::Internal(format!("Zip error: {}", e)))?;
+            let data = std::fs::read(path)
+                .map_err(|e| AppError::BadRequest(format!("Cannot read {}: {}", path.display(), e)))?;
+            std::io::Write::write_all(&mut zip, &data)
+                .map_err(|e| AppError::Internal(format!("Zip write error: {}", e)))?;
+        } else if path.is_dir() {
+            add_dir_to_zip(
+                &mut zip,
+                path,
+                path.file_name().unwrap().to_string_lossy().as_ref(),
+                options,
+            )?;
+        }
+    }
+
+    zip.finish()
+        .map_err(|e| AppError::Internal(format!("Zip finish error: {}", e)))?;
+    Ok(())
+}
+
+fn add_dir_to_zip(
+    zip: &mut zip::ZipWriter<std::fs::File>,
+    dir: &Path,
+    prefix: &str,
+    options: zip::write::SimpleFileOptions,
+) -> Result<(), AppError> {
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| AppError::BadRequest(format!("Cannot read dir: {}", e)))?
+    {
+        let entry = entry.map_err(|e| AppError::BadRequest(format!("Dir entry error: {}", e)))?;
+        let path = entry.path();
+        let name = format!("{}/{}", prefix, entry.file_name().to_string_lossy());
+
+        if path.is_file() {
+            zip.start_file(&name, options)
+                .map_err(|e| AppError::Internal(format!("Zip error: {}", e)))?;
+            let data = std::fs::read(&path)
+                .map_err(|e| AppError::BadRequest(format!("Cannot read: {}", e)))?;
+            std::io::Write::write_all(zip, &data)
+                .map_err(|e| AppError::Internal(format!("Zip write error: {}", e)))?;
+        } else if path.is_dir() {
+            add_dir_to_zip(zip, &path, &name, options)?;
+        }
+    }
+    Ok(())
+}
+
+fn compress_tar_gz(paths: &[PathBuf], output: &Path) -> Result<(), AppError> {
+    let file = std::fs::File::create(output)
+        .map_err(|e| AppError::BadRequest(format!("Cannot create archive: {}", e)))?;
+    let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    let mut tar = tar::Builder::new(enc);
+
+    for path in paths {
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if path.is_file() {
+            tar.append_path_with_name(path, &name)
+                .map_err(|e| AppError::Internal(format!("Tar error: {}", e)))?;
+        } else if path.is_dir() {
+            tar.append_dir_all(&name, path)
+                .map_err(|e| AppError::Internal(format!("Tar error: {}", e)))?;
+        }
+    }
+
+    tar.into_inner()
+        .map_err(|e| AppError::Internal(format!("Tar finish error: {}", e)))?
+        .finish()
+        .map_err(|e| AppError::Internal(format!("Gzip finish error: {}", e)))?;
+    Ok(())
+}
+
+/// Extract an archive to a destination directory.
+pub async fn extract(
+    archive_path: &str,
+    dest_path: &str,
+) -> Result<Vec<FileEntry>, AppError> {
+    let archive = resolve_safe_path(archive_path)?;
+    let dest = resolve_safe_path(dest_path)?;
+
+    if !archive.is_file() {
+        return Err(AppError::NotFound(format!(
+            "Archive not found: {}",
+            archive.display()
+        )));
+    }
+
+    if !dest.is_dir() {
+        return Err(AppError::BadRequest(
+            "Destination must be a directory".into(),
+        ));
+    }
+
+    let format = ArchiveFormat::from_path(&archive).ok_or_else(|| {
+        AppError::BadRequest("Unsupported archive format. Supported: .zip, .tar.gz, .tgz".into())
+    })?;
+
+    let archive_clone = archive.clone();
+    let dest_clone = dest.clone();
+
+    tokio::task::spawn_blocking(move || match format {
+        ArchiveFormat::Zip => extract_zip(&archive_clone, &dest_clone),
+        ArchiveFormat::TarGz => extract_tar_gz(&archive_clone, &dest_clone),
+    })
+    .await
+    .map_err(|e| AppError::Internal(format!("Extract task failed: {}", e)))??;
+
+    info!("Extracted {} to {}", archive.display(), dest.display());
+
+    let entries = list_directory(dest_path).await?;
+    Ok(entries.entries)
+}
+
+fn extract_zip(archive: &Path, dest: &Path) -> Result<(), AppError> {
+    let file = std::fs::File::open(archive)
+        .map_err(|e| AppError::BadRequest(format!("Cannot open archive: {}", e)))?;
+    let mut zip = zip::ZipArchive::new(file)
+        .map_err(|e| AppError::BadRequest(format!("Invalid zip: {}", e)))?;
+
+    for i in 0..zip.len() {
+        let mut entry = zip
+            .by_index(i)
+            .map_err(|e| AppError::Internal(format!("Zip read error: {}", e)))?;
+
+        let name = entry.name().to_string();
+        // Prevent path traversal
+        if name.contains("..") {
+            continue;
+        }
+
+        let out_path = dest.join(&name);
+
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path)
+                .map_err(|e| AppError::Internal(format!("Cannot create dir: {}", e)))?;
+        } else {
+            if let Some(parent) = out_path.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| AppError::Internal(format!("Cannot create dir: {}", e)))?;
+            }
+            let mut outfile = std::fs::File::create(&out_path)
+                .map_err(|e| AppError::Internal(format!("Cannot create file: {}", e)))?;
+            std::io::copy(&mut entry, &mut outfile)
+                .map_err(|e| AppError::Internal(format!("Extract error: {}", e)))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<(), AppError> {
+    let file = std::fs::File::open(archive)
+        .map_err(|e| AppError::BadRequest(format!("Cannot open archive: {}", e)))?;
+    let dec = flate2::read::GzDecoder::new(file);
+    let mut tar = tar::Archive::new(dec);
+
+    tar.unpack(dest)
+        .map_err(|e| AppError::Internal(format!("Extract error: {}", e)))?;
 
     Ok(())
 }

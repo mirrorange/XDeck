@@ -3,6 +3,7 @@ use serde::Deserialize;
 use crate::rpc::params::parse_required_params;
 use crate::rpc::router::RpcRouter;
 use crate::services::file_manager;
+use crate::services::file_manager::ArchiveFormat;
 
 // ── Param Types ─────────────────────────────────────────────────
 
@@ -85,6 +86,26 @@ struct SearchParams {
 
 fn default_max_results() -> usize {
     500
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompressParams {
+    paths: Vec<String>,
+    output: String,
+    #[serde(default = "default_archive_format")]
+    format: ArchiveFormat,
+}
+
+fn default_archive_format() -> ArchiveFormat {
+    ArchiveFormat::Zip
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExtractParams {
+    archive: String,
+    dest: String,
 }
 
 // ── Handler Registration ────────────────────────────────────────
@@ -181,6 +202,23 @@ pub fn register(router: &mut RpcRouter) {
         Ok(serde_json::json!({
             "results": results,
             "total": results.len(),
+        }))
+    });
+
+    // fs.compress — Compress files into an archive
+    router.register("fs.compress", move |params, _ctx| async move {
+        let params = parse_required_params::<CompressParams>(params)?;
+        let entry = file_manager::compress(&params.paths, &params.output, params.format).await?;
+        Ok(serde_json::to_value(&entry).unwrap())
+    });
+
+    // fs.extract — Extract an archive
+    router.register("fs.extract", move |params, _ctx| async move {
+        let params = parse_required_params::<ExtractParams>(params)?;
+        let entries = file_manager::extract(&params.archive, &params.dest).await?;
+        Ok(serde_json::json!({
+            "entries": entries,
+            "total": entries.len(),
         }))
     });
 }

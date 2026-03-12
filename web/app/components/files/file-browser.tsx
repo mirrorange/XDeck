@@ -14,9 +14,11 @@ import { PropertiesDialog } from "~/components/files/properties-dialog";
 import { MoveDialog } from "~/components/files/move-dialog";
 import { FileSearchPanel } from "~/components/files/file-search-panel";
 import { UploadDialog } from "~/components/files/upload-dialog";
+import { CompressDialog } from "~/components/files/compress-dialog";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
 import { downloadFile } from "~/lib/file-transfer";
+import { getRpcClient } from "~/lib/rpc-client";
 
 export function FileBrowser() {
   const {
@@ -47,6 +49,8 @@ export function FileBrowser() {
   const [movePaths, setMovePaths] = useState<string[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [compressOpen, setCompressOpen] = useState(false);
+  const [compressPaths, setCompressPaths] = useState<string[]>([]);
 
   // Initialize with home dir on first mount
   useEffect(() => {
@@ -168,9 +172,28 @@ export function FileBrowser() {
         case "upload":
           setUploadOpen(true);
           break;
-        case "compress":
+        case "compress": {
+          const paths = getSelectedPaths();
+          if (paths.length > 0) {
+            setCompressPaths(paths);
+            setCompressOpen(true);
+          }
+          break;
+        }
         case "extract":
-          // Will be implemented in later stages
+          if (contextEntry) {
+            void (async () => {
+              try {
+                await getRpcClient().call("fs.extract", {
+                  archive: contextEntry.path,
+                  dest: activeTab.path,
+                });
+                void refresh(activeTab.id);
+              } catch {
+                // silently fail for now
+              }
+            })();
+          }
           break;
       }
     },
@@ -365,6 +388,14 @@ export function FileBrowser() {
         onOpenChange={setUploadOpen}
         currentPath={activeTab.path}
         onUploaded={handleRefreshCurrent}
+      />
+
+      <CompressDialog
+        open={compressOpen}
+        onOpenChange={setCompressOpen}
+        paths={compressPaths}
+        currentPath={activeTab.path}
+        onCompleted={handleRefreshCurrent}
       />
     </div>
   );
