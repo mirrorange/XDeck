@@ -208,6 +208,29 @@ export function FileBrowser() {
     if (activeTab) void refresh(activeTab.id);
   }, [activeTab, refresh]);
 
+  const handleDropFiles = useCallback(
+    (targetDir: string) => {
+      if (!activeTab) return;
+      const paths = [...activeTab.selectedPaths];
+      if (paths.length === 0) return;
+      // Don't move a folder into itself
+      const filtered = paths.filter((p) => !targetDir.startsWith(p + "/") && p !== targetDir);
+      if (filtered.length === 0) return;
+      void (async () => {
+        const rpc = getRpcClient();
+        for (const src of filtered) {
+          try {
+            await rpc.call("fs.move", { source: src, dest: targetDir });
+          } catch {
+            // skip failed moves
+          }
+        }
+        void refresh(activeTab.id);
+      })();
+    },
+    [activeTab, refresh]
+  );
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -328,6 +351,7 @@ export function FileBrowser() {
                 sortDirection={activeTab.sortDirection}
                 onOpen={handleOpen}
                 onContextMenu={handleContextMenu}
+                onDropFiles={handleDropFiles}
               />
             ) : (
               <FileGridView
@@ -336,6 +360,7 @@ export function FileBrowser() {
                 selectedPaths={activeTab.selectedPaths}
                 onOpen={handleOpen}
                 onContextMenu={handleContextMenu}
+                onDropFiles={handleDropFiles}
               />
             )}
           </ScrollArea>

@@ -24,6 +24,7 @@ interface FileListViewProps {
   sortDirection: "asc" | "desc";
   onOpen: (entry: FileEntry) => void;
   onContextMenu: (e: React.MouseEvent, entry: FileEntry) => void;
+  onDropFiles?: (targetDir: string) => void;
 }
 
 export function FileListView({
@@ -34,6 +35,7 @@ export function FileListView({
   sortDirection,
   onOpen,
   onContextMenu,
+  onDropFiles,
 }: FileListViewProps) {
   const { selectFile, selectRange, setSortField } = useFileStore();
 
@@ -47,6 +49,35 @@ export function FileListView({
 
   const handleDoubleClick = (entry: FileEntry) => {
     onOpen(entry);
+  };
+
+  const handleDragStart = (e: React.DragEvent, entry: FileEntry) => {
+    // If the dragged item is not selected, select it
+    if (!selectedPaths.has(entry.path)) {
+      selectFile(tabId, entry.path, false);
+    }
+    const paths = selectedPaths.has(entry.path)
+      ? [...selectedPaths]
+      : [entry.path];
+    e.dataTransfer.setData("application/x-xdeck-files", JSON.stringify(paths));
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleDragOver = (e: React.DragEvent, entry: FileEntry) => {
+    if (entry.type !== "directory") return;
+    if (e.dataTransfer.types.includes("application/x-xdeck-files")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent, entry: FileEntry) => {
+    if (entry.type !== "directory") return;
+    e.preventDefault();
+    const data = e.dataTransfer.getData("application/x-xdeck-files");
+    if (data) {
+      onDropFiles?.(entry.path);
+    }
   };
 
   const SortIcon = ({ field }: { field: SortField }) => {
@@ -94,9 +125,13 @@ export function FileListView({
                 "cursor-default select-none",
                 isSelected && "bg-accent"
               )}
+              draggable
               onClick={(e) => handleClick(e, entry)}
               onDoubleClick={() => handleDoubleClick(entry)}
               onContextMenu={(e) => onContextMenu(e, entry)}
+              onDragStart={(e) => handleDragStart(e, entry)}
+              onDragOver={(e) => handleDragOver(e, entry)}
+              onDrop={(e) => handleDrop(e, entry)}
             >
               <TableCell className="py-1.5">
                 <div className="flex items-center gap-2">

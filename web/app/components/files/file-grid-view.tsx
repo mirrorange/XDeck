@@ -8,6 +8,7 @@ interface FileGridViewProps {
   selectedPaths: Set<string>;
   onOpen: (entry: FileEntry) => void;
   onContextMenu: (e: React.MouseEvent, entry: FileEntry) => void;
+  onDropFiles?: (targetDir: string) => void;
 }
 
 export function FileGridView({
@@ -16,6 +17,7 @@ export function FileGridView({
   selectedPaths,
   onOpen,
   onContextMenu,
+  onDropFiles,
 }: FileGridViewProps) {
   const { selectFile, selectRange } = useFileStore();
 
@@ -24,6 +26,34 @@ export function FileGridView({
       selectRange(tabId, entry.path);
     } else {
       selectFile(tabId, entry.path, e.metaKey || e.ctrlKey);
+    }
+  };
+
+  const handleDragStart = (e: React.DragEvent, entry: FileEntry) => {
+    if (!selectedPaths.has(entry.path)) {
+      selectFile(tabId, entry.path, false);
+    }
+    const paths = selectedPaths.has(entry.path)
+      ? [...selectedPaths]
+      : [entry.path];
+    e.dataTransfer.setData("application/x-xdeck-files", JSON.stringify(paths));
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleDragOver = (e: React.DragEvent, entry: FileEntry) => {
+    if (entry.type !== "directory") return;
+    if (e.dataTransfer.types.includes("application/x-xdeck-files")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent, entry: FileEntry) => {
+    if (entry.type !== "directory") return;
+    e.preventDefault();
+    const data = e.dataTransfer.getData("application/x-xdeck-files");
+    if (data) {
+      onDropFiles?.(entry.path);
     }
   };
 
@@ -42,6 +72,7 @@ export function FileGridView({
         return (
           <button
             key={entry.path}
+            draggable
             className={cn(
               "flex flex-col items-center gap-1 rounded-lg p-2 text-center transition-colors",
               "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -51,6 +82,9 @@ export function FileGridView({
             onClick={(e) => handleClick(e, entry)}
             onDoubleClick={() => onOpen(entry)}
             onContextMenu={(e) => onContextMenu(e, entry)}
+            onDragStart={(e) => handleDragStart(e, entry)}
+            onDragOver={(e) => handleDragOver(e, entry)}
+            onDrop={(e) => handleDrop(e, entry)}
           >
             <FileIcon
               type={entry.type}
