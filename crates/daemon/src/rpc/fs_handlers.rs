@@ -108,6 +108,18 @@ struct ExtractParams {
     dest: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReadFileParams {
+    path: String,
+    #[serde(default = "default_max_bytes")]
+    max_bytes: usize,
+}
+
+fn default_max_bytes() -> usize {
+    2 * 1024 * 1024 // 2MB
+}
+
 // ── Handler Registration ────────────────────────────────────────
 
 pub fn register(router: &mut RpcRouter) {
@@ -123,6 +135,16 @@ pub fn register(router: &mut RpcRouter) {
         let params = parse_required_params::<StatParams>(params)?;
         let entry = file_manager::stat_path(&params.path).await?;
         Ok(serde_json::to_value(&entry).unwrap())
+    });
+
+    // fs.read_file — Read file content (text)
+    router.register("fs.read_file", move |params, _ctx| async move {
+        let params = parse_required_params::<ReadFileParams>(params)?;
+        let content = file_manager::read_file_content(&params.path, params.max_bytes).await?;
+        Ok(serde_json::json!({
+            "content": content,
+            "size": content.len(),
+        }))
     });
 
     // fs.home — Get home directory

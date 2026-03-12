@@ -15,9 +15,11 @@ import { MoveDialog } from "~/components/files/move-dialog";
 import { FileSearchPanel } from "~/components/files/file-search-panel";
 import { UploadDialog } from "~/components/files/upload-dialog";
 import { CompressDialog } from "~/components/files/compress-dialog";
+import { FilePreview } from "~/components/files/file-preview";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
 import { downloadFile } from "~/lib/file-transfer";
+import { isPreviewable } from "~/lib/file-utils";
 import { getRpcClient } from "~/lib/rpc-client";
 
 export function FileBrowser() {
@@ -51,6 +53,7 @@ export function FileBrowser() {
   const [uploadOpen, setUploadOpen] = useState(false);
   const [compressOpen, setCompressOpen] = useState(false);
   const [compressPaths, setCompressPaths] = useState<string[]>([]);
+  const [previewEntry, setPreviewEntry] = useState<FileEntry | null>(null);
 
   // Initialize with home dir on first mount
   useEffect(() => {
@@ -73,8 +76,9 @@ export function FileBrowser() {
       if (!activeTab) return;
       if (entry.type === "directory") {
         void navigateTo(activeTab.id, entry.path);
+      } else if (isPreviewable(entry.type, entry.name)) {
+        setPreviewEntry(entry);
       }
-      // File preview will be added in Stage 7
     },
     [activeTab, navigateTo]
   );
@@ -218,6 +222,8 @@ export function FileBrowser() {
       if (e.key === "Escape") {
         if (searchOpen) {
           setSearchOpen(false);
+        } else if (previewEntry) {
+          setPreviewEntry(null);
         } else {
           clearSelection(activeTab.id);
         }
@@ -341,6 +347,15 @@ export function FileBrowser() {
             onNavigate={(path) => void navigateTo(activeTab.id, path)}
             onClose={() => setSearchOpen(false)}
           />
+        )}
+
+        {previewEntry && (
+          <div className="w-[400px] shrink-0">
+            <FilePreview
+              entry={previewEntry}
+              onClose={() => setPreviewEntry(null)}
+            />
+          </div>
         )}
       </div>
 

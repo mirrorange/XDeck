@@ -256,6 +256,37 @@ pub async fn stat_path(path: &str) -> Result<FileEntry, AppError> {
     build_file_entry(&resolved).await
 }
 
+/// Read file content as UTF-8 text. Limited to a max size for safety.
+pub async fn read_file_content(path: &str, max_bytes: usize) -> Result<String, AppError> {
+    let resolved = resolve_safe_path(path)?;
+    debug!("Read file: {}", resolved.display());
+
+    if !resolved.is_file() {
+        return Err(AppError::BadRequest(format!(
+            "Not a file: {}",
+            resolved.display()
+        )));
+    }
+
+    let metadata = fs::metadata(&resolved).await.map_err(|e| {
+        AppError::BadRequest(format!("Cannot read metadata: {}", e))
+    })?;
+
+    if metadata.len() as usize > max_bytes {
+        return Err(AppError::BadRequest(format!(
+            "File too large for preview ({} bytes, max {})",
+            metadata.len(),
+            max_bytes
+        )));
+    }
+
+    let content = fs::read_to_string(&resolved).await.map_err(|e| {
+        AppError::BadRequest(format!("Cannot read file (may be binary): {}", e))
+    })?;
+
+    Ok(content)
+}
+
 /// Get the user's home directory.
 pub fn get_home_dir() -> Result<String, AppError> {
     dirs::home_dir()
