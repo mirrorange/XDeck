@@ -15,7 +15,7 @@ authors = ["Orange"]
 tokio = { version = "1", features = ["full"] }
 
 # Web framework
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 axum-extra = { version = "0.10", features = ["typed-header"] }
 tower = { version = "0.5" }
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
@@ -62,3 +62,7 @@ bollard = { version = "0.18", features = ["ssl"] }
 # System utilities
 which = "7"
 libc = "0.2"
+
+# File transfer
+tokio-util = { version = "0.7", features = ["io"] }
+mime_guess = "2"

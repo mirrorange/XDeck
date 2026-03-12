@@ -13,8 +13,10 @@ import { DeleteDialog } from "~/components/files/delete-dialog";
 import { PropertiesDialog } from "~/components/files/properties-dialog";
 import { MoveDialog } from "~/components/files/move-dialog";
 import { FileSearchPanel } from "~/components/files/file-search-panel";
+import { UploadDialog } from "~/components/files/upload-dialog";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
+import { downloadFile } from "~/lib/file-transfer";
 
 export function FileBrowser() {
   const {
@@ -44,6 +46,7 @@ export function FileBrowser() {
   const [moveMode, setMoveMode] = useState<"copy" | "move">("move");
   const [movePaths, setMovePaths] = useState<string[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(false);
 
   // Initialize with home dir on first mount
   useEffect(() => {
@@ -155,8 +158,16 @@ export function FileBrowser() {
           }
           break;
         }
-        case "download":
+        case "download": {
+          const paths = getSelectedPaths();
+          for (const p of paths) {
+            downloadFile(p);
+          }
+          break;
+        }
         case "upload":
+          setUploadOpen(true);
+          break;
         case "compress":
         case "extract":
           // Will be implemented in later stages
@@ -347,6 +358,13 @@ export function FileBrowser() {
         sourcePaths={movePaths}
         mode={moveMode}
         onCompleted={handleRefreshCurrent}
+      />
+
+      <UploadDialog
+        open={uploadOpen}
+        onOpenChange={setUploadOpen}
+        currentPath={activeTab.path}
+        onUploaded={handleRefreshCurrent}
       />
     </div>
   );

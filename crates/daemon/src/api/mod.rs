@@ -1,9 +1,11 @@
+mod file_transfer;
 mod pty_websocket;
 mod websocket;
 
 use std::sync::Arc;
 
 use axum::{response::Json, routing::get, Router};
+use axum::routing::post;
 use sqlx::SqlitePool;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -105,6 +107,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/health", get(health_handler))
         .route("/ws", get(websocket::ws_handler))
         .route("/ws/pty/{session_id}", get(pty_websocket::pty_ws_handler))
+        .route("/api/files/download", get(file_transfer::download_handler))
+        .route("/api/files/upload", post(file_transfer::upload_handler))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
