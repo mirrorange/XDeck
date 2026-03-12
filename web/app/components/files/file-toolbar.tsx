@@ -23,9 +23,10 @@ interface FileToolbarProps {
   path: string;
   canGoBack: boolean;
   canGoForward: boolean;
+  onSearchToggle?: () => void;
 }
 
-export function FileToolbar({ tabId, path, canGoBack, canGoForward }: FileToolbarProps) {
+export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchToggle }: FileToolbarProps) {
   const {
     goBack,
     goForward,
@@ -40,21 +41,12 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward }: FileToolba
 
   const [editingPath, setEditingPath] = useState(false);
   const [inputPath, setInputPath] = useState(path);
-  const [searchMode, setSearchMode] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
+
 
   const handlePathSubmit = () => {
     setEditingPath(false);
     if (inputPath.trim() && inputPath !== path) {
       void navigateTo(tabId, inputPath.trim());
-    }
-  };
-
-  const handleSearchSubmit = () => {
-    if (searchQuery.trim()) {
-      // Search will be handled by a separate component later
-      setSearchMode(false);
-      setSearchQuery("");
     }
   };
 
@@ -122,26 +114,8 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward }: FileToolba
 
         <Separator orientation="vertical" className="!h-4 mx-1" />
 
-        {/* Path bar / Search */}
-        {searchMode ? (
-          <div className="flex flex-1 items-center gap-1">
-            <Search className="size-4 text-muted-foreground" />
-            <Input
-              className="h-7 flex-1 text-sm"
-              placeholder="Search files..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleSearchSubmit();
-                if (e.key === "Escape") {
-                  setSearchMode(false);
-                  setSearchQuery("");
-                }
-              }}
-              autoFocus
-            />
-          </div>
-        ) : editingPath ? (
+        {/* Path bar */}
+        {editingPath ? (
           <Input
             className="h-7 flex-1 text-sm font-mono"
             value={inputPath}
@@ -176,7 +150,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward }: FileToolba
               variant="ghost"
               size="icon"
               className="size-7"
-              onClick={() => setSearchMode(!searchMode)}
+              onClick={onSearchToggle}
             >
               <Search className="size-4" />
             </Button>

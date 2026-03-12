@@ -7,6 +7,12 @@ import { FileListView } from "~/components/files/file-list-view";
 import { FileGridView } from "~/components/files/file-grid-view";
 import { FileContextMenu, type FileAction } from "~/components/files/file-context-menu";
 import { FileStatusBar } from "~/components/files/file-status-bar";
+import { NewFolderDialog } from "~/components/files/new-folder-dialog";
+import { RenameDialog } from "~/components/files/rename-dialog";
+import { DeleteDialog } from "~/components/files/delete-dialog";
+import { PropertiesDialog } from "~/components/files/properties-dialog";
+import { MoveDialog } from "~/components/files/move-dialog";
+import { FileSearchPanel } from "~/components/files/file-search-panel";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
 
@@ -25,6 +31,19 @@ export function FileBrowser() {
   } = useFileStore();
 
   const [contextEntry, setContextEntry] = useState<FileEntry | null>(null);
+
+  // Dialog states
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameEntry, setRenameEntry] = useState<FileEntry | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deletePaths, setDeletePaths] = useState<string[]>([]);
+  const [propertiesOpen, setPropertiesOpen] = useState(false);
+  const [propertiesEntry, setPropertiesEntry] = useState<FileEntry | null>(null);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveMode, setMoveMode] = useState<"copy" | "move">("move");
+  const [movePaths, setMovePaths] = useState<string[]>([]);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   // Initialize with home dir on first mount
   useEffect(() => {
@@ -57,7 +76,6 @@ export function FileBrowser() {
     (e: React.MouseEvent, entry: FileEntry) => {
       e.preventDefault();
       setContextEntry(entry);
-      // If the entry isn't already selected, select it
       if (activeTab && !activeTab.selectedPaths.has(entry.path)) {
         selectFile(activeTab.id, entry.path, false);
       }
@@ -67,13 +85,21 @@ export function FileBrowser() {
 
   const handleEmptyContextMenu = useCallback(
     (e: React.MouseEvent) => {
-      // Only trigger if clicking on empty space (not on a file)
       if ((e.target as HTMLElement).closest("[data-slot='table-row']")) return;
       if ((e.target as HTMLElement).closest("button")) return;
       setContextEntry(null);
     },
     []
   );
+
+  const getSelectedPaths = useCallback((): string[] => {
+    if (!activeTab) return [];
+    const selected = [...activeTab.selectedPaths];
+    if (selected.length === 0 && contextEntry) {
+      return [contextEntry.path];
+    }
+    return selected;
+  }, [activeTab, contextEntry]);
 
   const handleAction = useCallback(
     (action: FileAction) => {
@@ -89,27 +115,65 @@ export function FileBrowser() {
           selectAll(activeTab.id);
           break;
         case "new-folder":
+          setNewFolderOpen(true);
+          break;
         case "rename":
-        case "copy":
-        case "move":
-        case "delete":
+          if (contextEntry) {
+            setRenameEntry(contextEntry);
+            setRenameOpen(true);
+          }
+          break;
+        case "delete": {
+          const paths = getSelectedPaths();
+          if (paths.length > 0) {
+            setDeletePaths(paths);
+            setDeleteOpen(true);
+          }
+          break;
+        }
+        case "properties":
+          if (contextEntry) {
+            setPropertiesEntry(contextEntry);
+            setPropertiesOpen(true);
+          }
+          break;
+        case "copy": {
+          const paths = getSelectedPaths();
+          if (paths.length > 0) {
+            setMovePaths(paths);
+            setMoveMode("copy");
+            setMoveOpen(true);
+          }
+          break;
+        }
+        case "move": {
+          const paths = getSelectedPaths();
+          if (paths.length > 0) {
+            setMovePaths(paths);
+            setMoveMode("move");
+            setMoveOpen(true);
+          }
+          break;
+        }
         case "download":
         case "upload":
         case "compress":
         case "extract":
-        case "properties":
-          // These actions will be implemented in later stages
+          // Will be implemented in later stages
           break;
       }
     },
-    [activeTab, contextEntry, handleOpen, refresh, selectAll]
+    [activeTab, contextEntry, handleOpen, refresh, selectAll, getSelectedPaths]
   );
+
+  const handleRefreshCurrent = useCallback(() => {
+    if (activeTab) void refresh(activeTab.id);
+  }, [activeTab, refresh]);
 
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!activeTab) return;
-      // Ignore if focus is in an input
       if ((e.target as HTMLElement).tagName === "INPUT") return;
 
       if ((e.metaKey || e.ctrlKey) && e.key === "a") {
@@ -118,7 +182,11 @@ export function FileBrowser() {
       }
 
       if (e.key === "Escape") {
-        clearSelection(activeTab.id);
+        if (searchOpen) {
+          setSearchOpen(false);
+        } else {
+          clearSelection(activeTab.id);
+        }
       }
 
       if (e.key === "Backspace" && !e.metaKey) {
@@ -130,11 +198,37 @@ export function FileBrowser() {
         e.preventDefault();
         void refresh(activeTab.id);
       }
+
+      if (e.key === "Delete" || (e.metaKey && e.key === "Backspace")) {
+        const paths = [...activeTab.selectedPaths];
+        if (paths.length > 0) {
+          e.preventDefault();
+          setDeletePaths(paths);
+          setDeleteOpen(true);
+        }
+      }
+
+      if (e.key === "F2") {
+        const selected = [...activeTab.selectedPaths];
+        if (selected.length === 1) {
+          const entry = activeTab.entries.find((en) => en.path === selected[0]);
+          if (entry) {
+            e.preventDefault();
+            setRenameEntry(entry);
+            setRenameOpen(true);
+          }
+        }
+      }
+
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
     };
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [activeTab, selectAll, clearSelection, refresh]);
+  }, [activeTab, selectAll, clearSelection, refresh, searchOpen]);
 
   if (!activeTab) {
     return (
@@ -153,60 +247,107 @@ export function FileBrowser() {
         path={activeTab.path}
         canGoBack={activeTab.historyIndex > 0}
         canGoForward={activeTab.historyIndex < activeTab.history.length - 1}
+        onSearchToggle={() => setSearchOpen(!searchOpen)}
       />
 
-      <FileContextMenu
-        entry={contextEntry}
-        hasSelection={activeTab.selectedPaths.size > 0}
-        selectionCount={activeTab.selectedPaths.size}
-        onAction={handleAction}
-      >
-        <ScrollArea
-          className="flex-1"
-          onContextMenu={handleEmptyContextMenu}
-          onClick={(e) => {
-            // Click on empty space clears selection
-            const target = e.target as HTMLElement;
-            if (
-              !target.closest("[data-slot='table-row']") &&
-              !target.closest("button")
-            ) {
-              clearSelection(activeTab.id);
-            }
-          }}
+      <div className="flex flex-1 min-h-0">
+        <FileContextMenu
+          entry={contextEntry}
+          hasSelection={activeTab.selectedPaths.size > 0}
+          selectionCount={activeTab.selectedPaths.size}
+          onAction={handleAction}
         >
-          {activeTab.isLoading ? (
-            <div className="flex h-64 items-center justify-center">
-              <Loader2 className="size-6 animate-spin text-muted-foreground" />
-            </div>
-          ) : activeTab.error ? (
-            <div className="flex h-64 flex-col items-center justify-center gap-2 text-muted-foreground">
-              <p className="text-sm">Failed to load directory</p>
-              <p className="text-xs text-destructive">{activeTab.error}</p>
-            </div>
-          ) : viewMode === "list" ? (
-            <FileListView
-              tabId={activeTab.id}
-              entries={activeTab.entries}
-              selectedPaths={activeTab.selectedPaths}
-              sortField={activeTab.sortField}
-              sortDirection={activeTab.sortDirection}
-              onOpen={handleOpen}
-              onContextMenu={handleContextMenu}
-            />
-          ) : (
-            <FileGridView
-              tabId={activeTab.id}
-              entries={activeTab.entries}
-              selectedPaths={activeTab.selectedPaths}
-              onOpen={handleOpen}
-              onContextMenu={handleContextMenu}
-            />
-          )}
-        </ScrollArea>
-      </FileContextMenu>
+          <ScrollArea
+            className="flex-1"
+            onContextMenu={handleEmptyContextMenu}
+            onClick={(e) => {
+              const target = e.target as HTMLElement;
+              if (
+                !target.closest("[data-slot='table-row']") &&
+                !target.closest("button")
+              ) {
+                clearSelection(activeTab.id);
+              }
+            }}
+          >
+            {activeTab.isLoading ? (
+              <div className="flex h-64 items-center justify-center">
+                <Loader2 className="size-6 animate-spin text-muted-foreground" />
+              </div>
+            ) : activeTab.error ? (
+              <div className="flex h-64 flex-col items-center justify-center gap-2 text-muted-foreground">
+                <p className="text-sm">Failed to load directory</p>
+                <p className="text-xs text-destructive">{activeTab.error}</p>
+              </div>
+            ) : viewMode === "list" ? (
+              <FileListView
+                tabId={activeTab.id}
+                entries={activeTab.entries}
+                selectedPaths={activeTab.selectedPaths}
+                sortField={activeTab.sortField}
+                sortDirection={activeTab.sortDirection}
+                onOpen={handleOpen}
+                onContextMenu={handleContextMenu}
+              />
+            ) : (
+              <FileGridView
+                tabId={activeTab.id}
+                entries={activeTab.entries}
+                selectedPaths={activeTab.selectedPaths}
+                onOpen={handleOpen}
+                onContextMenu={handleContextMenu}
+              />
+            )}
+          </ScrollArea>
+        </FileContextMenu>
+
+        {searchOpen && (
+          <FileSearchPanel
+            currentPath={activeTab.path}
+            onNavigate={(path) => void navigateTo(activeTab.id, path)}
+            onClose={() => setSearchOpen(false)}
+          />
+        )}
+      </div>
 
       <FileStatusBar tab={activeTab} />
+
+      {/* Dialogs */}
+      <NewFolderDialog
+        open={newFolderOpen}
+        onOpenChange={setNewFolderOpen}
+        currentPath={activeTab.path}
+        onCreated={handleRefreshCurrent}
+      />
+
+      <RenameDialog
+        open={renameOpen}
+        onOpenChange={setRenameOpen}
+        entry={renameEntry}
+        onRenamed={handleRefreshCurrent}
+      />
+
+      <DeleteDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        paths={deletePaths}
+        onDeleted={handleRefreshCurrent}
+      />
+
+      <PropertiesDialog
+        open={propertiesOpen}
+        onOpenChange={setPropertiesOpen}
+        entry={propertiesEntry}
+        onUpdated={handleRefreshCurrent}
+      />
+
+      <MoveDialog
+        open={moveOpen}
+        onOpenChange={setMoveOpen}
+        sourcePaths={movePaths}
+        mode={moveMode}
+        onCompleted={handleRefreshCurrent}
+      />
     </div>
   );
 }
