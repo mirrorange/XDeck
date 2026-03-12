@@ -12,6 +12,7 @@ use crate::config::AppConfig;
 use crate::rpc::auth_handlers;
 use crate::rpc::docker_handlers;
 use crate::rpc::event_handlers;
+use crate::rpc::fs_handlers;
 use crate::rpc::process_handlers;
 use crate::rpc::pty_handlers;
 use crate::rpc::router::RpcRouter;
@@ -92,6 +93,7 @@ impl AppState {
         snippet_handlers::register(&mut router);
         snippet_store_handlers::register(&mut router);
         docker_handlers::register(&mut router, docker_mgr);
+        fs_handlers::register(&mut router);
 
         router
     }
