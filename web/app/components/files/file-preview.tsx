@@ -126,6 +126,7 @@ export function FilePreview({ entry, onClose }: FilePreviewProps) {
 function CodePreview({ path, name }: { path: string; name: string }) {
   const editorRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const [content, setContent] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -135,6 +136,7 @@ function CodePreview({ path, name }: { path: string; name: string }) {
     void (async () => {
       setLoading(true);
       setError(null);
+      setContent("");
 
       try {
         const rpc = getRpcClient();
@@ -143,41 +145,7 @@ function CodePreview({ path, name }: { path: string; name: string }) {
         };
 
         if (cancelled) return;
-
-        // Cleanup previous editor
-        if (viewRef.current) {
-          viewRef.current.destroy();
-          viewRef.current = null;
-        }
-
-        const ext = getFileExtension(name);
-        const langExt = getLanguageExtension(ext);
-
-        const extensions: Extension[] = [
-          EditorView.editable.of(false),
-          EditorState.readOnly.of(true),
-          oneDark,
-          EditorView.lineWrapping,
-          EditorView.theme({
-            "&": { height: "100%", fontSize: "13px" },
-            ".cm-scroller": { overflow: "auto" },
-            ".cm-gutters": { minWidth: "3em" },
-          }),
-        ];
-
-        if (langExt) extensions.push(langExt);
-
-        const state = EditorState.create({
-          doc: result.content,
-          extensions,
-        });
-
-        if (editorRef.current) {
-          viewRef.current = new EditorView({
-            state,
-            parent: editorRef.current,
-          });
-        }
+        setContent(result.content);
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : "Failed to load file");
@@ -189,17 +157,59 @@ function CodePreview({ path, name }: { path: string; name: string }) {
 
     return () => {
       cancelled = true;
+    };
+  }, [path]);
+
+  useEffect(() => {
+    if (!editorRef.current || error || loading) return;
+
+    if (viewRef.current) {
+      viewRef.current.destroy();
+      viewRef.current = null;
+    }
+
+    const ext = getFileExtension(name);
+    const langExt = getLanguageExtension(ext);
+
+    const extensions: Extension[] = [
+      EditorView.editable.of(false),
+      EditorState.readOnly.of(true),
+      oneDark,
+      EditorView.lineWrapping,
+      EditorView.theme({
+        "&": { height: "100%", fontSize: "13px" },
+        ".cm-scroller": { overflow: "auto" },
+        ".cm-gutters": { minWidth: "3em" },
+      }),
+    ];
+
+    if (langExt) extensions.push(langExt);
+
+    const state = EditorState.create({
+      doc: content,
+      extensions,
+    });
+
+    viewRef.current = new EditorView({
+      state,
+      parent: editorRef.current,
+    });
+
+    return () => {
       if (viewRef.current) {
         viewRef.current.destroy();
         viewRef.current = null;
       }
     };
-  }, [path, name]);
+  }, [content, error, loading, name]);
 
   if (loading) {
     return (
-      <div className="flex h-64 items-center justify-center">
-        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      <div className="relative h-full">
+        <div ref={editorRef} className="h-full" />
+        <div className="absolute inset-0 flex items-center justify-center bg-background/80">
+          <Loader2 className="size-6 animate-spin text-muted-foreground" />
+        </div>
       </div>
     );
   }

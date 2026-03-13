@@ -85,7 +85,6 @@ export function FileBrowser() {
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, entry: FileEntry) => {
-      e.preventDefault();
       setContextEntry(entry);
       if (activeTab && !activeTab.selectedPaths.has(entry.path)) {
         selectFile(activeTab.id, entry.path, false);
@@ -220,7 +219,12 @@ export function FileBrowser() {
         const rpc = getRpcClient();
         for (const src of filtered) {
           try {
-            await rpc.call("fs.move", { source: src, dest: targetDir });
+            const fileName = src.split("/").pop() ?? "";
+            if (!fileName) continue;
+            const to = targetDir.endsWith("/")
+              ? `${targetDir}${fileName}`
+              : `${targetDir}/${fileName}`;
+            await rpc.call("fs.move", { from: src, to });
           } catch {
             // skip failed moves
           }
