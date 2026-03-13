@@ -37,6 +37,7 @@ export function FileBrowser() {
   } = useFileStore();
 
   const [contextEntry, setContextEntry] = useState<FileEntry | null>(null);
+  const [contextMenuContentKey, setContextMenuContentKey] = useState(0);
 
   // Dialog states
   const [newFolderOpen, setNewFolderOpen] = useState(false);
@@ -86,6 +87,7 @@ export function FileBrowser() {
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, entry: FileEntry) => {
       setContextEntry(entry);
+      setContextMenuContentKey((current) => current + 1);
       if (activeTab && !activeTab.selectedPaths.has(entry.path)) {
         selectFile(activeTab.id, entry.path, false);
       }
@@ -98,6 +100,7 @@ export function FileBrowser() {
       if ((e.target as HTMLElement).closest("[data-slot='table-row']")) return;
       if ((e.target as HTMLElement).closest("button")) return;
       setContextEntry(null);
+      setContextMenuContentKey((current) => current + 1);
     },
     []
   );
@@ -319,6 +322,7 @@ export function FileBrowser() {
 
       <div className="flex flex-1 min-h-0">
         <FileContextMenu
+          contentKey={contextMenuContentKey}
           entry={contextEntry}
           hasSelection={activeTab.selectedPaths.size > 0}
           selectionCount={activeTab.selectedPaths.size}

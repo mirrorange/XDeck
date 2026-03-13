@@ -41,6 +41,7 @@ export type FileAction =
 interface FileContextMenuProps {
   children: React.ReactNode;
   entry?: FileEntry | null;
+  contentKey?: number;
   hasSelection: boolean;
   selectionCount: number;
   onAction: (action: FileAction) => void;
@@ -49,6 +50,7 @@ interface FileContextMenuProps {
 export function FileContextMenu({
   children,
   entry,
+  contentKey,
   hasSelection,
   selectionCount,
   onAction,
@@ -88,7 +90,7 @@ export function FileContextMenu({
       }}
     >
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-      <ContextMenuContent className="w-56">
+      <ContextMenuContent key={contentKey} className="w-56">
         {entry ? (
           <>
             <ContextMenuItem onSelect={(e) => handleSelect(e, "open")}>
