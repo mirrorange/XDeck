@@ -64,46 +64,46 @@ export function FileContextMenu({
       <ContextMenuContent className="w-56">
         {entry ? (
           <>
-            <ContextMenuItem onClick={() => onAction("open")}>
+            <ContextMenuItem onSelect={() => onAction("open")}>
               <Edit className="mr-2 size-4" />
               Open
             </ContextMenuItem>
             <ContextMenuSeparator />
-            <ContextMenuItem onClick={() => onAction("rename")}>
+            <ContextMenuItem onSelect={() => onAction("rename")}>
               <Edit className="mr-2 size-4" />
               Rename
             </ContextMenuItem>
-            <ContextMenuItem onClick={() => onAction("copy")}>
+            <ContextMenuItem onSelect={() => onAction("copy")}>
               <Copy className="mr-2 size-4" />
               Copy
             </ContextMenuItem>
-            <ContextMenuItem onClick={() => onAction("move")}>
+            <ContextMenuItem onSelect={() => onAction("move")}>
               <Move className="mr-2 size-4" />
               Move to…
             </ContextMenuItem>
             <ContextMenuSeparator />
-            <ContextMenuItem onClick={() => onAction("download")}>
+            <ContextMenuItem onSelect={() => onAction("download")}>
               <Download className="mr-2 size-4" />
               Download{selectionCount > 1 ? ` (${selectionCount} items)` : ""}
             </ContextMenuItem>
-            <ContextMenuItem onClick={() => onAction("compress")}>
+            <ContextMenuItem onSelect={() => onAction("compress")}>
               <FileArchive className="mr-2 size-4" />
               Compress
             </ContextMenuItem>
             {isArchive && (
-              <ContextMenuItem onClick={() => onAction("extract")}>
+              <ContextMenuItem onSelect={() => onAction("extract")}>
                 <FileArchive className="mr-2 size-4" />
                 Extract Here
               </ContextMenuItem>
             )}
             <ContextMenuSeparator />
-            <ContextMenuItem onClick={() => onAction("properties")}>
+            <ContextMenuItem onSelect={() => onAction("properties")}>
               <Info className="mr-2 size-4" />
               Properties
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem
-              onClick={() => onAction("delete")}
+              onSelect={() => onAction("delete")}
               className="text-destructive focus:text-destructive"
             >
               <Trash2 className="mr-2 size-4" />
@@ -112,24 +112,24 @@ export function FileContextMenu({
           </>
         ) : (
           <>
-            <ContextMenuItem onClick={() => onAction("new-folder")}>
+            <ContextMenuItem onSelect={() => onAction("new-folder")}>
               <FolderPlus className="mr-2 size-4" />
               New Folder
             </ContextMenuItem>
             <ContextMenuSeparator />
-            <ContextMenuItem onClick={() => onAction("upload")}>
+            <ContextMenuItem onSelect={() => onAction("upload")}>
               <Upload className="mr-2 size-4" />
               Upload Files
             </ContextMenuItem>
             <ContextMenuSeparator />
-            <ContextMenuItem onClick={() => onAction("refresh")}>
+            <ContextMenuItem onSelect={() => onAction("refresh")}>
               <RefreshCw className="mr-2 size-4" />
               Refresh
             </ContextMenuItem>
             {hasSelection && (
               <>
                 <ContextMenuSeparator />
-                <ContextMenuItem onClick={() => onAction("select-all")}>
+                <ContextMenuItem onSelect={() => onAction("select-all")}>
                   <ListChecks className="mr-2 size-4" />
                   Select All
                 </ContextMenuItem>
