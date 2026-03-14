@@ -5,3 +5,4 @@ pub mod file_manager;
 pub mod process_manager;
 pub mod pty_manager;
 pub mod system_monitor;
+pub mod task_manager;

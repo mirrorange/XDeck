@@ -21,11 +21,13 @@ use crate::rpc::router::RpcRouter;
 use crate::rpc::snippet_handlers;
 use crate::rpc::snippet_store_handlers;
 use crate::rpc::system_handlers;
+use crate::rpc::task_handlers;
 use crate::services::auth::AuthService;
 use crate::services::docker_manager::DockerManager;
 use crate::services::event_bus::{EventBus, SharedEventBus};
 use crate::services::process_manager::ProcessManager;
 use crate::services::pty_manager::PtyManager;
+use crate::services::task_manager::{self, SharedTaskManager};
 
 /// Shared application state accessible by all handlers.
 #[derive(Clone)]
@@ -38,6 +40,7 @@ pub struct AppState {
     pub pty_manager: Arc<PtyManager>,
     pub process_manager: Arc<ProcessManager>,
     pub docker_manager: Arc<DockerManager>,
+    pub task_manager: SharedTaskManager,
 }
 
 impl AppState {
@@ -50,6 +53,7 @@ impl AppState {
 
         let auth_service = Arc::new(AuthService::new(jwt_secret));
         let event_bus = Arc::new(EventBus::default());
+        let task_manager = task_manager::new_shared(event_bus.clone());
         let pty_manager =
             PtyManager::new(event_bus.clone(), std::time::Duration::from_secs(30 * 60));
         let process_manager = ProcessManager::new(
@@ -64,6 +68,7 @@ impl AppState {
             process_manager.clone(),
             pty_manager.clone(),
             docker_manager.clone(),
+            task_manager.clone(),
         ));
 
         Self {
@@ -75,6 +80,7 @@ impl AppState {
             pty_manager,
             process_manager,
             docker_manager,
+            task_manager,
         }
     }
 
@@ -84,6 +90,7 @@ impl AppState {
         process_mgr: Arc<ProcessManager>,
         pty_mgr: Arc<PtyManager>,
         docker_mgr: Arc<DockerManager>,
+        task_mgr: SharedTaskManager,
     ) -> RpcRouter {
         let mut router = RpcRouter::new();
 
@@ -95,7 +102,8 @@ impl AppState {
         snippet_handlers::register(&mut router);
         snippet_store_handlers::register(&mut router);
         docker_handlers::register(&mut router, docker_mgr);
-        fs_handlers::register(&mut router);
+        fs_handlers::register(&mut router, task_mgr.clone());
+        task_handlers::register(&mut router, task_mgr);
 
         router
     }

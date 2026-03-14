@@ -6,6 +6,7 @@ use tokio::fs;
 use tracing::{debug, info};
 
 use crate::error::AppError;
+use crate::services::task_manager::TaskHandle;
 
 // ── Data Structures ─────────────────────────────────────────────
 
@@ -588,6 +589,7 @@ pub enum ArchiveFormat {
 }
 
 impl ArchiveFormat {
+    /// Get the file extension for this format.
     pub fn extension(&self) -> &str {
         match self {
             ArchiveFormat::Zip => ".zip",
@@ -608,22 +610,110 @@ impl ArchiveFormat {
     }
 }
 
-/// Compress files/directories into an archive.
-pub async fn compress(
+fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<(), AppError> {
+    let file = std::fs::File::open(archive)
+        .map_err(|e| AppError::BadRequest(format!("Cannot open archive: {}", e)))?;
+    let dec = flate2::read::GzDecoder::new(file);
+    let mut tar = tar::Archive::new(dec);
+
+    tar.unpack(dest)
+        .map_err(|e| AppError::Internal(format!("Extract error: {}", e)))?;
+
+    Ok(())
+}
+
+// ── Folder Download ─────────────────────────────────────────────
+
+/// Prepare a folder for download by compressing it to a temporary zip file.
+/// Returns the path to the temporary zip file.
+pub async fn prepare_folder_download(
+    folder_path: &str,
+    task_handle: TaskHandle,
+) -> Result<String, AppError> {
+    let folder = resolve_safe_path(folder_path)?;
+
+    if !folder.is_dir() {
+        let msg = format!("Not a directory: {}", folder.display());
+        task_handle.fail(Some(msg.clone())).await;
+        return Err(AppError::BadRequest(msg));
+    }
+
+    let folder_name = folder
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "download".into());
+
+    // Create temp file in system temp directory
+    let temp_dir = std::env::temp_dir().join("xdeck-downloads");
+    tokio::fs::create_dir_all(&temp_dir).await.map_err(|e| {
+        AppError::Internal(format!("Cannot create temp dir: {}", e))
+    })?;
+
+    let temp_file = temp_dir.join(format!("{}.zip", folder_name));
+    // Remove if already exists (from a previous attempt)
+    if temp_file.exists() {
+        let _ = tokio::fs::remove_file(&temp_file).await;
+    }
+
+    let output_path = temp_file.to_string_lossy().to_string();
+
+    // Use compress_with_progress to create the zip
+    let paths = vec![folder_path.to_string()];
+    compress_with_progress(&paths, &output_path, ArchiveFormat::Zip, task_handle).await?;
+
+    Ok(output_path)
+}
+
+// ── Progress-aware variants ─────────────────────────────────────
+
+/// Count files recursively in a list of paths (for progress estimation).
+fn count_files_recursive(paths: &[PathBuf]) -> usize {
+    let mut count = 0;
+    for path in paths {
+        if path.is_file() {
+            count += 1;
+        } else if path.is_dir() {
+            count += count_dir_files(path);
+        }
+    }
+    count
+}
+
+fn count_dir_files(dir: &Path) -> usize {
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                count += 1;
+            } else if path.is_dir() {
+                count += count_dir_files(&path);
+            }
+        }
+    }
+    count
+}
+
+/// A thread-safe progress sender for use inside spawn_blocking.
+type ProgressSender = std::sync::mpsc::Sender<(usize, usize)>;
+
+/// Compress files with progress tracking via a TaskHandle.
+pub async fn compress_with_progress(
     paths: &[String],
     output_path: &str,
     format: ArchiveFormat,
+    task_handle: TaskHandle,
 ) -> Result<FileEntry, AppError> {
     if paths.is_empty() {
+        task_handle.fail(Some("No paths to compress".into())).await;
         return Err(AppError::BadRequest("No paths to compress".into()));
     }
 
     let output = resolve_safe_path(output_path)?;
     if output.exists() {
-        return Err(AppError::AlreadyExists(format!(
-            "Output already exists: {}",
-            output.display()
-        )));
+        let msg = format!("Output already exists: {}", output.display());
+        task_handle.fail(Some(msg.clone())).await;
+        return Err(AppError::AlreadyExists(msg));
     }
 
     let resolved_paths: Vec<PathBuf> = paths
@@ -633,32 +723,83 @@ pub async fn compress(
 
     for p in &resolved_paths {
         if !p.exists() {
-            return Err(AppError::NotFound(format!(
-                "Path not found: {}",
-                p.display()
-            )));
+            let msg = format!("Path not found: {}", p.display());
+            task_handle.fail(Some(msg.clone())).await;
+            return Err(AppError::NotFound(msg));
         }
     }
 
+    task_handle.update_progress(0, Some("Counting files...".into())).await;
+
+    let paths_for_count = resolved_paths.clone();
     let output_clone = output.clone();
 
-    tokio::task::spawn_blocking(move || match format {
-        ArchiveFormat::Zip => compress_zip(&resolved_paths, &output_clone),
-        ArchiveFormat::TarGz => compress_tar_gz(&resolved_paths, &output_clone),
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("Compression task failed: {}", e)))??;
+    // Set up progress channel
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, usize)>();
 
-    info!("Compressed {} file(s) to {}", paths.len(), output.display());
-    build_file_entry(&output).await
+    // Spawn the blocking compression task
+    let compress_handle = tokio::task::spawn_blocking(move || {
+        let total = count_files_recursive(&paths_for_count);
+        let _ = progress_tx.send((0, total));
+
+        match format {
+            ArchiveFormat::Zip => compress_zip_with_progress(&paths_for_count, &output_clone, &progress_tx, total),
+            ArchiveFormat::TarGz => compress_tar_gz_with_progress(&paths_for_count, &output_clone, &progress_tx, total),
+        }
+    });
+
+    // Poll progress from the channel while waiting
+    let poll_handle = task_handle.clone();
+    let progress_poller = tokio::spawn(async move {
+        loop {
+            match progress_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok((done, total)) => {
+                    if total > 0 {
+                        let pct = ((done as f64 / total as f64) * 100.0).min(99.0) as u8;
+                        poll_handle
+                            .update_progress(pct, Some(format!("{}/{} files", done, total)))
+                            .await;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+
+    let result = compress_handle
+        .await
+        .map_err(|e| AppError::Internal(format!("Compression task panicked: {}", e)))?;
+
+    // Stop the progress poller
+    progress_poller.abort();
+
+    match result {
+        Ok(()) => {
+            task_handle.complete(Some("Compression complete".into())).await;
+            info!("Compressed {} file(s) to {}", paths.len(), output.display());
+            build_file_entry(&output).await
+        }
+        Err(e) => {
+            task_handle.fail(Some(format!("Compression failed: {}", e))).await;
+            Err(e)
+        }
+    }
 }
 
-fn compress_zip(paths: &[PathBuf], output: &Path) -> Result<(), AppError> {
+fn compress_zip_with_progress(
+    paths: &[PathBuf],
+    output: &Path,
+    progress_tx: &ProgressSender,
+    total: usize,
+) -> Result<(), AppError> {
     let file = std::fs::File::create(output)
         .map_err(|e| AppError::BadRequest(format!("Cannot create archive: {}", e)))?;
     let mut zip = zip::ZipWriter::new(file);
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
+
+    let mut done = 0usize;
 
     for path in paths {
         if path.is_file() {
@@ -669,12 +810,17 @@ fn compress_zip(paths: &[PathBuf], output: &Path) -> Result<(), AppError> {
                 .map_err(|e| AppError::BadRequest(format!("Cannot read {}: {}", path.display(), e)))?;
             std::io::Write::write_all(&mut zip, &data)
                 .map_err(|e| AppError::Internal(format!("Zip write error: {}", e)))?;
+            done += 1;
+            let _ = progress_tx.send((done, total));
         } else if path.is_dir() {
-            add_dir_to_zip(
+            done = add_dir_to_zip_with_progress(
                 &mut zip,
                 path,
                 path.file_name().unwrap().to_string_lossy().as_ref(),
                 options,
+                progress_tx,
+                done,
+                total,
             )?;
         }
     }
@@ -684,12 +830,15 @@ fn compress_zip(paths: &[PathBuf], output: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-fn add_dir_to_zip(
+fn add_dir_to_zip_with_progress(
     zip: &mut zip::ZipWriter<std::fs::File>,
     dir: &Path,
     prefix: &str,
     options: zip::write::SimpleFileOptions,
-) -> Result<(), AppError> {
+    progress_tx: &ProgressSender,
+    mut done: usize,
+    total: usize,
+) -> Result<usize, AppError> {
     for entry in std::fs::read_dir(dir)
         .map_err(|e| AppError::BadRequest(format!("Cannot read dir: {}", e)))?
     {
@@ -704,27 +853,40 @@ fn add_dir_to_zip(
                 .map_err(|e| AppError::BadRequest(format!("Cannot read: {}", e)))?;
             std::io::Write::write_all(zip, &data)
                 .map_err(|e| AppError::Internal(format!("Zip write error: {}", e)))?;
+            done += 1;
+            let _ = progress_tx.send((done, total));
         } else if path.is_dir() {
-            add_dir_to_zip(zip, &path, &name, options)?;
+            done = add_dir_to_zip_with_progress(zip, &path, &name, options, progress_tx, done, total)?;
         }
     }
-    Ok(())
+    Ok(done)
 }
 
-fn compress_tar_gz(paths: &[PathBuf], output: &Path) -> Result<(), AppError> {
+fn compress_tar_gz_with_progress(
+    paths: &[PathBuf],
+    output: &Path,
+    progress_tx: &ProgressSender,
+    total: usize,
+) -> Result<(), AppError> {
     let file = std::fs::File::create(output)
         .map_err(|e| AppError::BadRequest(format!("Cannot create archive: {}", e)))?;
     let enc = flate2::write::GzEncoder::new(file, flate2::Compression::default());
     let mut tar = tar::Builder::new(enc);
 
+    let mut done = 0usize;
     for path in paths {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         if path.is_file() {
             tar.append_path_with_name(path, &name)
                 .map_err(|e| AppError::Internal(format!("Tar error: {}", e)))?;
+            done += 1;
+            let _ = progress_tx.send((done, total));
         } else if path.is_dir() {
+            // For tar, we add the whole dir but still count files for progress
             tar.append_dir_all(&name, path)
                 .map_err(|e| AppError::Internal(format!("Tar error: {}", e)))?;
+            done += count_dir_files(path);
+            let _ = progress_tx.send((done, total));
         }
     }
 
@@ -735,22 +897,23 @@ fn compress_tar_gz(paths: &[PathBuf], output: &Path) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Extract an archive to a destination directory.
-pub async fn extract(
+/// Extract an archive with progress tracking via a TaskHandle.
+pub async fn extract_with_progress(
     archive_path: &str,
     dest_path: &str,
+    task_handle: TaskHandle,
 ) -> Result<Vec<FileEntry>, AppError> {
     let archive = resolve_safe_path(archive_path)?;
     let dest = resolve_safe_path(dest_path)?;
 
     if !archive.is_file() {
-        return Err(AppError::NotFound(format!(
-            "Archive not found: {}",
-            archive.display()
-        )));
+        let msg = format!("Archive not found: {}", archive.display());
+        task_handle.fail(Some(msg.clone())).await;
+        return Err(AppError::NotFound(msg));
     }
 
     if !dest.is_dir() {
+        task_handle.fail(Some("Destination must be a directory".into())).await;
         return Err(AppError::BadRequest(
             "Destination must be a directory".into(),
         ));
@@ -760,35 +923,81 @@ pub async fn extract(
         AppError::BadRequest("Unsupported archive format. Supported: .zip, .tar.gz, .tgz".into())
     })?;
 
+    task_handle.update_progress(0, Some("Starting extraction...".into())).await;
+
     let archive_clone = archive.clone();
     let dest_clone = dest.clone();
 
-    tokio::task::spawn_blocking(move || match format {
-        ArchiveFormat::Zip => extract_zip(&archive_clone, &dest_clone),
-        ArchiveFormat::TarGz => extract_tar_gz(&archive_clone, &dest_clone),
-    })
-    .await
-    .map_err(|e| AppError::Internal(format!("Extract task failed: {}", e)))??;
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel::<(usize, usize)>();
 
-    info!("Extracted {} to {}", archive.display(), dest.display());
+    let extract_handle = tokio::task::spawn_blocking(move || match format {
+        ArchiveFormat::Zip => extract_zip_with_progress(&archive_clone, &dest_clone, &progress_tx),
+        ArchiveFormat::TarGz => {
+            // tar.gz doesn't easily support per-file progress, report indeterminate
+            let _ = progress_tx.send((0, 0));
+            extract_tar_gz(&archive_clone, &dest_clone)?;
+            let _ = progress_tx.send((1, 1));
+            Ok(())
+        }
+    });
 
-    let entries = list_directory(dest_path).await?;
-    Ok(entries.entries)
+    let poll_handle = task_handle.clone();
+    let progress_poller = tokio::spawn(async move {
+        loop {
+            match progress_rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                Ok((done, total)) => {
+                    if total > 0 {
+                        let pct = ((done as f64 / total as f64) * 100.0).min(99.0) as u8;
+                        poll_handle
+                            .update_progress(pct, Some(format!("{}/{} entries", done, total)))
+                            .await;
+                    }
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+    });
+
+    let result = extract_handle
+        .await
+        .map_err(|e| AppError::Internal(format!("Extract task panicked: {}", e)))?;
+
+    progress_poller.abort();
+
+    match result {
+        Ok(()) => {
+            task_handle.complete(Some("Extraction complete".into())).await;
+            info!("Extracted {} to {}", archive.display(), dest.display());
+            let entries = list_directory(dest_path).await?;
+            Ok(entries.entries)
+        }
+        Err(e) => {
+            task_handle.fail(Some(format!("Extraction failed: {}", e))).await;
+            Err(e)
+        }
+    }
 }
 
-fn extract_zip(archive: &Path, dest: &Path) -> Result<(), AppError> {
+fn extract_zip_with_progress(
+    archive: &Path,
+    dest: &Path,
+    progress_tx: &ProgressSender,
+) -> Result<(), AppError> {
     let file = std::fs::File::open(archive)
         .map_err(|e| AppError::BadRequest(format!("Cannot open archive: {}", e)))?;
     let mut zip = zip::ZipArchive::new(file)
         .map_err(|e| AppError::BadRequest(format!("Invalid zip: {}", e)))?;
 
-    for i in 0..zip.len() {
+    let total = zip.len();
+    let _ = progress_tx.send((0, total));
+
+    for i in 0..total {
         let mut entry = zip
             .by_index(i)
             .map_err(|e| AppError::Internal(format!("Zip read error: {}", e)))?;
 
         let name = entry.name().to_string();
-        // Prevent path traversal
         if name.contains("..") {
             continue;
         }
@@ -808,19 +1017,9 @@ fn extract_zip(archive: &Path, dest: &Path) -> Result<(), AppError> {
             std::io::copy(&mut entry, &mut outfile)
                 .map_err(|e| AppError::Internal(format!("Extract error: {}", e)))?;
         }
+
+        let _ = progress_tx.send((i + 1, total));
     }
-
-    Ok(())
-}
-
-fn extract_tar_gz(archive: &Path, dest: &Path) -> Result<(), AppError> {
-    let file = std::fs::File::open(archive)
-        .map_err(|e| AppError::BadRequest(format!("Cannot open archive: {}", e)))?;
-    let dec = flate2::read::GzDecoder::new(file);
-    let mut tar = tar::Archive::new(dec);
-
-    tar.unpack(dest)
-        .map_err(|e| AppError::Internal(format!("Extract error: {}", e)))?;
 
     Ok(())
 }

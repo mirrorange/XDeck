@@ -4,6 +4,7 @@ use crate::rpc::params::parse_required_params;
 use crate::rpc::router::RpcRouter;
 use crate::services::file_manager;
 use crate::services::file_manager::ArchiveFormat;
+use crate::services::task_manager::{self, SharedTaskManager, TaskType};
 
 // ── Param Types ─────────────────────────────────────────────────
 
@@ -110,6 +111,12 @@ struct ExtractParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct PrepareDownloadParams {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReadFileParams {
     path: String,
     #[serde(default = "default_max_bytes")]
@@ -122,7 +129,7 @@ fn default_max_bytes() -> usize {
 
 // ── Handler Registration ────────────────────────────────────────
 
-pub fn register(router: &mut RpcRouter) {
+pub fn register(router: &mut RpcRouter, task_mgr: SharedTaskManager) {
     // fs.list — List directory contents
     router.register("fs.list", move |params, _ctx| async move {
         let params = parse_required_params::<ListParams>(params)?;
@@ -227,20 +234,92 @@ pub fn register(router: &mut RpcRouter) {
         }))
     });
 
-    // fs.compress — Compress files into an archive
-    router.register("fs.compress", move |params, _ctx| async move {
-        let params = parse_required_params::<CompressParams>(params)?;
-        let entry = file_manager::compress(&params.paths, &params.output, params.format).await?;
-        Ok(serde_json::to_value(&entry).unwrap())
+    // fs.compress — Compress files into an archive (with progress tracking)
+    let mgr = task_mgr.clone();
+    router.register("fs.compress", move |params, _ctx| {
+        let mgr = mgr.clone();
+        async move {
+            let params = parse_required_params::<CompressParams>(params)?;
+
+            // Derive a short title from the output filename
+            let output_name = std::path::Path::new(&params.output)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "archive".into());
+            let title = format!("Compressing {}", output_name);
+
+            let task_handle = task_manager::create_task(&mgr, TaskType::Compress, title).await;
+            let task_id = task_handle.id().to_string();
+
+            let entry = file_manager::compress_with_progress(
+                &params.paths,
+                &params.output,
+                params.format,
+                task_handle,
+            )
+            .await?;
+
+            let mut result = serde_json::to_value(&entry).unwrap();
+            result["task_id"] = serde_json::Value::String(task_id);
+            Ok(result)
+        }
     });
 
-    // fs.extract — Extract an archive
-    router.register("fs.extract", move |params, _ctx| async move {
-        let params = parse_required_params::<ExtractParams>(params)?;
-        let entries = file_manager::extract(&params.archive, &params.dest).await?;
-        Ok(serde_json::json!({
-            "entries": entries,
-            "total": entries.len(),
-        }))
+    // fs.extract — Extract an archive (with progress tracking)
+    let mgr = task_mgr.clone();
+    router.register("fs.extract", move |params, _ctx| {
+        let mgr = mgr.clone();
+        async move {
+            let params = parse_required_params::<ExtractParams>(params)?;
+
+            let archive_name = std::path::Path::new(&params.archive)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "archive".into());
+            let title = format!("Extracting {}", archive_name);
+
+            let task_handle = task_manager::create_task(&mgr, TaskType::Extract, title).await;
+            let task_id = task_handle.id().to_string();
+
+            let entries = file_manager::extract_with_progress(
+                &params.archive,
+                &params.dest,
+                task_handle,
+            )
+            .await?;
+
+            Ok(serde_json::json!({
+                "entries": entries,
+                "total": entries.len(),
+                "task_id": task_id,
+            }))
+        }
+    });
+
+    // fs.prepare_download — Prepare a folder for download (compress to temp zip)
+    let mgr = task_mgr.clone();
+    router.register("fs.prepare_download", move |params, _ctx| {
+        let mgr = mgr.clone();
+        async move {
+            let params = parse_required_params::<PrepareDownloadParams>(params)?;
+
+            let folder_name = std::path::Path::new(&params.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "folder".into());
+            let title = format!("Preparing download: {}", folder_name);
+
+            let task_handle =
+                task_manager::create_task(&mgr, TaskType::FolderDownload, title).await;
+            let task_id = task_handle.id().to_string();
+
+            let download_path =
+                file_manager::prepare_folder_download(&params.path, task_handle).await?;
+
+            Ok(serde_json::json!({
+                "download_path": download_path,
+                "task_id": task_id,
+            }))
+        }
     });
 }

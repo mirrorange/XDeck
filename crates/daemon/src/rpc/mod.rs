@@ -10,4 +10,5 @@ pub mod router;
 pub mod snippet_handlers;
 pub mod snippet_store_handlers;
 pub mod system_handlers;
+pub mod task_handlers;
 pub mod types;

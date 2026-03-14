@@ -93,8 +93,35 @@ pub async fn download_handler(
         .into_response()
 }
 
+/// Validate a relative path component to prevent path traversal.
+/// Returns the sanitized relative path, or None if it's invalid.
+fn sanitize_relative_path(path: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::Path::new(path);
+
+    // Reject absolute paths
+    if path.is_absolute() {
+        return None;
+    }
+
+    // Reject any component that is ".."
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => return None,
+            std::path::Component::RootDir => return None,
+            std::path::Component::Prefix(_) => return None,
+            _ => {}
+        }
+    }
+
+    Some(path.to_path_buf())
+}
+
 /// POST /api/files/upload?token=...&path=...
 /// Upload files via multipart form data into the specified directory.
+///
+/// For folder uploads, each file field should include a "relative_path" text field
+/// before it, specifying the path relative to the upload root (e.g., "subdir/file.txt").
+/// Files without a relative_path are placed directly in the destination directory.
 pub async fn upload_handler(
     Query(params): Query<FileUploadParams>,
     State(state): State<AppState>,
@@ -114,22 +141,63 @@ pub async fn upload_handler(
     }
 
     let mut uploaded: Vec<String> = Vec::new();
+    // Track the current relative path for folder uploads
+    let mut current_relative_path: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
-        let file_name = match field.file_name() {
-            Some(name) => {
-                // Prevent path traversal in filename
-                let name = name.to_string();
-                if name.contains('/') || name.contains('\\') || name == ".." || name == "." {
-                    warn!("Rejected upload with suspicious filename: {}", name);
-                    return (StatusCode::BAD_REQUEST, "Invalid filename").into_response();
+        let field_name = field.name().map(|s| s.to_string());
+
+        // Handle relative_path text fields (sent before each file in folder uploads)
+        if field_name.as_deref() == Some("relative_path") {
+            let text = match field.text().await {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!("Failed to read relative_path field: {}", e);
+                    return (StatusCode::BAD_REQUEST, "Failed to read relative_path").into_response();
                 }
-                name
-            }
+            };
+            current_relative_path = Some(text);
+            continue;
+        }
+
+        let file_name = match field.file_name() {
+            Some(name) => name.to_string(),
             None => continue,
         };
 
-        let dest_path = dest_dir.join(&file_name);
+        // Determine the destination path
+        let dest_path = if let Some(ref rel_path) = current_relative_path {
+            // Folder upload mode: use relative path
+            match sanitize_relative_path(rel_path) {
+                Some(sanitized) => {
+                    let full_path = dest_dir.join(&sanitized);
+                    // Create parent directories if needed
+                    if let Some(parent) = full_path.parent() {
+                        if !parent.exists() {
+                            if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                                warn!("Failed to create directory {}: {}", parent.display(), e);
+                                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                            }
+                        }
+                    }
+                    full_path
+                }
+                None => {
+                    warn!("Rejected upload with suspicious relative path: {}", rel_path);
+                    return (StatusCode::BAD_REQUEST, "Invalid relative path").into_response();
+                }
+            }
+        } else {
+            // Simple upload mode: validate filename directly
+            if file_name.contains('/') || file_name.contains('\\') || file_name == ".." || file_name == "." {
+                warn!("Rejected upload with suspicious filename: {}", file_name);
+                return (StatusCode::BAD_REQUEST, "Invalid filename").into_response();
+            }
+            dest_dir.join(&file_name)
+        };
+
+        // Reset relative path for the next file
+        current_relative_path = None;
 
         let data = match field.bytes().await {
             Ok(d) => d,
@@ -152,8 +220,15 @@ pub async fn upload_handler(
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
 
+        // Report the path relative to dest_dir for the response
+        let reported_path = dest_path
+            .strip_prefix(&dest_dir)
+            .unwrap_or(&dest_path)
+            .to_string_lossy()
+            .to_string();
+
         info!("File uploaded: {}", dest_path.display());
-        uploaded.push(file_name);
+        uploaded.push(reported_path);
     }
 
     let body = serde_json::json!({

@@ -3,99 +3,105 @@
 ## Overview
 Add a full-featured file manager to XDeck with browsing, operations, transfer, preview, and modern UI.
 
-## Stage 1: Backend File System RPC Handlers
-**Goal**: Core file system read operations exposed via JSON-RPC
+## Stage 1-7: Core File Manager
+**Status**: Complete
+
+## Stage 8: Task Progress System & Advanced File Operations
+
+### Stage 8.1: Backend Task Manager Service
+**Goal**: A service that tracks long-running tasks (compress, extract, upload, download) and publishes progress events via EventBus
 **Success Criteria**:
-- `fs.list` — list directory entries with metadata (name, size, mtime, permissions, owner)
-- `fs.stat` — get detailed info for a single path
-- `fs.get_home` — return user home directory
-- Path traversal protection (resolve symlinks, reject `..` escape)
-**Tests**: RPC calls return correct data, path traversal is blocked
+- `TaskManager` service with `SharedTaskManager` type (Arc-wrapped)
+- Task lifecycle: create → progress updates → complete/failed/cancelled
+- Tasks have: id, type, title, status, progress (0-100), message, created_at, updated_at
+- EventBus integration: publishes `task.created`, `task.progress`, `task.completed`, `task.failed`
+- RPC methods: `task.list`, `task.cancel`
+- Integrate with `fs.compress` and `fs.extract` to report progress
+**Tests**: Task creation, progress events published, completion/failure tracked
+**Status**: Complete
+
+### Stage 8.2: Backend Folder Upload/Download
+**Goal**: Support uploading entire folders (preserving structure) and downloading folders as zip
+**Success Criteria**:
+- Upload endpoint accepts relative path per file to preserve directory structure
+- New RPC method `fs.prepare_download` for folders: compresses to temp zip, returns download path
+- Progress tracking for folder download preparation (zip compression)
+- Temp file cleanup after download
+**Tests**: Folder upload preserves structure, folder download creates valid zip
+**Status**: Complete
+
+### Stage 8.3: Frontend Task Store & Task List UI
+**Goal**: Zustand store for tasks + floating task list panel showing progress
+**Success Criteria**:
+- `task-store.ts` with event subscriptions for task progress
+- Task list panel (floating/docked) showing all active/recent tasks
+- Progress bars for each task
+- Cancel button for cancellable tasks
+- Toast notifications for task completion/failure
+- Integration with upload dialog for upload progress
+**Tests**: Task list shows progress, updates in real-time, cancel works
 **Status**: Not Started
 
-## Stage 2: Frontend File Browser (Basic)
-**Goal**: Navigable file browser page with list/grid views and multi-tab support
+### Stage 8.4: Frontend Folder Upload/Download
+**Goal**: UI for folder upload and folder download with progress
 **Success Criteria**:
-- `/files` route with sidebar navigation entry
-- Zustand store for file browser state (tabs, current directory, entries)
-- List view and icon/grid view toggle
-- Breadcrumb navigation
-- Column sorting (name, size, date)
-- Multi-tab support (add/close/switch tabs)
-**Tests**: Page renders, navigation works, views toggle
+- Upload dialog supports folder selection (webkitdirectory)
+- Folder upload preserves directory structure
+- Context menu "Download" on folders triggers zip preparation + download
+- Progress shown in task list during zip preparation
+**Tests**: Folder upload works, folder download works with progress
 **Status**: Not Started
 
-## Stage 3: Backend File Operations
-**Goal**: File manipulation RPC methods
+### Stage 8.5: Enhanced Drag-and-Drop
+**Goal**: Better drag behavior across tabs, edge scrolling, multi-file indicators
 **Success Criteria**:
-- `fs.create_dir` — create directory (with parents)
-- `fs.rename` — rename/move file or directory
-- `fs.copy` — copy file or directory
-- `fs.move` — move file or directory
-- `fs.delete` — delete file or directory (recursive option)
-- `fs.chmod` — change permissions (Linux/macOS)
-- `fs.chown` — change owner (Linux/macOS)
-- `fs.search` — find files by name pattern (recursive option)
-**Tests**: Operations succeed, permissions work, search returns results
+- Drag to tab bar switches active tab (with delay), allowing cross-tab moves
+- Drag to top/bottom edges triggers scroll
+- Custom drag preview showing count + file names for multi-file drag
+- Shared DnD utilities extracted from duplicated code
+**Tests**: Cross-tab drag works, edge scroll works, multi-drag indicator shows
 **Status**: Not Started
 
-## Stage 4: Frontend File Operations
-**Goal**: UI for all file operations
+### Stage 8.6: Desktop Drag Upload
+**Goal**: Drop files from desktop/OS file manager into the file browser to upload
 **Success Criteria**:
-- Context menu (right-click) with all operations
-- Rename inline editing
-- New folder dialog
-- Delete confirmation dialog
-- Copy/Move modal with destination picker
-- Permission editing dialog (Linux/macOS)
-- Search bar with results display
-- Keyboard shortcuts (Delete, F2, Ctrl+C/V)
-**Tests**: All operations accessible via UI, keyboard shortcuts work
+- Drop zone overlay appears when dragging external files over browser
+- Files dropped trigger upload to current directory
+- Folders dropped trigger folder upload with structure preserved
+- Progress shown in task list
+**Tests**: Desktop file drop triggers upload, folder drop preserves structure
 **Status**: Not Started
 
-## Stage 5: WebSocket File Transfer
-**Goal**: Dedicated WebSocket endpoint for file upload/download
+### Stage 8.7: Rectangle/Lasso Selection
+**Goal**: Click and drag on empty space to select multiple files by area
 **Success Criteria**:
-- `/ws/files` WebSocket endpoint with auth
-- Upload protocol: chunked binary upload with progress
-- Download protocol: chunked binary download with progress
-- Batch upload/download (folders) with automatic tar.gz compression
-- Upload/download progress tracking
-- Frontend upload/download UI with progress bars
-**Tests**: Single file upload/download works, folder transfer works
+- Mouse down on empty area starts selection rectangle
+- Rectangle drawn with semi-transparent overlay
+- Files intersecting rectangle are selected
+- Works in both list and grid views
+- Combines with Shift/Ctrl for additive selection
+**Tests**: Rectangle selection works in both views, modifier keys combine
 **Status**: Not Started
 
-## Stage 6: Compression & Search
-**Goal**: Server-side compression/decompression and file search
+### Stage 8.8: Animations & Visual Polish
+**Goal**: Smooth animations for file operations and transitions using motion library
 **Success Criteria**:
-- `fs.compress` — compress files/dirs to zip or tar.gz
-- `fs.decompress` — extract zip, tar, tar.gz, tar.bz2
-- `fs.search` — recursive file search with pattern matching
-- Frontend UI for compress/decompress actions
-- Search results display with navigation
-**Tests**: Compress/decompress round-trips, search finds files
+- Install motion (framer-motion successor) or similar
+- Animate file list entry/exit (add, delete, rename)
+- Animate tab transitions
+- Animate dialog open/close
+- Animate drag previews
+- Smooth layout transitions when switching view modes
+**Tests**: Animations play smoothly, no janky layout shifts
 **Status**: Not Started
 
-## Stage 7: File Preview
-**Goal**: Preview common file types in-browser
+### Stage 8.9: Responsive Layout
+**Goal**: File manager adapts to different screen sizes
 **Success Criteria**:
-- Text/code preview using CodeMirror with syntax highlighting
-- Image preview (jpg, png, gif, svg, webp)
-- Video preview (mp4, webm)
-- Audio preview (mp3, wav, ogg)
-- File content served via RPC (base64) or dedicated HTTP endpoint
-**Tests**: Preview opens for each file type
-**Status**: Not Started
-
-## Stage 8: Advanced UI & Interactions
-**Goal**: Polish interactions to match modern file managers
-**Success Criteria**:
-- Drag-and-drop to move files between folders
-- Drag between tabs
-- Rectangle/lasso selection
-- Multi-select with Shift+Click, Ctrl+Click
-- Drag to upload from desktop
-- Smooth animations (framer-motion or similar)
-- Responsive layout
-**Tests**: All interactions feel natural and responsive
+- Compact toolbar on small screens
+- Grid view adjusts columns based on width
+- Preview panel converts to modal/drawer on small screens
+- Tab bar scrolls horizontally on overflow
+- Touch-friendly targets on mobile
+**Tests**: Layout works at 360px, 768px, 1024px, 1440px widths
 **Status**: Not Started
