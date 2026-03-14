@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { FileEntry } from "~/stores/file-store";
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -104,6 +104,7 @@ export function useFileDnd({
   onDropFiles,
 }: UseDndOptions) {
   const dragPreviewCleanup = useRef<(() => void) | null>(null);
+  const [dragOverPath, setDragOverPath] = useState<string | null>(null);
 
   const handleDragStart = useCallback(
     (e: React.DragEvent, entry: FileEntry) => {
@@ -131,6 +132,7 @@ export function useFileDnd({
   const handleDragEnd = useCallback(() => {
     dragPreviewCleanup.current?.();
     dragPreviewCleanup.current = null;
+    setDragOverPath(null);
   }, []);
 
   const handleDragOver = useCallback(
@@ -139,16 +141,22 @@ export function useFileDnd({
       if (e.dataTransfer.types.includes(XDECK_MIME)) {
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
+        setDragOverPath(entry.path);
       }
     },
     []
   );
+
+  const handleDragLeave = useCallback(() => {
+    setDragOverPath(null);
+  }, []);
 
   const handleDrop = useCallback(
     (e: React.DragEvent, entry: FileEntry) => {
       if (entry.type !== "directory") return;
       e.preventDefault();
       e.stopPropagation(); // Prevent scroll area background handler from also firing
+      setDragOverPath(null);
       const data = e.dataTransfer.getData(XDECK_MIME);
       if (data) {
         try {
@@ -166,7 +174,9 @@ export function useFileDnd({
     handleDragStart,
     handleDragEnd,
     handleDragOver,
+    handleDragLeave,
     handleDrop,
+    dragOverPath,
   };
 }
 

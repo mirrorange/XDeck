@@ -40,7 +40,7 @@ export function FileListView({
 }: FileListViewProps) {
   const { selectFile, selectRange, setSortField } = useFileStore();
 
-  const { handleDragStart, handleDragEnd, handleDragOver, handleDrop } = useFileDnd({
+  const { handleDragStart, handleDragEnd, handleDragOver, handleDragLeave, handleDrop, dragOverPath } = useFileDnd({
     tabId,
     selectedPaths,
     entries,
@@ -95,8 +95,11 @@ export function FileListView({
         </TableRow>
       </TableHeader>
       <TableBody>
-        {entries.map((entry) => {
+        {entries.map((entry, index) => {
           const isSelected = selectedPaths.has(entry.path);
+          const isDragOver = dragOverPath === entry.path;
+          // Staggered fade-in via CSS animation delay (capped at 300ms total)
+          const delay = Math.min(index * 10, 300);
           return (
             <TableRow
               key={entry.path}
@@ -104,9 +107,11 @@ export function FileListView({
               data-lasso-item
               data-path={entry.path}
               className={cn(
-                "cursor-default select-none",
-                isSelected && "bg-accent"
+                "cursor-default select-none animate-in fade-in slide-in-from-bottom-1 duration-150 fill-mode-both",
+                isSelected && "bg-accent",
+                isDragOver && "bg-primary/10 ring-1 ring-inset ring-primary/30"
               )}
+              style={{ animationDelay: `${delay}ms` }}
               draggable
               onClick={(e) => handleClick(e, entry)}
               onDoubleClick={() => handleDoubleClick(entry)}
@@ -114,6 +119,7 @@ export function FileListView({
               onDragStart={(e) => handleDragStart(e, entry)}
               onDragEnd={handleDragEnd}
               onDragOver={(e) => handleDragOver(e, entry)}
+              onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, entry)}
             >
               <TableCell className="py-1.5">

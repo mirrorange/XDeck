@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Loader2, Upload } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 
 import { FileTabBar } from "~/components/files/file-tab-bar";
 import { FileToolbar } from "~/components/files/file-toolbar";
@@ -585,46 +586,84 @@ export function FileBrowser() {
                 <p className="text-sm">Failed to load directory</p>
                 <p className="text-xs text-destructive">{activeTab.error}</p>
               </div>
-            ) : viewMode === "list" ? (
-              <FileListView
-                tabId={activeTab.id}
-                entries={activeTab.entries}
-                selectedPaths={activeTab.selectedPaths}
-                sortField={activeTab.sortField}
-                sortDirection={activeTab.sortDirection}
-                onOpen={handleOpen}
-                onContextMenu={handleContextMenu}
-                onDropFiles={handleDropFiles}
-              />
             ) : (
-              <FileGridView
-                tabId={activeTab.id}
-                entries={activeTab.entries}
-                selectedPaths={activeTab.selectedPaths}
-                onOpen={handleOpen}
-                onContextMenu={handleContextMenu}
-                onDropFiles={handleDropFiles}
-              />
+              <AnimatePresence mode="wait" initial={false}>
+                {viewMode === "list" ? (
+                  <motion.div
+                    key="list-view"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.15 }}
+                  >
+                    <FileListView
+                      tabId={activeTab.id}
+                      entries={activeTab.entries}
+                      selectedPaths={activeTab.selectedPaths}
+                      sortField={activeTab.sortField}
+                      sortDirection={activeTab.sortDirection}
+                      onOpen={handleOpen}
+                      onContextMenu={handleContextMenu}
+                      onDropFiles={handleDropFiles}
+                    />
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="grid-view"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.15 }}
+                  >
+                    <FileGridView
+                      tabId={activeTab.id}
+                      entries={activeTab.entries}
+                      selectedPaths={activeTab.selectedPaths}
+                      onOpen={handleOpen}
+                      onContextMenu={handleContextMenu}
+                      onDropFiles={handleDropFiles}
+                    />
+                  </motion.div>
+                )}
+              </AnimatePresence>
             )}
           </ScrollArea>
         </FileContextMenu>
 
-        {searchOpen && (
-          <FileSearchPanel
-            currentPath={activeTab.path}
-            onNavigate={(path) => void navigateTo(activeTab.id, path)}
-            onClose={() => setSearchOpen(false)}
-          />
-        )}
+        <AnimatePresence>
+          {searchOpen && (
+            <motion.div
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: "auto", opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ duration: 0.2, ease: "easeInOut" }}
+              className="overflow-hidden shrink-0"
+            >
+              <FileSearchPanel
+                currentPath={activeTab.path}
+                onNavigate={(path) => void navigateTo(activeTab.id, path)}
+                onClose={() => setSearchOpen(false)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-        {previewEntry && (
-          <div className="w-[400px] shrink-0">
-            <FilePreview
-              entry={previewEntry}
-              onClose={() => setPreviewEntry(null)}
-            />
-          </div>
-        )}
+        <AnimatePresence>
+          {previewEntry && (
+            <motion.div
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 400, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ duration: 0.2, ease: "easeInOut" }}
+              className="shrink-0 overflow-hidden"
+            >
+              <FilePreview
+                entry={previewEntry}
+                onClose={() => setPreviewEntry(null)}
+              />
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <TaskListPanel />
       </div>
@@ -687,17 +726,31 @@ export function FileBrowser() {
       <LassoOverlay rect={lassoState.rect} />
 
       {/* Desktop drag-to-upload overlay */}
-      {desktopDragOver && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm border-2 border-dashed border-primary rounded-lg pointer-events-none">
-          <div className="flex flex-col items-center gap-2 text-primary">
-            <Upload className="size-12" />
-            <p className="text-lg font-medium">Drop files to upload</p>
-            <p className="text-sm text-muted-foreground">
-              Files will be uploaded to {activeTab.path}
-            </p>
-          </div>
-        </div>
-      )}
+      <AnimatePresence>
+        {desktopDragOver && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm border-2 border-dashed border-primary rounded-lg pointer-events-none"
+          >
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              transition={{ duration: 0.2 }}
+              className="flex flex-col items-center gap-2 text-primary"
+            >
+              <Upload className="size-12" />
+              <p className="text-lg font-medium">Drop files to upload</p>
+              <p className="text-sm text-muted-foreground">
+                Files will be uploaded to {activeTab.path}
+              </p>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

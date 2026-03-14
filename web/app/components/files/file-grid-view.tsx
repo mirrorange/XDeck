@@ -1,3 +1,5 @@
+import { motion } from "motion/react";
+
 import { FileIcon } from "~/components/files/file-icon";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
 import { useFileDnd } from "~/lib/dnd-utils";
@@ -22,7 +24,7 @@ export function FileGridView({
 }: FileGridViewProps) {
   const { selectFile, selectRange } = useFileStore();
 
-  const { handleDragStart, handleDragEnd, handleDragOver, handleDrop } = useFileDnd({
+  const { handleDragStart, handleDragEnd, handleDragOver, handleDragLeave, handleDrop, dragOverPath } = useFileDnd({
     tabId,
     selectedPaths,
     entries,
@@ -48,43 +50,52 @@ export function FileGridView({
 
   return (
     <div className="grid grid-cols-[repeat(auto-fill,minmax(100px,1fr))] gap-1 p-2">
-      {entries.map((entry) => {
+      {entries.map((entry, index) => {
         const isSelected = selectedPaths.has(entry.path);
+        const isDragOver = dragOverPath === entry.path;
         return (
-          <button
+          <motion.div
             key={entry.path}
-            draggable
-            data-lasso-item
-            data-path={entry.path}
-            className={cn(
-              "flex flex-col items-center gap-1 rounded-lg p-2 text-center transition-colors",
-              "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              isSelected && "bg-accent",
-              "select-none cursor-default"
-            )}
-            onClick={(e) => handleClick(e, entry)}
-            onDoubleClick={() => onOpen(entry)}
-            onContextMenu={(e) => onContextMenu(e, entry)}
-            onDragStart={(e) => handleDragStart(e, entry)}
-            onDragEnd={handleDragEnd}
-            onDragOver={(e) => handleDragOver(e, entry)}
-            onDrop={(e) => handleDrop(e, entry)}
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.15, delay: Math.min(index * 0.008, 0.3) }}
           >
-            <FileIcon
-              type={entry.type}
-              name={entry.name}
-              className="size-10"
-            />
-            <span
+            <button
+              draggable
+              data-lasso-item
+              data-path={entry.path}
               className={cn(
-                "text-xs leading-tight w-full truncate",
-                entry.hidden && "text-muted-foreground"
+                "flex flex-col items-center gap-1 rounded-lg p-2 text-center transition-colors w-full",
+                "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                isSelected && "bg-accent",
+                isDragOver && "bg-primary/10 ring-2 ring-primary/30",
+                "select-none cursor-default"
               )}
-              title={entry.name}
+              onClick={(e) => handleClick(e, entry)}
+              onDoubleClick={() => onOpen(entry)}
+              onContextMenu={(e) => onContextMenu(e, entry)}
+              onDragStart={(e) => handleDragStart(e, entry)}
+              onDragEnd={handleDragEnd}
+              onDragOver={(e) => handleDragOver(e, entry)}
+              onDragLeave={handleDragLeave}
+              onDrop={(e) => handleDrop(e, entry)}
             >
-              {entry.name}
-            </span>
-          </button>
+              <FileIcon
+                type={entry.type}
+                name={entry.name}
+                className="size-10"
+              />
+              <span
+                className={cn(
+                  "text-xs leading-tight w-full truncate",
+                  entry.hidden && "text-muted-foreground"
+                )}
+                title={entry.name}
+              >
+                {entry.name}
+              </span>
+            </button>
+          </motion.div>
         );
       })}
     </div>

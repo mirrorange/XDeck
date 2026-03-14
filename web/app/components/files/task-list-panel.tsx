@@ -9,6 +9,7 @@ import {
   ListTodo,
   Trash2,
 } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 
 import { Button } from "~/components/ui/button";
 import { Progress } from "~/components/ui/progress";
@@ -49,47 +50,56 @@ function TaskRow({ task }: { task: Task }) {
     task.status === "cancelled";
 
   return (
-    <div className="flex flex-col gap-1.5 px-3 py-2 border-b border-border/50 last:border-b-0">
-      <div className="flex items-center gap-2 min-w-0">
-        <TaskStatusIcon status={task.status} />
-        <span className="flex-1 truncate text-sm">{task.title}</span>
-        {isActive && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-6 shrink-0"
-            onClick={() => void cancelTask(task.id)}
-            title="Cancel task"
-          >
-            <X className="size-3.5" />
-          </Button>
+    <motion.div
+      layout
+      initial={{ opacity: 0, height: 0 }}
+      animate={{ opacity: 1, height: "auto" }}
+      exit={{ opacity: 0, height: 0 }}
+      transition={{ duration: 0.2 }}
+      className="overflow-hidden"
+    >
+      <div className="flex flex-col gap-1.5 px-3 py-2 border-b border-border/50 last:border-b-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <TaskStatusIcon status={task.status} />
+          <span className="flex-1 truncate text-sm">{task.title}</span>
+          {isActive && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6 shrink-0"
+              onClick={() => void cancelTask(task.id)}
+              title="Cancel task"
+            >
+              <X className="size-3.5" />
+            </Button>
+          )}
+          {isDone && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-6 shrink-0"
+              onClick={() => dismissTask(task.id)}
+              title="Dismiss"
+            >
+              <X className="size-3.5" />
+            </Button>
+          )}
+        </div>
+
+        {isActive && task.progress != null && (
+          <div className="flex items-center gap-2">
+            <Progress value={task.progress} className="h-1.5 flex-1" />
+            <span className="text-xs text-muted-foreground tabular-nums w-8 text-right">
+              {task.progress}%
+            </span>
+          </div>
         )}
-        {isDone && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-6 shrink-0"
-            onClick={() => dismissTask(task.id)}
-            title="Dismiss"
-          >
-            <X className="size-3.5" />
-          </Button>
+
+        {task.message && (
+          <p className="text-xs text-muted-foreground truncate">{task.message}</p>
         )}
       </div>
-
-      {isActive && task.progress != null && (
-        <div className="flex items-center gap-2">
-          <Progress value={task.progress} className="h-1.5 flex-1" />
-          <span className="text-xs text-muted-foreground tabular-nums w-8 text-right">
-            {task.progress}%
-          </span>
-        </div>
-      )}
-
-      {task.message && (
-        <p className="text-xs text-muted-foreground truncate">{task.message}</p>
-      )}
-    </div>
+    </motion.div>
   );
 }
 
@@ -108,11 +118,20 @@ export function TaskListToggle() {
       title="Task list"
     >
       <ListTodo className="size-4" />
-      {activeCount > 0 && (
-        <span className="absolute -top-0.5 -right-0.5 size-4 rounded-full bg-blue-500 text-[10px] font-medium text-white flex items-center justify-center">
-          {activeCount > 9 ? "9+" : activeCount}
-        </span>
-      )}
+      <AnimatePresence>
+        {activeCount > 0 && (
+          <motion.span
+            key={activeCount}
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            exit={{ scale: 0 }}
+            transition={{ type: "spring", stiffness: 500, damping: 25 }}
+            className="absolute -top-0.5 -right-0.5 size-4 rounded-full bg-blue-500 text-[10px] font-medium text-white flex items-center justify-center"
+          >
+            {activeCount > 9 ? "9+" : activeCount}
+          </motion.span>
+        )}
+      </AnimatePresence>
     </Button>
   );
 }
@@ -139,56 +158,68 @@ export function TaskListPanel() {
       t.status === "cancelled"
   );
 
-  if (!panelOpen) return null;
-
   return (
-    <div className="w-[320px] shrink-0 border-l border-border flex flex-col bg-background">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-border">
-        <div className="flex items-center gap-2">
-          <Activity className="size-4" />
-          <span className="text-sm font-medium">Tasks</span>
-          {activeCount > 0 && (
-            <span className="text-xs text-muted-foreground">
-              ({activeCount} active)
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-1">
-          {hasFinished && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-6"
-              onClick={clearCompleted}
-              title="Clear finished tasks"
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-6"
-            onClick={() => setPanelOpen(false)}
-            title="Close panel"
-          >
-            <X className="size-3.5" />
-          </Button>
-        </div>
-      </div>
-
-      {/* Task list */}
-      <ScrollArea className="flex-1">
-        {taskList.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
-            <ListTodo className="size-8 mb-2 opacity-50" />
-            <p className="text-sm">No tasks</p>
+    <AnimatePresence>
+      {panelOpen && (
+        <motion.div
+          initial={{ width: 0, opacity: 0 }}
+          animate={{ width: 320, opacity: 1 }}
+          exit={{ width: 0, opacity: 0 }}
+          transition={{ duration: 0.2, ease: "easeInOut" }}
+          className="shrink-0 border-l border-border flex flex-col bg-background overflow-hidden"
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+            <div className="flex items-center gap-2">
+              <Activity className="size-4" />
+              <span className="text-sm font-medium">Tasks</span>
+              {activeCount > 0 && (
+                <span className="text-xs text-muted-foreground">
+                  ({activeCount} active)
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-1">
+              {hasFinished && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-6"
+                  onClick={clearCompleted}
+                  title="Clear finished tasks"
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-6"
+                onClick={() => setPanelOpen(false)}
+                title="Close panel"
+              >
+                <X className="size-3.5" />
+              </Button>
+            </div>
           </div>
-        ) : (
-          taskList.map((task) => <TaskRow key={task.id} task={task} />)
-        )}
-      </ScrollArea>
-    </div>
+
+          {/* Task list */}
+          <ScrollArea className="flex-1">
+            {taskList.length === 0 ? (
+              <div className="flex flex-col items-center justify-center h-32 text-muted-foreground">
+                <ListTodo className="size-8 mb-2 opacity-50" />
+                <p className="text-sm">No tasks</p>
+              </div>
+            ) : (
+              <AnimatePresence initial={false}>
+                {taskList.map((task) => (
+                  <TaskRow key={task.id} task={task} />
+                ))}
+              </AnimatePresence>
+            )}
+          </ScrollArea>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

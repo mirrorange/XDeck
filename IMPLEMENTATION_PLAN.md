@@ -81,7 +81,7 @@ Add a full-featured file manager to XDeck with browsing, operations, transfer, p
 - Works in both list and grid views
 - Combines with Shift/Ctrl for additive selection
 **Tests**: Rectangle selection works in both views, modifier keys combine
-**Status**: Not Started
+**Status**: Complete
 
 ### Stage 8.8: Animations & Visual Polish
 **Goal**: Smooth animations for file operations and transitions using motion library
@@ -93,7 +93,7 @@ Add a full-featured file manager to XDeck with browsing, operations, transfer, p
 - Animate drag previews
 - Smooth layout transitions when switching view modes
 **Tests**: Animations play smoothly, no janky layout shifts
-**Status**: Not Started
+**Status**: Complete
 
 ### Stage 8.9: Responsive Layout
 **Goal**: File manager adapts to different screen sizes
