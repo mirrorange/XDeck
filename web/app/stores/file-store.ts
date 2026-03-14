@@ -70,6 +70,7 @@ interface FileStore {
   selectRange: (tabId: string, path: string) => void;
   selectAll: (tabId: string) => void;
   clearSelection: (tabId: string) => void;
+  setSelection: (tabId: string, paths: Set<string>) => void;
 
   // View
   setViewMode: (mode: ViewMode) => void;
@@ -305,6 +306,12 @@ export const useFileStore = create<FileStore>((set, get) => ({
   clearSelection: (tabId) => {
     set((s) => ({
       tabs: updateTab(s.tabs, tabId, { selectedPaths: new Set() }),
+    }));
+  },
+
+  setSelection: (tabId, paths) => {
+    set((s) => ({
+      tabs: updateTab(s.tabs, tabId, { selectedPaths: new Set(paths) }),
     }));
   },
 

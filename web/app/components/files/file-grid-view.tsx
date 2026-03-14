@@ -1,5 +1,6 @@
 import { FileIcon } from "~/components/files/file-icon";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
+import { useFileDnd } from "~/lib/dnd-utils";
 import { cn } from "~/lib/utils";
 
 interface FileGridViewProps {
@@ -8,7 +9,7 @@ interface FileGridViewProps {
   selectedPaths: Set<string>;
   onOpen: (entry: FileEntry) => void;
   onContextMenu: (e: React.MouseEvent, entry: FileEntry) => void;
-  onDropFiles?: (targetDir: string) => void;
+  onDropFiles?: (targetDir: string, sourcePaths: string[]) => void;
 }
 
 export function FileGridView({
@@ -21,39 +22,19 @@ export function FileGridView({
 }: FileGridViewProps) {
   const { selectFile, selectRange } = useFileStore();
 
+  const { handleDragStart, handleDragEnd, handleDragOver, handleDrop } = useFileDnd({
+    tabId,
+    selectedPaths,
+    entries,
+    selectFile,
+    onDropFiles,
+  });
+
   const handleClick = (e: React.MouseEvent, entry: FileEntry) => {
     if (e.shiftKey) {
       selectRange(tabId, entry.path);
     } else {
       selectFile(tabId, entry.path, e.metaKey || e.ctrlKey);
-    }
-  };
-
-  const handleDragStart = (e: React.DragEvent, entry: FileEntry) => {
-    if (!selectedPaths.has(entry.path)) {
-      selectFile(tabId, entry.path, false);
-    }
-    const paths = selectedPaths.has(entry.path)
-      ? [...selectedPaths]
-      : [entry.path];
-    e.dataTransfer.setData("application/x-xdeck-files", JSON.stringify(paths));
-    e.dataTransfer.effectAllowed = "move";
-  };
-
-  const handleDragOver = (e: React.DragEvent, entry: FileEntry) => {
-    if (entry.type !== "directory") return;
-    if (e.dataTransfer.types.includes("application/x-xdeck-files")) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent, entry: FileEntry) => {
-    if (entry.type !== "directory") return;
-    e.preventDefault();
-    const data = e.dataTransfer.getData("application/x-xdeck-files");
-    if (data) {
-      onDropFiles?.(entry.path);
     }
   };
 
@@ -73,6 +54,8 @@ export function FileGridView({
           <button
             key={entry.path}
             draggable
+            data-lasso-item
+            data-path={entry.path}
             className={cn(
               "flex flex-col items-center gap-1 rounded-lg p-2 text-center transition-colors",
               "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
@@ -83,6 +66,7 @@ export function FileGridView({
             onDoubleClick={() => onOpen(entry)}
             onContextMenu={(e) => onContextMenu(e, entry)}
             onDragStart={(e) => handleDragStart(e, entry)}
+            onDragEnd={handleDragEnd}
             onDragOver={(e) => handleDragOver(e, entry)}
             onDrop={(e) => handleDrop(e, entry)}
           >

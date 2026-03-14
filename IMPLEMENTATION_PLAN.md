@@ -40,7 +40,7 @@ Add a full-featured file manager to XDeck with browsing, operations, transfer, p
 - Toast notifications for task completion/failure
 - Integration with upload dialog for upload progress
 **Tests**: Task list shows progress, updates in real-time, cancel works
-**Status**: Not Started
+**Status**: Complete
 
 ### Stage 8.4: Frontend Folder Upload/Download
 **Goal**: UI for folder upload and folder download with progress
@@ -50,7 +50,7 @@ Add a full-featured file manager to XDeck with browsing, operations, transfer, p
 - Context menu "Download" on folders triggers zip preparation + download
 - Progress shown in task list during zip preparation
 **Tests**: Folder upload works, folder download works with progress
-**Status**: Not Started
+**Status**: Complete
 
 ### Stage 8.5: Enhanced Drag-and-Drop
 **Goal**: Better drag behavior across tabs, edge scrolling, multi-file indicators
@@ -60,7 +60,7 @@ Add a full-featured file manager to XDeck with browsing, operations, transfer, p
 - Custom drag preview showing count + file names for multi-file drag
 - Shared DnD utilities extracted from duplicated code
 **Tests**: Cross-tab drag works, edge scroll works, multi-drag indicator shows
-**Status**: Not Started
+**Status**: Complete
 
 ### Stage 8.6: Desktop Drag Upload
 **Goal**: Drop files from desktop/OS file manager into the file browser to upload
@@ -70,7 +70,7 @@ Add a full-featured file manager to XDeck with browsing, operations, transfer, p
 - Folders dropped trigger folder upload with structure preserved
 - Progress shown in task list
 **Tests**: Desktop file drop triggers upload, folder drop preserves structure
-**Status**: Not Started
+**Status**: Complete
 
 ### Stage 8.7: Rectangle/Lasso Selection
 **Goal**: Click and drag on empty space to select multiple files by area

@@ -247,6 +247,7 @@ export class RpcClient {
     return (
       method.startsWith("process.") ||
       method.startsWith("pty.") ||
+      method.startsWith("task.") ||
       method === "system.status" ||
       method === "event.subscribe" ||
       method === "event.unsubscribe"

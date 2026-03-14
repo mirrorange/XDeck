@@ -19,6 +19,7 @@ import {
   SelectValue,
 } from "~/components/ui/select";
 import { getRpcClient } from "~/lib/rpc-client";
+import { toast } from "sonner";
 
 interface CompressDialogProps {
   open: boolean;
@@ -51,6 +52,10 @@ export function CompressDialog({
         paths,
         output,
         format,
+      });
+      // RPC returns immediately with task_id; progress tracked via task events
+      toast.info("Compression started", {
+        description: `${outputName}${extension}`,
       });
       onOpenChange(false);
       onCompleted();

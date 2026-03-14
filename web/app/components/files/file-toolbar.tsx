@@ -16,6 +16,7 @@ import { Input } from "~/components/ui/input";
 import { Separator } from "~/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "~/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "~/components/ui/tooltip";
+import { TaskListToggle } from "~/components/files/task-list-panel";
 import { useFileStore, type ViewMode } from "~/stores/file-store";
 
 interface FileToolbarProps {
@@ -198,6 +199,14 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
           <TooltipContent side="bottom">
             {showHidden ? "Hide hidden files" : "Show hidden files"}
           </TooltipContent>
+        </Tooltip>
+
+        {/* Task list toggle */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <TaskListToggle />
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Tasks</TooltipContent>
         </Tooltip>
       </div>
     </TooltipProvider>

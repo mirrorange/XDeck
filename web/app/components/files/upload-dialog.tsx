@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { Upload, X } from "lucide-react";
+import { FolderUp, Upload, X } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -9,8 +9,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "~/components/ui/dialog";
-import { Progress } from "~/components/ui/progress";
-import { uploadFiles, type UploadProgress, type UploadResult } from "~/lib/file-transfer";
+import {
+  uploadFiles,
+  uploadFolder,
+} from "~/lib/file-transfer";
 
 interface UploadDialogProps {
   open: boolean;
@@ -20,18 +22,15 @@ interface UploadDialogProps {
 }
 
 export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: UploadDialogProps) {
-  const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [uploading, setUploading] = useState(false);
-  const [progress, setProgress] = useState<UploadProgress | null>(null);
-  const [result, setResult] = useState<UploadResult | null>(null);
+  const [isFolderUpload, setIsFolderUpload] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reset = useCallback(() => {
     setSelectedFiles([]);
-    setUploading(false);
-    setProgress(null);
-    setResult(null);
+    setIsFolderUpload(false);
     setError(null);
   }, []);
 
@@ -44,9 +43,17 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
   );
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
+    if (e.target.files && e.target.files.length > 0) {
       setSelectedFiles(Array.from(e.target.files));
-      setResult(null);
+      setIsFolderUpload(false);
+      setError(null);
+    }
+  }, []);
+
+  const handleFolderSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setSelectedFiles(Array.from(e.target.files));
+      setIsFolderUpload(true);
       setError(null);
     }
   }, []);
@@ -55,32 +62,42 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
     setSelectedFiles((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
-  const handleUpload = useCallback(async () => {
+  const handleUpload = useCallback(() => {
     if (selectedFiles.length === 0) return;
 
-    setUploading(true);
-    setError(null);
-    setResult(null);
+    // Close the dialog immediately — progress is tracked in the task list panel
+    onOpenChange(false);
 
-    try {
-      const res = await uploadFiles(currentPath, selectedFiles, setProgress);
-      setResult(res);
-      onUploaded();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Upload failed");
-    } finally {
-      setUploading(false);
-      setProgress(null);
+    const uploadFn = isFolderUpload ? uploadFolder : uploadFiles;
+    void uploadFn(currentPath, selectedFiles)
+      .then(() => {
+        onUploaded();
+      })
+      .catch(() => {
+        // Error is handled by the task store
+      });
+
+    reset();
+  }, [selectedFiles, isFolderUpload, currentPath, onUploaded, onOpenChange, reset]);
+
+  /** Derive the folder name from the first file's relative path */
+  const folderName = isFolderUpload && selectedFiles.length > 0
+    ? (selectedFiles[0] as File & { webkitRelativePath?: string }).webkitRelativePath?.split("/")[0] ?? "folder"
+    : null;
+
+  /** Display name for file list: show relative path for folders, name for files */
+  const getDisplayName = (file: File): string => {
+    if (isFolderUpload) {
+      return (file as File & { webkitRelativePath?: string }).webkitRelativePath ?? file.name;
     }
-  }, [selectedFiles, currentPath, onUploaded]);
-
-  const progressPercent = progress ? Math.round((progress.loaded / progress.total) * 100) : 0;
+    return file.name;
+  };
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Upload Files</DialogTitle>
+          <DialogTitle>Upload {isFolderUpload ? "Folder" : "Files"}</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-4">
@@ -88,58 +105,104 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
             Upload to: <span className="font-mono text-foreground">{currentPath}</span>
           </p>
 
-          {/* File input area */}
-          <div
-            className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-6 cursor-pointer hover:border-primary/50 transition-colors"
-            onClick={() => inputRef.current?.click()}
-          >
-            <Upload className="size-8 text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">Click to select files</p>
-            <input
-              ref={inputRef}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={handleFileSelect}
-            />
-          </div>
+          {/* File/Folder input area */}
+          {selectedFiles.length === 0 ? (
+            <div className="grid grid-cols-2 gap-3">
+              <div
+                className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-6 cursor-pointer hover:border-primary/50 transition-colors"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Upload className="size-8 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground text-center">Select Files</p>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={handleFileSelect}
+                />
+              </div>
+              <div
+                className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-6 cursor-pointer hover:border-primary/50 transition-colors"
+                onClick={() => folderInputRef.current?.click()}
+              >
+                <FolderUp className="size-8 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground text-center">Select Folder</p>
+                <input
+                  ref={folderInputRef}
+                  type="file"
+                  /* @ts-expect-error webkitdirectory is not in the type definitions */
+                  webkitdirectory=""
+                  className="hidden"
+                  onChange={handleFolderSelect}
+                />
+              </div>
+            </div>
+          ) : (
+            <div
+              className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-4 cursor-pointer hover:border-primary/50 transition-colors"
+              onClick={() => {
+                if (isFolderUpload) {
+                  folderInputRef.current?.click();
+                } else {
+                  fileInputRef.current?.click();
+                }
+              }}
+            >
+              {isFolderUpload ? (
+                <FolderUp className="size-6 text-muted-foreground" />
+              ) : (
+                <Upload className="size-6 text-muted-foreground" />
+              )}
+              <p className="text-xs text-muted-foreground">Click to change selection</p>
+              {/* Hidden inputs (need to stay in DOM) */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={handleFileSelect}
+              />
+              <input
+                ref={folderInputRef}
+                type="file"
+                /* @ts-expect-error webkitdirectory is not in the type definitions */
+                webkitdirectory=""
+                className="hidden"
+                onChange={handleFolderSelect}
+              />
+            </div>
+          )}
 
-          {/* Selected files list */}
+          {/* Selected files summary */}
           {selectedFiles.length > 0 && (
-            <div className="max-h-40 overflow-y-auto space-y-1">
-              {selectedFiles.map((file, i) => (
-                <div key={`${file.name}-${i}`} className="flex items-center justify-between gap-2 rounded px-2 py-1 text-sm bg-muted/50">
-                  <span className="truncate">{file.name}</span>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-xs text-muted-foreground">
-                      {(file.size / 1024).toFixed(1)} KB
-                    </span>
-                    {!uploading && (
-                      <button onClick={() => removeFile(i)} className="hover:text-destructive">
-                        <X className="size-3.5" />
-                      </button>
-                    )}
+            <>
+              {isFolderUpload && folderName && (
+                <p className="text-sm font-medium">
+                  Folder: <span className="font-mono">{folderName}</span>
+                  <span className="text-muted-foreground ml-1">
+                    ({selectedFiles.length} file{selectedFiles.length !== 1 ? "s" : ""})
+                  </span>
+                </p>
+              )}
+              <div className="max-h-40 overflow-y-auto space-y-1">
+                {selectedFiles.map((file, i) => (
+                  <div key={`${getDisplayName(file)}-${i}`} className="flex items-center justify-between gap-2 rounded px-2 py-1 text-sm bg-muted/50">
+                    <span className="truncate">{getDisplayName(file)}</span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs text-muted-foreground">
+                        {(file.size / 1024).toFixed(1)} KB
+                      </span>
+                      {!isFolderUpload && (
+                        <button onClick={() => removeFile(i)} className="hover:text-destructive">
+                          <X className="size-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* Progress bar */}
-          {uploading && progress && (
-            <div className="space-y-1">
-              <Progress value={progressPercent} />
-              <p className="text-xs text-muted-foreground text-center">
-                {progressPercent}% - {progress.fileName}
-              </p>
-            </div>
-          )}
-
-          {/* Result */}
-          {result && (
-            <p className="text-sm text-green-600">
-              Successfully uploaded {result.count} file{result.count !== 1 ? "s" : ""}.
-            </p>
+                ))}
+              </div>
+            </>
           )}
 
           {/* Error */}
@@ -147,14 +210,12 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpenChange(false)} disabled={uploading}>
-            {result ? "Close" : "Cancel"}
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
+            Cancel
           </Button>
-          {!result && (
-            <Button onClick={handleUpload} disabled={selectedFiles.length === 0 || uploading}>
-              {uploading ? "Uploading..." : `Upload ${selectedFiles.length > 0 ? `(${selectedFiles.length})` : ""}`}
-            </Button>
-          )}
+          <Button onClick={handleUpload} disabled={selectedFiles.length === 0}>
+            Upload {selectedFiles.length > 0 ? `(${selectedFiles.length})` : ""}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

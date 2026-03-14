@@ -14,6 +14,7 @@ import {
 import { FileIcon } from "~/components/files/file-icon";
 import { formatFileSize, formatDate, formatPermissions } from "~/lib/file-utils";
 import { useFileStore, type FileEntry, type SortField } from "~/stores/file-store";
+import { useFileDnd } from "~/lib/dnd-utils";
 import { cn } from "~/lib/utils";
 
 interface FileListViewProps {
@@ -24,7 +25,7 @@ interface FileListViewProps {
   sortDirection: "asc" | "desc";
   onOpen: (entry: FileEntry) => void;
   onContextMenu: (e: React.MouseEvent, entry: FileEntry) => void;
-  onDropFiles?: (targetDir: string) => void;
+  onDropFiles?: (targetDir: string, sourcePaths: string[]) => void;
 }
 
 export function FileListView({
@@ -39,6 +40,14 @@ export function FileListView({
 }: FileListViewProps) {
   const { selectFile, selectRange, setSortField } = useFileStore();
 
+  const { handleDragStart, handleDragEnd, handleDragOver, handleDrop } = useFileDnd({
+    tabId,
+    selectedPaths,
+    entries,
+    selectFile,
+    onDropFiles,
+  });
+
   const handleClick = (e: React.MouseEvent, entry: FileEntry) => {
     if (e.shiftKey) {
       selectRange(tabId, entry.path);
@@ -49,35 +58,6 @@ export function FileListView({
 
   const handleDoubleClick = (entry: FileEntry) => {
     onOpen(entry);
-  };
-
-  const handleDragStart = (e: React.DragEvent, entry: FileEntry) => {
-    // If the dragged item is not selected, select it
-    if (!selectedPaths.has(entry.path)) {
-      selectFile(tabId, entry.path, false);
-    }
-    const paths = selectedPaths.has(entry.path)
-      ? [...selectedPaths]
-      : [entry.path];
-    e.dataTransfer.setData("application/x-xdeck-files", JSON.stringify(paths));
-    e.dataTransfer.effectAllowed = "move";
-  };
-
-  const handleDragOver = (e: React.DragEvent, entry: FileEntry) => {
-    if (entry.type !== "directory") return;
-    if (e.dataTransfer.types.includes("application/x-xdeck-files")) {
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-    }
-  };
-
-  const handleDrop = (e: React.DragEvent, entry: FileEntry) => {
-    if (entry.type !== "directory") return;
-    e.preventDefault();
-    const data = e.dataTransfer.getData("application/x-xdeck-files");
-    if (data) {
-      onDropFiles?.(entry.path);
-    }
   };
 
   const SortIcon = ({ field }: { field: SortField }) => {
@@ -121,6 +101,8 @@ export function FileListView({
             <TableRow
               key={entry.path}
               data-state={isSelected ? "selected" : undefined}
+              data-lasso-item
+              data-path={entry.path}
               className={cn(
                 "cursor-default select-none",
                 isSelected && "bg-accent"
@@ -130,6 +112,7 @@ export function FileListView({
               onDoubleClick={() => handleDoubleClick(entry)}
               onContextMenu={(e) => onContextMenu(e, entry)}
               onDragStart={(e) => handleDragStart(e, entry)}
+              onDragEnd={handleDragEnd}
               onDragOver={(e) => handleDragOver(e, entry)}
               onDrop={(e) => handleDrop(e, entry)}
             >

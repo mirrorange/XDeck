@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Loader2, Upload } from "lucide-react";
 
 import { FileTabBar } from "~/components/files/file-tab-bar";
 import { FileToolbar } from "~/components/files/file-toolbar";
@@ -16,11 +16,15 @@ import { FileSearchPanel } from "~/components/files/file-search-panel";
 import { UploadDialog } from "~/components/files/upload-dialog";
 import { CompressDialog } from "~/components/files/compress-dialog";
 import { FilePreview } from "~/components/files/file-preview";
+import { TaskListPanel } from "~/components/files/task-list-panel";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
-import { downloadFile } from "~/lib/file-transfer";
+import { downloadFile, downloadFolder, uploadFiles, uploadFolder } from "~/lib/file-transfer";
 import { isPreviewable } from "~/lib/file-utils";
+import { XDECK_MIME } from "~/lib/dnd-utils";
+import { useLassoSelection, LassoOverlay } from "~/lib/lasso-selection";
 import { getRpcClient } from "~/lib/rpc-client";
+import { toast } from "sonner";
 
 export function FileBrowser() {
   const {
@@ -34,7 +38,13 @@ export function FileBrowser() {
     selectAll,
     clearSelection,
     selectFile,
+    setSelection,
   } = useFileStore();
+
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const lassoContainerRef = useRef<HTMLElement | null>(null);
+  const edgeScrollRafRef = useRef<number | null>(null);
+  const lassoWasActiveRef = useRef(false);
 
   const [contextEntry, setContextEntry] = useState<FileEntry | null>(null);
   const [contextMenuContentKey, setContextMenuContentKey] = useState(0);
@@ -71,6 +81,44 @@ export function FileBrowser() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const activeTab = tabs.find((t) => t.id === activeTabId) || null;
+
+  // Resolve the scroll area viewport for lasso selection (layout effect to run before useEffect in lasso hook)
+  useLayoutEffect(() => {
+    const el = scrollAreaRef.current;
+    if (!el) return;
+    const viewport = el.querySelector("[data-slot='scroll-area-viewport']") as HTMLElement | null;
+    lassoContainerRef.current = viewport;
+  });
+
+  const handleLassoSelect = useCallback(
+    (paths: Set<string>, additive: boolean) => {
+      if (!activeTab) return;
+      if (additive) {
+        // Merge with existing selection
+        const merged = new Set(activeTab.selectedPaths);
+        for (const p of paths) merged.add(p);
+        setSelection(activeTab.id, merged);
+      } else {
+        setSelection(activeTab.id, paths);
+      }
+    },
+    [activeTab, setSelection]
+  );
+
+  const lassoState = useLassoSelection({
+    containerRef: lassoContainerRef,
+    itemSelector: "[data-lasso-item]",
+    getPathFromElement: (el) => el.getAttribute("data-path"),
+    onSelect: handleLassoSelect,
+    enabled: !!activeTab && !activeTab.isLoading,
+  });
+
+  // Track when a lasso drag ends so the subsequent click doesn't clear selection
+  useEffect(() => {
+    if (lassoState.active) {
+      lassoWasActiveRef.current = true;
+    }
+  }, [lassoState.active]);
 
   const handleOpen = useCallback(
     (entry: FileEntry) => {
@@ -171,7 +219,17 @@ export function FileBrowser() {
         case "download": {
           const paths = getSelectedPaths();
           for (const p of paths) {
-            downloadFile(p);
+            // Check if the path is a directory by looking at entries
+            const entry = activeTab.entries.find((e) => e.path === p);
+            if (entry?.type === "directory") {
+              void downloadFolder(p).catch((err) => {
+                toast.error("Download failed", {
+                  description: err instanceof Error ? err.message : "Unknown error",
+                });
+              });
+            } else {
+              downloadFile(p);
+            }
           }
           break;
         }
@@ -194,9 +252,16 @@ export function FileBrowser() {
                   archive: contextEntry.path,
                   dest: activeTab.path,
                 });
-                void refresh(activeTab.id);
-              } catch {
-                // silently fail for now
+                // RPC returns immediately with task_id; progress tracked via task events
+                const archiveName = contextEntry.name;
+                toast.info("Extraction started", {
+                  description: archiveName,
+                });
+              } catch (err) {
+                toast.error("Extraction failed", {
+                  description:
+                    err instanceof Error ? err.message : "Unknown error",
+                });
               }
             })();
           }
@@ -211,12 +276,11 @@ export function FileBrowser() {
   }, [activeTab, refresh]);
 
   const handleDropFiles = useCallback(
-    (targetDir: string) => {
+    (targetDir: string, sourcePaths: string[]) => {
       if (!activeTab) return;
-      const paths = [...activeTab.selectedPaths];
-      if (paths.length === 0) return;
+      if (sourcePaths.length === 0) return;
       // Don't move a folder into itself
-      const filtered = paths.filter((p) => !targetDir.startsWith(p + "/") && p !== targetDir);
+      const filtered = sourcePaths.filter((p) => !targetDir.startsWith(p + "/") && p !== targetDir);
       if (filtered.length === 0) return;
       void (async () => {
         const rpc = getRpcClient();
@@ -232,7 +296,11 @@ export function FileBrowser() {
             // skip failed moves
           }
         }
-        void refresh(activeTab.id);
+        // Refresh all tabs — source files could be from any tab (cross-tab DnD)
+        const allTabs = useFileStore.getState().tabs;
+        for (const tab of allTabs) {
+          void refresh(tab.id);
+        }
       })();
     },
     [activeTab, refresh]
@@ -300,6 +368,157 @@ export function FileBrowser() {
     return () => window.removeEventListener("keydown", handler);
   }, [activeTab, selectAll, clearSelection, refresh, searchOpen]);
 
+  // Edge scroll: auto-scroll when dragging near top/bottom of scroll area
+  const EDGE_ZONE = 40;
+  const EDGE_SPEED = 8;
+
+  const handleScrollAreaDragOver = useCallback((e: React.DragEvent) => {
+    // Allow drops on the scroll area background for internal DnD
+    if (e.dataTransfer.types.includes(XDECK_MIME)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+    }
+
+    const el = scrollAreaRef.current;
+    if (!el) return;
+    const viewport = el.querySelector("[data-slot='scroll-area-viewport']") as HTMLElement | null;
+    if (!viewport) return;
+
+    const rect = el.getBoundingClientRect();
+    const y = e.clientY;
+
+    const stopEdgeScroll = () => {
+      if (edgeScrollRafRef.current != null) {
+        cancelAnimationFrame(edgeScrollRafRef.current);
+        edgeScrollRafRef.current = null;
+      }
+    };
+
+    if (y - rect.top < EDGE_ZONE) {
+      if (edgeScrollRafRef.current == null) {
+        const scroll = () => {
+          viewport.scrollTop -= EDGE_SPEED;
+          edgeScrollRafRef.current = requestAnimationFrame(scroll);
+        };
+        edgeScrollRafRef.current = requestAnimationFrame(scroll);
+      }
+    } else if (rect.bottom - y < EDGE_ZONE) {
+      if (edgeScrollRafRef.current == null) {
+        const scroll = () => {
+          viewport.scrollTop += EDGE_SPEED;
+          edgeScrollRafRef.current = requestAnimationFrame(scroll);
+        };
+        edgeScrollRafRef.current = requestAnimationFrame(scroll);
+      }
+    } else {
+      stopEdgeScroll();
+    }
+  }, []);
+
+  const handleScrollAreaDragLeave = useCallback(() => {
+    if (edgeScrollRafRef.current != null) {
+      cancelAnimationFrame(edgeScrollRafRef.current);
+      edgeScrollRafRef.current = null;
+    }
+  }, []);
+
+  // Drop handler on scroll area background: drops files into the current directory
+  const handleScrollAreaDrop = useCallback(
+    (e: React.DragEvent) => {
+      if (!activeTab) return;
+      // Only handle internal DnD drops (not desktop file drops)
+      if (!e.dataTransfer.types.includes(XDECK_MIME)) return;
+      // Directory entry drops call e.stopPropagation(), so this only fires
+      // for drops on non-directory items or the empty background.
+
+      e.preventDefault();
+      // Stop edge scrolling
+      if (edgeScrollRafRef.current != null) {
+        cancelAnimationFrame(edgeScrollRafRef.current);
+        edgeScrollRafRef.current = null;
+      }
+
+      const data = e.dataTransfer.getData(XDECK_MIME);
+      if (!data) return;
+      try {
+        const paths: string[] = JSON.parse(data);
+        if (paths.length > 0) {
+          handleDropFiles(activeTab.path, paths);
+        }
+      } catch {
+        // invalid data
+      }
+    },
+    [activeTab, handleDropFiles]
+  );
+
+  // Desktop drag-to-upload: detect external file drops
+  const [desktopDragOver, setDesktopDragOver] = useState(false);
+  const desktopDragCounter = useRef(0);
+
+  const isExternalDrag = useCallback((e: React.DragEvent): boolean => {
+    return (
+      e.dataTransfer.types.includes("Files") &&
+      !e.dataTransfer.types.includes(XDECK_MIME)
+    );
+  }, []);
+
+  const handleDesktopDragEnter = useCallback(
+    (e: React.DragEvent) => {
+      if (!isExternalDrag(e)) return;
+      e.preventDefault();
+      desktopDragCounter.current++;
+      if (desktopDragCounter.current === 1) {
+        setDesktopDragOver(true);
+      }
+    },
+    [isExternalDrag]
+  );
+
+  const handleDesktopDragOver = useCallback(
+    (e: React.DragEvent) => {
+      if (!isExternalDrag(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    },
+    [isExternalDrag]
+  );
+
+  const handleDesktopDragLeave = useCallback(
+    (e: React.DragEvent) => {
+      if (!isExternalDrag(e)) return;
+      desktopDragCounter.current--;
+      if (desktopDragCounter.current <= 0) {
+        desktopDragCounter.current = 0;
+        setDesktopDragOver(false);
+      }
+    },
+    [isExternalDrag]
+  );
+
+  const handleDesktopDrop = useCallback(
+    (e: React.DragEvent) => {
+      if (!isExternalDrag(e) || !activeTab) return;
+      e.preventDefault();
+      desktopDragCounter.current = 0;
+      setDesktopDragOver(false);
+
+      const files = e.dataTransfer.files;
+      if (!files || files.length === 0) return;
+
+      // Check if any file has webkitRelativePath (folder upload via drag)
+      const fileArray = Array.from(files);
+      const hasFolderStructure = fileArray.some(
+        (f) => (f as File & { webkitRelativePath?: string }).webkitRelativePath
+      );
+
+      const uploadFn = hasFolderStructure ? uploadFolder : uploadFiles;
+      // Upload progress and completion/failure handled by task store
+      void uploadFn(activeTab.path, fileArray);
+    },
+    [activeTab, isExternalDrag]
+  );
+
   if (!activeTab) {
     return (
       <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -309,7 +528,13 @@ export function FileBrowser() {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div
+      className="flex h-full flex-col relative"
+      onDragEnter={handleDesktopDragEnter}
+      onDragOver={handleDesktopDragOver}
+      onDragLeave={handleDesktopDragLeave}
+      onDrop={handleDesktopDrop}
+    >
       <FileTabBar tabs={tabs} activeTabId={activeTabId} />
 
       <FileToolbar
@@ -329,13 +554,23 @@ export function FileBrowser() {
           onAction={handleAction}
         >
           <ScrollArea
+            ref={scrollAreaRef}
             className="flex-1"
             onContextMenu={handleEmptyContextMenu}
+            onDragOver={handleScrollAreaDragOver}
+            onDragLeave={handleScrollAreaDragLeave}
+            onDrop={handleScrollAreaDrop}
             onClick={(e) => {
+              // Don't clear selection if a lasso drag just finished
+              if (lassoWasActiveRef.current) {
+                lassoWasActiveRef.current = false;
+                return;
+              }
               const target = e.target as HTMLElement;
               if (
                 !target.closest("[data-slot='table-row']") &&
-                !target.closest("button")
+                !target.closest("button") &&
+                !target.closest("[data-lasso-item]")
               ) {
                 clearSelection(activeTab.id);
               }
@@ -390,6 +625,8 @@ export function FileBrowser() {
             />
           </div>
         )}
+
+        <TaskListPanel />
       </div>
 
       <FileStatusBar tab={activeTab} />
@@ -445,6 +682,22 @@ export function FileBrowser() {
         currentPath={activeTab.path}
         onCompleted={handleRefreshCurrent}
       />
+
+      {/* Lasso selection overlay */}
+      <LassoOverlay rect={lassoState.rect} />
+
+      {/* Desktop drag-to-upload overlay */}
+      {desktopDragOver && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm border-2 border-dashed border-primary rounded-lg pointer-events-none">
+          <div className="flex flex-col items-center gap-2 text-primary">
+            <Upload className="size-12" />
+            <p className="text-lg font-medium">Drop files to upload</p>
+            <p className="text-sm text-muted-foreground">
+              Files will be uploaded to {activeTab.path}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

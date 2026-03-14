@@ -234,7 +234,7 @@ pub fn register(router: &mut RpcRouter, task_mgr: SharedTaskManager) {
         }))
     });
 
-    // fs.compress — Compress files into an archive (with progress tracking)
+    // fs.compress — Compress files into an archive (async with progress tracking)
     let mgr = task_mgr.clone();
     router.register("fs.compress", move |params, _ctx| {
         let mgr = mgr.clone();
@@ -251,21 +251,23 @@ pub fn register(router: &mut RpcRouter, task_mgr: SharedTaskManager) {
             let task_handle = task_manager::create_task(&mgr, TaskType::Compress, title).await;
             let task_id = task_handle.id().to_string();
 
-            let entry = file_manager::compress_with_progress(
-                &params.paths,
-                &params.output,
-                params.format,
-                task_handle,
-            )
-            .await?;
+            // Spawn the compression in the background — return task_id immediately
+            tokio::spawn(async move {
+                let _ = file_manager::compress_with_progress(
+                    &params.paths,
+                    &params.output,
+                    params.format,
+                    task_handle,
+                )
+                .await;
+                // TaskHandle.complete() / .fail() is called inside compress_with_progress
+            });
 
-            let mut result = serde_json::to_value(&entry).unwrap();
-            result["task_id"] = serde_json::Value::String(task_id);
-            Ok(result)
+            Ok(serde_json::json!({ "task_id": task_id }))
         }
     });
 
-    // fs.extract — Extract an archive (with progress tracking)
+    // fs.extract — Extract an archive (async with progress tracking)
     let mgr = task_mgr.clone();
     router.register("fs.extract", move |params, _ctx| {
         let mgr = mgr.clone();
@@ -281,22 +283,22 @@ pub fn register(router: &mut RpcRouter, task_mgr: SharedTaskManager) {
             let task_handle = task_manager::create_task(&mgr, TaskType::Extract, title).await;
             let task_id = task_handle.id().to_string();
 
-            let entries = file_manager::extract_with_progress(
-                &params.archive,
-                &params.dest,
-                task_handle,
-            )
-            .await?;
+            // Spawn the extraction in the background — return task_id immediately
+            tokio::spawn(async move {
+                let _ = file_manager::extract_with_progress(
+                    &params.archive,
+                    &params.dest,
+                    task_handle,
+                )
+                .await;
+                // TaskHandle.complete() / .fail() is called inside extract_with_progress
+            });
 
-            Ok(serde_json::json!({
-                "entries": entries,
-                "total": entries.len(),
-                "task_id": task_id,
-            }))
+            Ok(serde_json::json!({ "task_id": task_id }))
         }
     });
 
-    // fs.prepare_download — Prepare a folder for download (compress to temp zip)
+    // fs.prepare_download — Prepare a folder for download (compress to temp zip with progress)
     let mgr = task_mgr.clone();
     router.register("fs.prepare_download", move |params, _ctx| {
         let mgr = mgr.clone();
