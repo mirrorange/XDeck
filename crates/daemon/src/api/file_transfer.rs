@@ -1,15 +1,18 @@
 use axum::{
-    body::Body,
-    extract::{Multipart, Query, State},
+    body::{Body, Bytes},
+    extract::{Multipart, Path as AxumPath, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
+    Json,
 };
 use serde::Deserialize;
 use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use tracing::{info, warn};
 
+use crate::error::AppError;
 use crate::services::file_manager;
+use crate::services::upload_manager::CreateUploadSessionRequest;
 
 use super::AppState;
 
@@ -25,6 +28,17 @@ pub struct FileUploadParams {
     pub path: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AuthQuery {
+    pub token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UploadChunkParams {
+    pub token: String,
+    pub offset: u64,
+}
+
 /// Authenticate a token against the auth service.
 fn authorize(state: &AppState, token: &str) -> Result<(), StatusCode> {
     if token.trim().is_empty() {
@@ -35,6 +49,28 @@ fn authorize(state: &AppState, token: &str) -> Result<(), StatusCode> {
         .verify_token(token)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
     Ok(())
+}
+
+fn app_error_response(err: AppError) -> Response {
+    match err {
+        AppError::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+        AppError::BadRequestWithDetails { message, details } => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": message,
+                "details": details,
+            })),
+        )
+            .into_response(),
+        AppError::NotFound(message) => (StatusCode::NOT_FOUND, message).into_response(),
+        AppError::Unauthorized | AppError::TokenExpired | AppError::InvalidCredentials => {
+            StatusCode::UNAUTHORIZED.into_response()
+        }
+        other => {
+            warn!("Upload API error: {}", other);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 /// GET /api/files/download?token=...&path=...
@@ -237,4 +273,102 @@ pub async fn upload_handler(
     });
 
     (StatusCode::OK, axum::Json(body)).into_response()
+}
+
+/// POST /api/files/upload/sessions?token=...
+/// Create a resumable upload session and a corresponding task-list entry.
+pub async fn create_upload_session_handler(
+    Query(params): Query<AuthQuery>,
+    State(state): State<AppState>,
+    Json(request): Json<CreateUploadSessionRequest>,
+) -> Response {
+    if let Err(code) = authorize(&state, &params.token) {
+        return code.into_response();
+    }
+
+    match state.upload_manager.create_session(request).await {
+        Ok(session) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "session": session })),
+        )
+            .into_response(),
+        Err(err) => app_error_response(err),
+    }
+}
+
+/// GET /api/files/upload/sessions/:session_id?token=...
+/// Fetch the persisted upload session state for resume/retry logic.
+pub async fn get_upload_session_handler(
+    Query(params): Query<AuthQuery>,
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+) -> Response {
+    if let Err(code) = authorize(&state, &params.token) {
+        return code.into_response();
+    }
+
+    match state.upload_manager.get_session(&session_id).await {
+        Ok(session) => (StatusCode::OK, Json(serde_json::json!({ "session": session }))).into_response(),
+        Err(err) => app_error_response(err),
+    }
+}
+
+/// PUT /api/files/upload/sessions/:session_id/files/:file_id/chunk?token=...&offset=...
+/// Append a single upload chunk to the file's temp file.
+pub async fn upload_chunk_handler(
+    Query(params): Query<UploadChunkParams>,
+    State(state): State<AppState>,
+    AxumPath((session_id, file_id)): AxumPath<(String, String)>,
+    body: Bytes,
+) -> Response {
+    if let Err(code) = authorize(&state, &params.token) {
+        return code.into_response();
+    }
+
+    match state
+        .upload_manager
+        .append_chunk(&session_id, &file_id, params.offset, body)
+        .await
+    {
+        Ok(result) => (StatusCode::OK, Json(serde_json::json!(result))).into_response(),
+        Err(err) => app_error_response(err),
+    }
+}
+
+/// POST /api/files/upload/sessions/:session_id/complete?token=...
+/// Finalize a resumable upload by moving all staged files into place.
+pub async fn complete_upload_session_handler(
+    Query(params): Query<AuthQuery>,
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+) -> Response {
+    if let Err(code) = authorize(&state, &params.token) {
+        return code.into_response();
+    }
+
+    match state.upload_manager.complete_session(&session_id).await {
+        Ok(session) => (StatusCode::OK, Json(serde_json::json!({ "session": session }))).into_response(),
+        Err(err) => app_error_response(err),
+    }
+}
+
+/// DELETE /api/files/upload/sessions/:session_id?token=...
+/// Cancel a resumable upload and remove its staged temp files.
+pub async fn cancel_upload_session_handler(
+    Query(params): Query<AuthQuery>,
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+) -> Response {
+    if let Err(code) = authorize(&state, &params.token) {
+        return code.into_response();
+    }
+
+    match state.upload_manager.cancel_session(&session_id).await {
+        Ok(cancelled) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "cancelled": cancelled })),
+        )
+            .into_response(),
+        Err(err) => app_error_response(err),
+    }
 }

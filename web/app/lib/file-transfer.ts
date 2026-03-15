@@ -1,5 +1,5 @@
 import { getRpcClient } from "~/lib/rpc-client";
-import { useTaskStore } from "~/stores/task-store";
+import { uploadFilesResumable, type UploadProgress, type UploadResult } from "~/lib/resumable-upload";
 
 /**
  * Build the base URL for HTTP API calls.
@@ -15,12 +15,6 @@ function getToken(): string {
   const token = getRpcClient().token;
   if (!token) throw new Error("Not authenticated");
   return token;
-}
-
-/** Generate a unique client-side task id */
-let clientTaskSeq = 0;
-function nextClientTaskId(): string {
-  return `client-upload-${++clientTaskSeq}-${Date.now()}`;
 }
 
 /**
@@ -52,17 +46,6 @@ export async function downloadFolder(path: string): Promise<void> {
   downloadFile(result.download_path);
 }
 
-export interface UploadProgress {
-  loaded: number;
-  total: number;
-  fileName: string;
-}
-
-export interface UploadResult {
-  uploaded: string[];
-  count: number;
-}
-
 /**
  * Upload files to a directory on the server.
  * Progress is tracked in the task list panel.
@@ -72,66 +55,7 @@ export async function uploadFiles(
   files: FileList | File[],
   onProgress?: (progress: UploadProgress) => void,
 ): Promise<UploadResult> {
-  const token = getToken();
-  const url = `${getApiBaseUrl()}/api/files/upload?token=${encodeURIComponent(token)}&path=${encodeURIComponent(destPath)}`;
-
-  const formData = new FormData();
-  for (const file of files) {
-    formData.append("files", file, file.name);
-  }
-
-  const fileCount = Array.from(files).length;
-  const taskTitle = fileCount === 1 ? `Uploading ${files[0].name}` : `Uploading ${fileCount} files`;
-  const taskId = nextClientTaskId();
-  const taskStore = useTaskStore.getState();
-  taskStore.addClientTask(taskId, "upload", taskTitle);
-
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", url);
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 100);
-        taskStore.updateClientTask(taskId, {
-          progress: Math.min(pct, 99),
-          message: `${pct}%`,
-        });
-        onProgress?.({
-          loaded: e.loaded,
-          total: e.total,
-          fileName: fileCount === 1 ? files[0].name : `${fileCount} files`,
-        });
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        const result: UploadResult = JSON.parse(xhr.responseText);
-        taskStore.updateClientTask(taskId, {
-          status: "completed",
-          progress: 100,
-          message: `${result.count} file${result.count !== 1 ? "s" : ""} uploaded`,
-        });
-        resolve(result);
-      } else {
-        taskStore.updateClientTask(taskId, {
-          status: "failed",
-          message: `${xhr.status} ${xhr.statusText}`,
-        });
-        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
-      }
-    };
-
-    xhr.onerror = () => {
-      taskStore.updateClientTask(taskId, {
-        status: "failed",
-        message: "Network error",
-      });
-      reject(new Error("Upload failed: network error"));
-    };
-    xhr.send(formData);
-  });
+  return await uploadFilesResumable(destPath, files, onProgress);
 }
 
 /**
@@ -144,73 +68,5 @@ export async function uploadFolder(
   files: FileList | File[],
   onProgress?: (progress: UploadProgress) => void,
 ): Promise<UploadResult> {
-  const token = getToken();
-  const url = `${getApiBaseUrl()}/api/files/upload?token=${encodeURIComponent(token)}&path=${encodeURIComponent(destPath)}`;
-
-  const formData = new FormData();
-  for (const file of files) {
-    // webkitRelativePath contains the full relative path including the root folder name
-    // e.g. "my-folder/sub/file.txt"
-    const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath;
-    if (relativePath) {
-      formData.append("relative_path", relativePath);
-    }
-    formData.append("files", file, file.name);
-  }
-
-  const fileCount = Array.from(files).length;
-  const folderName = fileCount > 0
-    ? (files[0] as File & { webkitRelativePath?: string }).webkitRelativePath?.split("/")[0] ?? "folder"
-    : "folder";
-  const taskTitle = `Uploading folder: ${folderName}`;
-  const taskId = nextClientTaskId();
-  const taskStore = useTaskStore.getState();
-  taskStore.addClientTask(taskId, "upload", taskTitle);
-
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", url);
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) {
-        const pct = Math.round((e.loaded / e.total) * 100);
-        taskStore.updateClientTask(taskId, {
-          progress: Math.min(pct, 99),
-          message: `${pct}% (${fileCount} files)`,
-        });
-        onProgress?.({
-          loaded: e.loaded,
-          total: e.total,
-          fileName: `folder (${fileCount} files)`,
-        });
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        const result: UploadResult = JSON.parse(xhr.responseText);
-        taskStore.updateClientTask(taskId, {
-          status: "completed",
-          progress: 100,
-          message: `${result.count} file${result.count !== 1 ? "s" : ""} uploaded`,
-        });
-        resolve(result);
-      } else {
-        taskStore.updateClientTask(taskId, {
-          status: "failed",
-          message: `${xhr.status} ${xhr.statusText}`,
-        });
-        reject(new Error(`Upload failed: ${xhr.status} ${xhr.statusText}`));
-      }
-    };
-
-    xhr.onerror = () => {
-      taskStore.updateClientTask(taskId, {
-        status: "failed",
-        message: "Network error",
-      });
-      reject(new Error("Upload failed: network error"));
-    };
-    xhr.send(formData);
-  });
+  return await uploadFilesResumable(destPath, files, onProgress);
 }

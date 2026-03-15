@@ -4,8 +4,7 @@ mod websocket;
 
 use std::sync::Arc;
 
-use axum::{response::Json, routing::get, Router};
-use axum::routing::post;
+use axum::{response::Json, routing::{get, post}, Router};
 use sqlx::SqlitePool;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -28,6 +27,7 @@ use crate::services::event_bus::{EventBus, SharedEventBus};
 use crate::services::process_manager::ProcessManager;
 use crate::services::pty_manager::PtyManager;
 use crate::services::task_manager::{self, SharedTaskManager};
+use crate::services::upload_manager::{self, SharedUploadManager};
 
 /// Shared application state accessible by all handlers.
 #[derive(Clone)]
@@ -41,6 +41,7 @@ pub struct AppState {
     pub process_manager: Arc<ProcessManager>,
     pub docker_manager: Arc<DockerManager>,
     pub task_manager: SharedTaskManager,
+    pub upload_manager: SharedUploadManager,
 }
 
 impl AppState {
@@ -63,12 +64,19 @@ impl AppState {
             &config.data_dir,
         );
         let docker_manager = DockerManager::new(event_bus.clone());
+        let upload_manager = upload_manager::new_shared(
+            pool.clone(),
+            task_manager.clone(),
+            config.data_dir.join("uploads"),
+        )
+        .expect("failed to initialize upload manager");
         let rpc_router = Arc::new(Self::build_rpc_router(
             auth_service.clone(),
             process_manager.clone(),
             pty_manager.clone(),
             docker_manager.clone(),
             task_manager.clone(),
+            upload_manager.clone(),
         ));
 
         Self {
@@ -81,6 +89,7 @@ impl AppState {
             process_manager,
             docker_manager,
             task_manager,
+            upload_manager,
         }
     }
 
@@ -91,6 +100,7 @@ impl AppState {
         pty_mgr: Arc<PtyManager>,
         docker_mgr: Arc<DockerManager>,
         task_mgr: SharedTaskManager,
+        upload_mgr: SharedUploadManager,
     ) -> RpcRouter {
         let mut router = RpcRouter::new();
 
@@ -103,7 +113,7 @@ impl AppState {
         snippet_store_handlers::register(&mut router);
         docker_handlers::register(&mut router, docker_mgr);
         fs_handlers::register(&mut router, task_mgr.clone());
-        task_handlers::register(&mut router, task_mgr);
+        task_handlers::register(&mut router, task_mgr, upload_mgr);
 
         router
     }
@@ -117,6 +127,23 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ws/pty/{session_id}", get(pty_websocket::pty_ws_handler))
         .route("/api/files/download", get(file_transfer::download_handler))
         .route("/api/files/upload", post(file_transfer::upload_handler))
+        .route(
+            "/api/files/upload/sessions",
+            post(file_transfer::create_upload_session_handler),
+        )
+        .route(
+            "/api/files/upload/sessions/{session_id}",
+            get(file_transfer::get_upload_session_handler)
+                .delete(file_transfer::cancel_upload_session_handler),
+        )
+        .route(
+            "/api/files/upload/sessions/{session_id}/complete",
+            post(file_transfer::complete_upload_session_handler),
+        )
+        .route(
+            "/api/files/upload/sessions/{session_id}/files/{file_id}/chunk",
+            post(file_transfer::upload_chunk_handler),
+        )
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)

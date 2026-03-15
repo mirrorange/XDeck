@@ -514,8 +514,9 @@ export function FileBrowser() {
       );
 
       const uploadFn = hasFolderStructure ? uploadFolder : uploadFiles;
-      // Upload progress and completion/failure handled by task store
-      void uploadFn(activeTab.path, fileArray);
+      void uploadFn(activeTab.path, fileArray).catch(() => {
+        // Failure state is surfaced through the task list and resumed queue.
+      });
     },
     [activeTab, isExternalDrag]
   );
