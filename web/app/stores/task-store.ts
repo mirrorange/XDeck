@@ -31,6 +31,23 @@ export interface Task {
   updated_at: number;
 }
 
+interface TaskDismissResult {
+  removed: boolean;
+  reason?: "active" | "not_found" | null;
+}
+
+interface TaskClearCompletedResult {
+  removed: number;
+}
+
+interface TaskDismissedEvent {
+  id: string;
+}
+
+interface TaskClearedEvent {
+  ids: string[];
+}
+
 // ── Store ──────────────────────────────────────────────────────────────────
 
 interface TaskStore {
@@ -44,8 +61,8 @@ interface TaskStore {
   togglePanel: () => void;
   fetchTasks: () => Promise<void>;
   cancelTask: (id: string) => Promise<void>;
-  dismissTask: (id: string) => void;
-  clearCompleted: () => void;
+  dismissTask: (id: string) => Promise<void>;
+  clearCompleted: () => Promise<void>;
   subscribeToEvents: () => () => void;
 
   // Client-side task management (for uploads, etc.)
@@ -89,28 +106,49 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
     }
   },
 
-  dismissTask: (id) => {
-    set((s) => {
-      const next = new Map(s.tasks);
-      next.delete(id);
-      return { tasks: next };
-    });
+  dismissTask: async (id) => {
+    try {
+      const rpc = getRpcClient();
+      const result = await rpc.call<TaskDismissResult>("task.dismiss", { id });
+
+      if (!result.removed && result.reason === "active") {
+        toast.error("Active tasks cannot be dismissed");
+        await get().fetchTasks();
+        return;
+      }
+
+      set((s) => {
+        const next = new Map(s.tasks);
+        next.delete(id);
+        return { tasks: next };
+      });
+    } catch (err) {
+      console.error("Failed to dismiss task:", err);
+      toast.error("Failed to dismiss task");
+    }
   },
 
-  clearCompleted: () => {
-    set((s) => {
-      const next = new Map<string, Task>();
-      for (const [id, task] of s.tasks) {
-        if (
-          task.status !== "completed" &&
-          task.status !== "failed" &&
-          task.status !== "cancelled"
-        ) {
-          next.set(id, task);
+  clearCompleted: async () => {
+    try {
+      const rpc = getRpcClient();
+      await rpc.call<TaskClearCompletedResult>("task.clear_completed");
+      set((s) => {
+        const next = new Map<string, Task>();
+        for (const [id, task] of s.tasks) {
+          if (
+            task.status !== "completed" &&
+            task.status !== "failed" &&
+            task.status !== "cancelled"
+          ) {
+            next.set(id, task);
+          }
         }
-      }
-      return { tasks: next };
-    });
+        return { tasks: next };
+      });
+    } catch (err) {
+      console.error("Failed to clear completed tasks:", err);
+      toast.error("Failed to clear finished tasks");
+    }
   },
 
   addClientTask: (id, taskType, title) => {
@@ -210,12 +248,39 @@ export const useTaskStore = create<TaskStore>((set, get) => ({
       }
     );
 
+    const unsubDismissed = rpc.on(
+      "event.task.dismissed",
+      (params: unknown) => {
+        const { id } = params as TaskDismissedEvent;
+        set((s) => {
+          if (!s.tasks.has(id)) return s;
+          const next = new Map(s.tasks);
+          next.delete(id);
+          return { tasks: next };
+        });
+      }
+    );
+
+    const unsubCleared = rpc.on("event.task.cleared", (params: unknown) => {
+      const { ids } = params as TaskClearedEvent;
+      if (!Array.isArray(ids) || ids.length === 0) return;
+      set((s) => {
+        const next = new Map(s.tasks);
+        for (const id of ids) {
+          next.delete(id);
+        }
+        return { tasks: next };
+      });
+    });
+
     return () => {
       unsubCreated();
       unsubProgress();
       unsubCompleted();
       unsubFailed();
       unsubCancelled();
+      unsubDismissed();
+      unsubCleared();
     };
   },
 }));

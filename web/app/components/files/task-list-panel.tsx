@@ -80,7 +80,7 @@ function TaskRow({ task }: { task: Task }) {
               variant="ghost"
               size="icon"
               className="size-6 shrink-0"
-              onClick={() => dismissTask(task.id)}
+              onClick={() => void dismissTask(task.id)}
               title="Dismiss"
             >
               <X className="size-3.5" />
@@ -189,7 +189,7 @@ export function TaskListPanel() {
                   variant="ghost"
                   size="icon"
                   className="size-6"
-                  onClick={clearCompleted}
+                  onClick={() => void clearCompleted()}
                   title="Clear finished tasks"
                 >
                   <Trash2 className="size-3.5" />

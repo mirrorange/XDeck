@@ -58,11 +58,23 @@ pub struct TaskHandle {
     manager: SharedTaskManager,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DismissTaskResult {
+    Dismissed,
+    Active,
+    NotFound,
+}
+
 impl TaskHandle {
     /// Update progress (0-100) with an optional message.
     pub async fn update_progress(&self, progress: u8, message: Option<String>) {
         self.manager
-            .update_task(&self.task_id, TaskStatus::Running, Some(progress.min(100)), message)
+            .update_task(
+                &self.task_id,
+                TaskStatus::Running,
+                Some(progress.min(100)),
+                message,
+            )
             .await;
     }
 
@@ -139,16 +151,64 @@ impl TaskManager {
                 let task_clone = task.clone();
                 drop(tasks);
 
-                self.event_bus.publish(
-                    "task.cancelled",
-                    serde_json::to_value(&task_clone).unwrap(),
-                );
+                self.event_bus
+                    .publish("task.cancelled", serde_json::to_value(&task_clone).unwrap());
 
                 info!("Task cancelled: {}", task_id);
                 return true;
             }
         }
         false
+    }
+
+    /// Remove a finished task from the tracked history.
+    pub async fn dismiss_task(&self, task_id: &str) -> DismissTaskResult {
+        let mut tasks = self.tasks.lock().await;
+        let Some(task) = tasks.get(task_id) else {
+            return DismissTaskResult::NotFound;
+        };
+
+        if task.status == TaskStatus::Pending || task.status == TaskStatus::Running {
+            return DismissTaskResult::Active;
+        }
+
+        tasks.remove(task_id);
+        drop(tasks);
+
+        self.event_bus
+            .publish("task.dismissed", serde_json::json!({ "id": task_id }));
+
+        info!("Task dismissed: {}", task_id);
+        DismissTaskResult::Dismissed
+    }
+
+    /// Remove all finished tasks from tracked history.
+    pub async fn clear_finished_tasks(&self) -> usize {
+        let mut tasks = self.tasks.lock().await;
+        let dismissed_ids: Vec<String> = tasks
+            .iter()
+            .filter(|(_, task)| {
+                task.status == TaskStatus::Completed
+                    || task.status == TaskStatus::Failed
+                    || task.status == TaskStatus::Cancelled
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        if dismissed_ids.is_empty() {
+            return 0;
+        }
+
+        tasks.retain(|_, task| {
+            task.status == TaskStatus::Pending || task.status == TaskStatus::Running
+        });
+        drop(tasks);
+
+        self.event_bus
+            .publish("task.cleared", serde_json::json!({ "ids": dismissed_ids }));
+
+        info!("Cleared {} finished tasks", dismissed_ids.len());
+        dismissed_ids.len()
     }
 
     /// Check if a task has been cancelled.
@@ -188,10 +248,8 @@ impl TaskManager {
                 _ => "task.progress",
             };
 
-            self.event_bus.publish(
-                event_topic,
-                serde_json::to_value(&task_clone).unwrap(),
-            );
+            self.event_bus
+                .publish(event_topic, serde_json::to_value(&task_clone).unwrap());
 
             debug!("Task {}: {:?} progress={:?}", task_id, status, progress);
 
@@ -259,10 +317,9 @@ pub async fn create_task(
         tasks.insert(id.clone(), task.clone());
     }
 
-    manager.event_bus.publish(
-        "task.created",
-        serde_json::to_value(&task).unwrap(),
-    );
+    manager
+        .event_bus
+        .publish("task.created", serde_json::to_value(&task).unwrap());
 
     info!("Task created: {} ({})", title, id);
 
@@ -290,7 +347,9 @@ mod tests {
         assert_eq!(event.topic, "task.created");
 
         // Update progress
-        handle.update_progress(50, Some("Halfway done".into())).await;
+        handle
+            .update_progress(50, Some("Halfway done".into()))
+            .await;
         let event = rx.recv().await.unwrap();
         assert_eq!(event.topic, "task.progress");
         assert_eq!(event.payload["progress"], 50);
@@ -327,6 +386,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_dismiss_finished_task() {
+        let event_bus = Arc::new(EventBus::new(16));
+        let mut rx = event_bus.subscribe();
+        let manager = new_shared(event_bus);
+
+        let handle = create_task(&manager, TaskType::Compress, "Dismiss me".into()).await;
+        let _ = rx.recv().await.unwrap();
+
+        handle.complete(None).await;
+        let _ = rx.recv().await.unwrap();
+
+        let result = manager.dismiss_task(handle.id()).await;
+        assert_eq!(result, DismissTaskResult::Dismissed);
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.topic, "task.dismissed");
+        assert_eq!(event.payload["id"], handle.id());
+        assert!(manager.list_tasks().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cannot_dismiss_active_task() {
+        let event_bus = Arc::new(EventBus::new(16));
+        let manager = new_shared(event_bus);
+
+        let handle = create_task(&manager, TaskType::Extract, "Still running".into()).await;
+
+        let result = manager.dismiss_task(handle.id()).await;
+        assert_eq!(result, DismissTaskResult::Active);
+        assert_eq!(manager.list_tasks().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_clear_finished_tasks_keeps_active_tasks() {
+        let event_bus = Arc::new(EventBus::new(32));
+        let mut rx = event_bus.subscribe();
+        let manager = new_shared(event_bus);
+
+        let active = create_task(&manager, TaskType::Upload, "Active".into()).await;
+        let _ = rx.recv().await.unwrap();
+
+        let completed = create_task(&manager, TaskType::Compress, "Completed".into()).await;
+        let _ = rx.recv().await.unwrap();
+        completed.complete(None).await;
+        let _ = rx.recv().await.unwrap();
+
+        let cancelled = create_task(&manager, TaskType::Extract, "Cancelled".into()).await;
+        let _ = rx.recv().await.unwrap();
+        assert!(manager.cancel_task(cancelled.id()).await);
+        let _ = rx.recv().await.unwrap();
+
+        let cleared = manager.clear_finished_tasks().await;
+        assert_eq!(cleared, 2);
+
+        let event = rx.recv().await.unwrap();
+        assert_eq!(event.topic, "task.cleared");
+        let ids = event.payload["ids"].as_array().unwrap();
+        assert_eq!(ids.len(), 2);
+
+        let tasks = manager.list_tasks().await;
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, active.id());
+    }
+
+    #[tokio::test]
     async fn test_cleanup_old_tasks() {
         let event_bus = Arc::new(EventBus::new(256));
         let manager = Arc::new(TaskManager {
@@ -344,6 +468,10 @@ mod tests {
         }
 
         let tasks = manager.list_tasks().await;
-        assert!(tasks.len() <= 3, "Should retain at most 3 finished tasks, got {}", tasks.len());
+        assert!(
+            tasks.len() <= 3,
+            "Should retain at most 3 finished tasks, got {}",
+            tasks.len()
+        );
     }
 }
