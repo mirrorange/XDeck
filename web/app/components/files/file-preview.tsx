@@ -20,13 +20,20 @@ import { go } from "@codemirror/lang-go";
 import type { Extension } from "@codemirror/state";
 
 import { Button } from "~/components/ui/button";
+import { cn } from "~/lib/utils";
 import { getRpcClient } from "~/lib/rpc-client";
-import { getFileCategory, getFileExtension, formatFileSize } from "~/lib/file-utils";
+import {
+  getFileCategory,
+  getFileExtension,
+  formatFileSize,
+  truncateMiddleFilename,
+} from "~/lib/file-utils";
 import type { FileEntry } from "~/stores/file-store";
 
 interface FilePreviewProps {
   entry: FileEntry;
   onClose: () => void;
+  className?: string;
 }
 
 function getLanguageExtension(ext: string): Extension | null {
@@ -79,29 +86,31 @@ function getLanguageExtension(ext: string): Extension | null {
   }
 }
 
-export function FilePreview({ entry, onClose }: FilePreviewProps) {
+export function FilePreview({ entry, onClose, className }: FilePreviewProps) {
   const category = getFileCategory(entry.type, entry.name);
 
   return (
-    <div className="flex h-full flex-col border-l bg-background">
+    <div className={cn("flex h-full flex-col bg-background", className)}>
       {/* Header */}
-      <div className="flex h-10 items-center justify-between border-b px-3">
-        <div className="flex items-center gap-2 min-w-0">
+      <div className="flex min-h-10 items-center justify-between gap-2 border-b px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
           {category === "image" && <ImageIcon className="size-4 shrink-0" />}
           {category === "video" && <Film className="size-4 shrink-0" />}
           {category === "audio" && <Music className="size-4 shrink-0" />}
           {(category === "code" || category === "text") && (
             <FileText className="size-4 shrink-0" />
           )}
-          <span className="truncate text-sm font-medium">{entry.name}</span>
-          <span className="text-xs text-muted-foreground">
+          <span className="truncate text-sm font-medium" title={entry.name}>
+            {truncateMiddleFilename(entry.name, 40)}
+          </span>
+          <span className="hidden text-xs text-muted-foreground sm:inline">
             {formatFileSize(entry.size)}
           </span>
         </div>
         <Button
           variant="ghost"
           size="icon"
-          className="size-7 shrink-0"
+          className="size-8 shrink-0"
           onClick={onClose}
         >
           <X className="size-4" />
@@ -273,7 +282,7 @@ function AudioPreview({ path }: { path: string }) {
     <div className="flex h-full items-center justify-center p-8">
       <div className="flex flex-col items-center gap-4">
         <Music className="size-16 text-muted-foreground" />
-        <audio src={url} controls className="w-72" />
+        <audio src={url} controls className="w-full max-w-72" />
       </div>
     </div>
   );

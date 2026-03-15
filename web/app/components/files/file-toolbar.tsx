@@ -17,6 +17,8 @@ import { Separator } from "~/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "~/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "~/components/ui/tooltip";
 import { TaskListToggle } from "~/components/files/task-list-panel";
+import { useMediaQuery } from "~/hooks/use-mobile";
+import { cn } from "~/lib/utils";
 import { useFileStore, type ViewMode } from "~/stores/file-store";
 
 interface FileToolbarProps {
@@ -42,7 +44,8 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
 
   const [editingPath, setEditingPath] = useState(false);
   const [inputPath, setInputPath] = useState(path);
-
+  const isCompactLayout = useMediaQuery("(max-width: 1023px)");
+  const buttonSizeClass = isCompactLayout ? "size-8" : "size-7";
 
   const handlePathSubmit = () => {
     setEditingPath(false);
@@ -53,14 +56,21 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="flex h-10 items-center gap-1 border-b px-2">
+      <div
+        className={cn(
+          "border-b px-2",
+          isCompactLayout
+            ? "flex min-h-12 flex-wrap items-center gap-1.5 py-2"
+            : "flex h-10 items-center gap-1"
+        )}
+      >
         {/* Navigation buttons */}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
               variant="ghost"
               size="icon"
-              className="size-7"
+              className={buttonSizeClass}
               disabled={!canGoBack}
               onClick={() => goBack(tabId)}
             >
@@ -75,7 +85,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
             <Button
               variant="ghost"
               size="icon"
-              className="size-7"
+              className={buttonSizeClass}
               disabled={!canGoForward}
               onClick={() => goForward(tabId)}
             >
@@ -90,7 +100,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
             <Button
               variant="ghost"
               size="icon"
-              className="size-7"
+              className={buttonSizeClass}
               onClick={() => goUp(tabId)}
             >
               <ArrowUp className="size-4" />
@@ -104,7 +114,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
             <Button
               variant="ghost"
               size="icon"
-              className="size-7"
+              className={buttonSizeClass}
               onClick={() => refresh(tabId)}
             >
               <RefreshCw className="size-4" />
@@ -113,12 +123,18 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
           <TooltipContent side="bottom">Refresh</TooltipContent>
         </Tooltip>
 
-        <Separator orientation="vertical" className="!h-4 mx-1" />
+        <Separator
+          orientation="vertical"
+          className={cn("mx-1 !h-4", isCompactLayout && "hidden sm:block")}
+        />
 
         {/* Path bar */}
         {editingPath ? (
           <Input
-            className="h-7 flex-1 text-sm font-mono"
+            className={cn(
+              "text-sm font-mono",
+              isCompactLayout ? "order-last h-9 basis-full" : "h-7 flex-1"
+            )}
             value={inputPath}
             onChange={(e) => setInputPath(e.target.value)}
             onBlur={handlePathSubmit}
@@ -134,6 +150,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
         ) : (
           <BreadcrumbPath
             path={path}
+            compact={isCompactLayout}
             onClick={() => {
               setEditingPath(true);
               setInputPath(path);
@@ -142,7 +159,10 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
           />
         )}
 
-        <Separator orientation="vertical" className="!h-4 mx-1" />
+        <Separator
+          orientation="vertical"
+          className={cn("mx-1 !h-4", isCompactLayout && "hidden md:block")}
+        />
 
         {/* Search toggle */}
         <Tooltip>
@@ -150,7 +170,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
             <Button
               variant="ghost"
               size="icon"
-              className="size-7"
+              className={buttonSizeClass}
               onClick={onSearchToggle}
             >
               <Search className="size-4" />
@@ -168,7 +188,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
         >
           <Tooltip>
             <TooltipTrigger asChild>
-              <ToggleGroupItem value="list" className="size-7 p-0">
+              <ToggleGroupItem value="list" className={cn(buttonSizeClass, "p-0")}>
                 <List className="size-4" />
               </ToggleGroupItem>
             </TooltipTrigger>
@@ -176,7 +196,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
-              <ToggleGroupItem value="grid" className="size-7 p-0">
+              <ToggleGroupItem value="grid" className={cn(buttonSizeClass, "p-0")}>
                 <Grid3X3 className="size-4" />
               </ToggleGroupItem>
             </TooltipTrigger>
@@ -190,7 +210,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
             <Button
               variant="ghost"
               size="icon"
-              className="size-7"
+              className={buttonSizeClass}
               onClick={toggleHidden}
             >
               {showHidden ? <Eye className="size-4" /> : <EyeOff className="size-4" />}
@@ -217,16 +237,20 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
 
 interface BreadcrumbPathProps {
   path: string;
+  compact?: boolean;
   onClick: () => void;
   onNavigate: (path: string) => void;
 }
 
-function BreadcrumbPath({ path, onClick, onNavigate }: BreadcrumbPathProps) {
+function BreadcrumbPath({ path, compact = false, onClick, onNavigate }: BreadcrumbPathProps) {
   const parts = path.split("/").filter(Boolean);
 
   return (
     <div
-      className="flex flex-1 items-center gap-0.5 overflow-x-auto rounded-md bg-muted/50 px-2 h-7 cursor-text text-sm"
+      className={cn(
+        "flex items-center gap-0.5 overflow-x-auto rounded-md bg-muted/50 px-2 cursor-text text-sm",
+        compact ? "order-last h-9 basis-full" : "h-7 flex-1"
+      )}
       onClick={onClick}
     >
       <button

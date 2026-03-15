@@ -50,6 +50,26 @@ export function formatPermissions(mode: number | null): string {
   return result;
 }
 
+export function truncateMiddleFilename(name: string, maxLength = 36): string {
+  if (name.length <= maxLength) return name;
+
+  const dotIndex = name.lastIndexOf(".");
+  const hasExtension = dotIndex > 0 && dotIndex < name.length - 1;
+  const extension = hasExtension ? name.slice(dotIndex) : "";
+  const baseName = hasExtension ? name.slice(0, dotIndex) : name;
+  const ellipsis = "...";
+
+  const availableBaseLength = maxLength - extension.length - ellipsis.length;
+  if (availableBaseLength <= 2) {
+    return `${name.slice(0, Math.max(maxLength - ellipsis.length, 1))}${ellipsis}`;
+  }
+
+  const prefixLength = Math.ceil(availableBaseLength * 0.6);
+  const suffixLength = Math.max(availableBaseLength - prefixLength, 1);
+
+  return `${baseName.slice(0, prefixLength)}${ellipsis}${baseName.slice(-suffixLength)}${extension}`;
+}
+
 export function getFileExtension(name: string): string {
   const idx = name.lastIndexOf(".");
   return idx > 0 ? name.slice(idx + 1).toLowerCase() : "";

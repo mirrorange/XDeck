@@ -18,7 +18,9 @@ import { UploadDialog } from "~/components/files/upload-dialog";
 import { CompressDialog } from "~/components/files/compress-dialog";
 import { FilePreview } from "~/components/files/file-preview";
 import { TaskListPanel } from "~/components/files/task-list-panel";
+import { Drawer, DrawerContent } from "~/components/ui/drawer";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import { useMediaQuery } from "~/hooks/use-mobile";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
 import { downloadFile, downloadFolder, uploadFiles, uploadFolder } from "~/lib/file-transfer";
 import { isPreviewable } from "~/lib/file-utils";
@@ -46,6 +48,7 @@ export function FileBrowser() {
   const lassoContainerRef = useRef<HTMLElement | null>(null);
   const edgeScrollRafRef = useRef<number | null>(null);
   const lassoWasActiveRef = useRef(false);
+  const isCompactLayout = useMediaQuery("(max-width: 1023px)");
 
   const [contextEntry, setContextEntry] = useState<FileEntry | null>(null);
   const [contextMenuContentKey, setContextMenuContentKey] = useState(0);
@@ -632,7 +635,7 @@ export function FileBrowser() {
         </FileContextMenu>
 
         <AnimatePresence>
-          {searchOpen && (
+          {searchOpen && !isCompactLayout && (
             <motion.div
               initial={{ width: 0, opacity: 0 }}
               animate={{ width: "auto", opacity: 1 }}
@@ -644,13 +647,14 @@ export function FileBrowser() {
                 currentPath={activeTab.path}
                 onNavigate={(path) => void navigateTo(activeTab.id, path)}
                 onClose={() => setSearchOpen(false)}
+                className="w-[350px] border-l"
               />
             </motion.div>
           )}
         </AnimatePresence>
 
         <AnimatePresence>
-          {previewEntry && (
+          {previewEntry && !isCompactLayout && (
             <motion.div
               initial={{ width: 0, opacity: 0 }}
               animate={{ width: 400, opacity: 1 }}
@@ -661,6 +665,7 @@ export function FileBrowser() {
               <FilePreview
                 entry={previewEntry}
                 onClose={() => setPreviewEntry(null)}
+                className="border-l"
               />
             </motion.div>
           )}
@@ -668,6 +673,31 @@ export function FileBrowser() {
 
         <TaskListPanel />
       </div>
+
+      {isCompactLayout && (
+        <>
+          <Drawer open={searchOpen} onOpenChange={setSearchOpen}>
+            <DrawerContent className="h-[75dvh] max-h-[75dvh]">
+              <FileSearchPanel
+                currentPath={activeTab.path}
+                onNavigate={(path) => void navigateTo(activeTab.id, path)}
+                onClose={() => setSearchOpen(false)}
+              />
+            </DrawerContent>
+          </Drawer>
+
+          <Drawer open={previewEntry !== null} onOpenChange={(open) => !open && setPreviewEntry(null)}>
+            <DrawerContent className="h-[85dvh] max-h-[85dvh]">
+              {previewEntry && (
+                <FilePreview
+                  entry={previewEntry}
+                  onClose={() => setPreviewEntry(null)}
+                />
+              )}
+            </DrawerContent>
+          </Drawer>
+        </>
+      )}
 
       <FileStatusBar tab={activeTab} />
 

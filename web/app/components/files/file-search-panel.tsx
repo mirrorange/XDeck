@@ -7,17 +7,19 @@ import { ScrollArea } from "~/components/ui/scroll-area";
 import { Switch } from "~/components/ui/switch";
 import { Label } from "~/components/ui/label";
 import { FileIcon } from "~/components/files/file-icon";
-import { formatFileSize, formatDate } from "~/lib/file-utils";
+import { formatFileSize, truncateMiddleFilename } from "~/lib/file-utils";
 import { getRpcClient } from "~/lib/rpc-client";
+import { cn } from "~/lib/utils";
 import type { FileEntry } from "~/stores/file-store";
 
 interface FileSearchPanelProps {
   currentPath: string;
   onNavigate: (path: string) => void;
   onClose: () => void;
+  className?: string;
 }
 
-export function FileSearchPanel({ currentPath, onNavigate, onClose }: FileSearchPanelProps) {
+export function FileSearchPanel({ currentPath, onNavigate, onClose, className }: FileSearchPanelProps) {
   const [query, setQuery] = useState("");
   const [recursive, setRecursive] = useState(true);
   const [results, setResults] = useState<FileEntry[]>([]);
@@ -60,15 +62,15 @@ export function FileSearchPanel({ currentPath, onNavigate, onClose }: FileSearch
   };
 
   return (
-    <div className="flex h-full flex-col border-l w-[350px] bg-background">
+    <div className={cn("flex h-full flex-col bg-background", className)}>
       {/* Header */}
       <div className="flex items-center justify-between border-b px-3 py-2">
         <div className="flex items-center gap-2">
           <Search className="size-4" />
           <span className="text-sm font-medium">Search</span>
         </div>
-        <Button variant="ghost" size="icon" className="size-6" onClick={onClose}>
-          <X className="size-3.5" />
+        <Button variant="ghost" size="icon" className="size-8" onClick={onClose}>
+          <X className="size-4" />
         </Button>
       </div>
 
@@ -76,7 +78,7 @@ export function FileSearchPanel({ currentPath, onNavigate, onClose }: FileSearch
       <div className="space-y-2 border-b p-3">
         <div className="flex gap-1.5">
           <Input
-            className="h-8 text-sm"
+            className="h-9 text-sm"
             placeholder="Search files…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -87,7 +89,7 @@ export function FileSearchPanel({ currentPath, onNavigate, onClose }: FileSearch
           />
           <Button
             size="sm"
-            className="h-8 px-3"
+            className="h-9 px-3"
             onClick={() => void handleSearch()}
             disabled={!query.trim() || isSearching}
           >
@@ -129,7 +131,7 @@ export function FileSearchPanel({ currentPath, onNavigate, onClose }: FileSearch
             {results.map((entry) => (
               <button
                 key={entry.path}
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent text-left"
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent"
                 onClick={() => handleClick(entry)}
               >
                 <FileIcon
@@ -138,7 +140,9 @@ export function FileSearchPanel({ currentPath, onNavigate, onClose }: FileSearch
                   className="size-4 shrink-0"
                 />
                 <div className="flex-1 min-w-0">
-                  <p className="truncate">{entry.name}</p>
+                  <p className="truncate" title={entry.name}>
+                    {truncateMiddleFilename(entry.name, 32)}
+                  </p>
                   <p className="text-xs text-muted-foreground truncate">
                     {entry.path}
                   </p>

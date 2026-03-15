@@ -1,6 +1,7 @@
 import { motion } from "motion/react";
 
 import { FileIcon } from "~/components/files/file-icon";
+import { truncateMiddleFilename } from "~/lib/file-utils";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
 import { useFileDnd } from "~/lib/dnd-utils";
 import { cn } from "~/lib/utils";
@@ -49,7 +50,13 @@ export function FileGridView({
   }
 
   return (
-    <div className="grid grid-cols-[repeat(auto-fill,minmax(100px,1fr))] gap-1 p-2">
+    <div
+      className="grid gap-2 p-2 sm:gap-3 sm:p-3"
+      style={{
+        gridTemplateColumns:
+          "repeat(auto-fit, minmax(clamp(7rem, 22vw, 9.5rem), 1fr))",
+      }}
+    >
       {entries.map((entry, index) => {
         const isSelected = selectedPaths.has(entry.path);
         const isDragOver = dragOverPath === entry.path;
@@ -65,7 +72,7 @@ export function FileGridView({
               data-lasso-item
               data-path={entry.path}
               className={cn(
-                "flex flex-col items-center gap-1 rounded-lg p-2 text-center transition-colors w-full",
+                "flex min-h-24 w-full flex-col items-center justify-center gap-2 rounded-xl p-3 text-center transition-colors sm:min-h-28",
                 "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 isSelected && "bg-accent",
                 isDragOver && "bg-primary/10 ring-2 ring-primary/30",
@@ -83,16 +90,16 @@ export function FileGridView({
               <FileIcon
                 type={entry.type}
                 name={entry.name}
-                className="size-10"
+                className="size-10 sm:size-11"
               />
               <span
                 className={cn(
-                  "text-xs leading-tight w-full truncate",
+                  "line-clamp-2 w-full break-words text-xs leading-tight sm:text-sm",
                   entry.hidden && "text-muted-foreground"
                 )}
                 title={entry.name}
               >
-                {entry.name}
+                {truncateMiddleFilename(entry.name, 26)}
               </span>
             </button>
           </motion.div>

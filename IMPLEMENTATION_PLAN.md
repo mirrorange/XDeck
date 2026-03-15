@@ -100,8 +100,7 @@ Add a full-featured file manager to XDeck with browsing, operations, transfer, p
 **Success Criteria**:
 - Compact toolbar on small screens
 - Grid view adjusts columns based on width
-- Preview panel converts to modal/drawer on small screens
-- Tab bar scrolls horizontally on overflow
+- Preview panel and Task panel converts to drawer on small screens
 - Touch-friendly targets on mobile
 **Tests**: Layout works at 360px, 768px, 1024px, 1440px widths
-**Status**: Not Started
+**Status**: Complete

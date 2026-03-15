@@ -6,6 +6,7 @@ import { XDECK_MIME } from "~/lib/dnd-utils";
 import { Button } from "~/components/ui/button";
 import { cn } from "~/lib/utils";
 import { getRpcClient } from "~/lib/rpc-client";
+import { truncateMiddleFilename } from "~/lib/file-utils";
 
 /** Delay before switching tabs on drag hover (ms) */
 const TAB_SWITCH_DELAY = 600;
@@ -126,7 +127,7 @@ export function FileTabBar({ tabs, activeTabId }: FileTabBarProps) {
             >
               <Folder className="size-3.5 shrink-0 text-amber-500" />
               <span className="truncate flex-1" title={tab.path}>
-                {tab.label}
+                {truncateMiddleFilename(tab.label, 24)}
               </span>
               <button
                 className="shrink-0 rounded-sm opacity-0 group-hover:opacity-100 hover:bg-muted transition-opacity p-0.5"

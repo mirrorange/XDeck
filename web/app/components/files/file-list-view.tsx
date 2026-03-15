@@ -12,7 +12,12 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { FileIcon } from "~/components/files/file-icon";
-import { formatFileSize, formatDate, formatPermissions } from "~/lib/file-utils";
+import {
+  formatFileSize,
+  formatDate,
+  formatPermissions,
+  truncateMiddleFilename,
+} from "~/lib/file-utils";
 import { useFileStore, type FileEntry, type SortField } from "~/stores/file-store";
 import { useFileDnd } from "~/lib/dnd-utils";
 import { cn } from "~/lib/utils";
@@ -70,7 +75,7 @@ export function FileListView({
   };
 
   return (
-    <Table>
+    <Table className="table-fixed">
       <TableHeader>
         <TableRow className="hover:bg-transparent">
           <TableHead
@@ -80,18 +85,18 @@ export function FileListView({
             Name <SortIcon field="name" />
           </TableHead>
           <TableHead
-            className="w-[15%] cursor-pointer select-none"
+            className="hidden w-[15%] cursor-pointer select-none sm:table-cell"
             onClick={() => setSortField(tabId, "size")}
           >
             Size <SortIcon field="size" />
           </TableHead>
           <TableHead
-            className="w-[20%] cursor-pointer select-none"
+            className="hidden w-[20%] cursor-pointer select-none md:table-cell"
             onClick={() => setSortField(tabId, "modified")}
           >
             Modified <SortIcon field="modified" />
           </TableHead>
-          <TableHead className="w-[15%]">Permissions</TableHead>
+          <TableHead className="hidden w-[15%] lg:table-cell">Permissions</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -123,34 +128,43 @@ export function FileListView({
               onDrop={(e) => handleDrop(e, entry)}
             >
               <TableCell className="py-1.5">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 py-1 sm:py-0">
                   <FileIcon
                     type={entry.type}
                     name={entry.name}
-                    className="size-4 shrink-0"
+                    className="size-4 shrink-0 sm:size-4"
                   />
-                  <span
-                    className={cn(
-                      "truncate",
-                      entry.hidden && "text-muted-foreground"
-                    )}
-                  >
-                    {entry.name}
-                  </span>
-                  {entry.symlink_target && (
-                    <span className="text-xs text-muted-foreground truncate">
-                      → {entry.symlink_target}
-                    </span>
-                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={cn(
+                          "truncate",
+                          entry.hidden && "text-muted-foreground"
+                        )}
+                        title={entry.name}
+                      >
+                        {truncateMiddleFilename(entry.name, 44)}
+                      </span>
+                      {entry.symlink_target && (
+                        <span className="truncate text-xs text-muted-foreground">
+                          → {entry.symlink_target}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground sm:hidden">
+                      <span>{entry.type === "directory" ? "Folder" : formatFileSize(entry.size)}</span>
+                      {entry.modified && <span>{formatDate(entry.modified)}</span>}
+                    </div>
+                  </div>
                 </div>
               </TableCell>
-              <TableCell className="py-1.5 text-muted-foreground tabular-nums">
+              <TableCell className="hidden py-1.5 text-muted-foreground tabular-nums sm:table-cell">
                 {entry.type === "directory" ? "—" : formatFileSize(entry.size)}
               </TableCell>
-              <TableCell className="py-1.5 text-muted-foreground">
+              <TableCell className="hidden py-1.5 text-muted-foreground md:table-cell">
                 {formatDate(entry.modified)}
               </TableCell>
-              <TableCell className="py-1.5 text-muted-foreground font-mono text-xs">
+              <TableCell className="hidden py-1.5 font-mono text-xs text-muted-foreground lg:table-cell">
                 {formatPermissions(entry.mode)}
               </TableCell>
             </TableRow>
