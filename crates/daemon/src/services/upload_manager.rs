@@ -351,7 +351,8 @@ impl UploadManager {
             ))
         })?;
 
-        let session_status = UploadSessionStatus::from_db(&row.try_get::<String, _>("session_status")?)?;
+        let session_status =
+            UploadSessionStatus::from_db(&row.try_get::<String, _>("session_status")?)?;
         if matches!(
             session_status,
             UploadSessionStatus::Completed | UploadSessionStatus::Cancelled
@@ -363,8 +364,13 @@ impl UploadManager {
         }
 
         let file_status = UploadFileStatus::from_db(&row.try_get::<String, _>("file_status")?)?;
-        if matches!(file_status, UploadFileStatus::Completed | UploadFileStatus::Cancelled) {
-            return Err(AppError::BadRequest("Upload file can no longer accept chunks".into()));
+        if matches!(
+            file_status,
+            UploadFileStatus::Completed | UploadFileStatus::Cancelled
+        ) {
+            return Err(AppError::BadRequest(
+                "Upload file can no longer accept chunks".into(),
+            ));
         }
 
         let stored_offset = from_i64(row.try_get::<i64, _>("uploaded_bytes")?)?;
@@ -684,7 +690,10 @@ impl UploadManager {
     }
 
     async fn sync_task(&self, session: &UploadSession) {
-        let progress = Some(progress_percent(session.uploaded_bytes, session.total_bytes));
+        let progress = Some(progress_percent(
+            session.uploaded_bytes,
+            session.total_bytes,
+        ));
         let message = Some(format!(
             "{} / {} files, {} / {} bytes",
             session.completed_files,
@@ -856,11 +865,13 @@ fn progress_percent(uploaded: u64, total: u64) -> u8 {
 }
 
 fn to_i64(value: u64) -> Result<i64, AppError> {
-    i64::try_from(value).map_err(|_| AppError::Internal("Value exceeds sqlite integer range".into()))
+    i64::try_from(value)
+        .map_err(|_| AppError::Internal("Value exceeds sqlite integer range".into()))
 }
 
 fn from_i64(value: i64) -> Result<u64, AppError> {
-    u64::try_from(value).map_err(|_| AppError::Internal("Database contained a negative value".into()))
+    u64::try_from(value)
+        .map_err(|_| AppError::Internal("Database contained a negative value".into()))
 }
 
 #[cfg(test)]
@@ -924,7 +935,9 @@ mod tests {
         let completed = manager.complete_session(&session.id).await.unwrap();
 
         assert_eq!(completed.status, UploadSessionStatus::Completed);
-        let content = fs::read_to_string(dest_dir.join("hello.txt")).await.unwrap();
+        let content = fs::read_to_string(dest_dir.join("hello.txt"))
+            .await
+            .unwrap();
         assert_eq!(content, "hello world");
     }
 

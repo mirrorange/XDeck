@@ -189,7 +189,8 @@ pub async fn upload_handler(
                 Ok(t) => t,
                 Err(e) => {
                     warn!("Failed to read relative_path field: {}", e);
-                    return (StatusCode::BAD_REQUEST, "Failed to read relative_path").into_response();
+                    return (StatusCode::BAD_REQUEST, "Failed to read relative_path")
+                        .into_response();
                 }
             };
             current_relative_path = Some(text);
@@ -219,13 +220,20 @@ pub async fn upload_handler(
                     full_path
                 }
                 None => {
-                    warn!("Rejected upload with suspicious relative path: {}", rel_path);
+                    warn!(
+                        "Rejected upload with suspicious relative path: {}",
+                        rel_path
+                    );
                     return (StatusCode::BAD_REQUEST, "Invalid relative path").into_response();
                 }
             }
         } else {
             // Simple upload mode: validate filename directly
-            if file_name.contains('/') || file_name.contains('\\') || file_name == ".." || file_name == "." {
+            if file_name.contains('/')
+                || file_name.contains('\\')
+                || file_name == ".."
+                || file_name == "."
+            {
                 warn!("Rejected upload with suspicious filename: {}", file_name);
                 return (StatusCode::BAD_REQUEST, "Invalid filename").into_response();
             }
@@ -308,7 +316,11 @@ pub async fn get_upload_session_handler(
     }
 
     match state.upload_manager.get_session(&session_id).await {
-        Ok(session) => (StatusCode::OK, Json(serde_json::json!({ "session": session }))).into_response(),
+        Ok(session) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "session": session })),
+        )
+            .into_response(),
         Err(err) => app_error_response(err),
     }
 }
@@ -347,7 +359,11 @@ pub async fn complete_upload_session_handler(
     }
 
     match state.upload_manager.complete_session(&session_id).await {
-        Ok(session) => (StatusCode::OK, Json(serde_json::json!({ "session": session }))).into_response(),
+        Ok(session) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "session": session })),
+        )
+            .into_response(),
         Err(err) => app_error_response(err),
     }
 }

@@ -241,17 +241,11 @@ impl DockerManager {
             paths.push("/var/run/docker.sock".to_string());
             // Docker Desktop for macOS
             if let Some(home) = dirs::home_dir() {
-                paths.push(format!(
-                    "{}/.docker/run/docker.sock",
-                    home.display()
-                ));
+                paths.push(format!("{}/.docker/run/docker.sock", home.display()));
             }
             // Colima
             if let Some(home) = dirs::home_dir() {
-                paths.push(format!(
-                    "{}/.colima/default/docker.sock",
-                    home.display()
-                ));
+                paths.push(format!("{}/.colima/default/docker.sock", home.display()));
             }
         } else if cfg!(target_os = "windows") {
             // Windows named pipe handled by bollard default
@@ -316,13 +310,9 @@ impl DockerManager {
 
     /// Get a reference to the connected Docker client.
     async fn get_client(&self) -> Result<Docker, AppError> {
-        self.client
-            .read()
-            .await
-            .clone()
-            .ok_or_else(|| {
-                AppError::Internal("No container runtime connected. Install Docker or Podman.".into())
-            })
+        self.client.read().await.clone().ok_or_else(|| {
+            AppError::Internal("No container runtime connected. Install Docker or Podman.".into())
+        })
     }
 
     // ── Status ──────────────────────────────────────────────────
@@ -452,9 +442,7 @@ impl DockerManager {
         let config = info.config.as_ref();
         let network_settings = info.network_settings.as_ref();
         let host_config = info.host_config.as_ref();
-        let labels = config
-            .and_then(|c| c.labels.clone())
-            .unwrap_or_default();
+        let labels = config.and_then(|c| c.labels.clone()).unwrap_or_default();
 
         let ports = network_settings
             .and_then(|ns| ns.ports.as_ref())
@@ -469,10 +457,7 @@ impl DockerManager {
                         for b in bindings {
                             result.push(PortMapping {
                                 host_ip: b.host_ip.clone(),
-                                host_port: b
-                                    .host_port
-                                    .as_ref()
-                                    .and_then(|p| p.parse().ok()),
+                                host_port: b.host_port.as_ref().and_then(|p| p.parse().ok()),
                                 container_port: port,
                                 protocol: proto.clone(),
                             });
@@ -529,9 +514,7 @@ impl DockerManager {
                 .unwrap_or_default()
                 .trim_start_matches('/')
                 .to_string(),
-            image: config
-                .and_then(|c| c.image.clone())
-                .unwrap_or_default(),
+            image: config.and_then(|c| c.image.clone()).unwrap_or_default(),
             state: state
                 .and_then(|s| s.status.as_ref())
                 .map(|s| s.to_string())
@@ -542,9 +525,7 @@ impl DockerManager {
                 .unwrap_or_default(),
             created: info.created.unwrap_or_default(),
             ports,
-            env: config
-                .and_then(|c| c.env.clone())
-                .unwrap_or_default(),
+            env: config.and_then(|c| c.env.clone()).unwrap_or_default(),
             mounts,
             networks,
             labels,
@@ -576,10 +557,7 @@ impl DockerManager {
     pub async fn stop_container(&self, id: &str) -> Result<(), AppError> {
         let client = self.get_client().await?;
         client
-            .stop_container(
-                id,
-                Some(StopContainerOptions { t: 10 }),
-            )
+            .stop_container(id, Some(StopContainerOptions { t: 10 }))
             .await
             .map_err(|e| match e {
                 bollard::errors::Error::DockerResponseServerError {
@@ -594,10 +572,7 @@ impl DockerManager {
     pub async fn restart_container(&self, id: &str) -> Result<(), AppError> {
         let client = self.get_client().await?;
         client
-            .restart_container(
-                id,
-                Some(RestartContainerOptions { t: 10 }),
-            )
+            .restart_container(id, Some(RestartContainerOptions { t: 10 }))
             .await
             .map_err(|e| match e {
                 bollard::errors::Error::DockerResponseServerError {
@@ -844,7 +819,11 @@ impl DockerManager {
         ))
     }
 
-    pub async fn compose_up(&self, project_dir: &str, file: Option<&str>) -> Result<String, AppError> {
+    pub async fn compose_up(
+        &self,
+        project_dir: &str,
+        file: Option<&str>,
+    ) -> Result<String, AppError> {
         let cmd_parts = self.compose_command().await?;
         let mut cmd = tokio::process::Command::new(&cmd_parts[0]);
         for arg in &cmd_parts[1..] {
@@ -865,16 +844,17 @@ impl DockerManager {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
 
         if !output.status.success() {
-            return Err(AppError::Internal(format!(
-                "compose up failed: {}",
-                stderr
-            )));
+            return Err(AppError::Internal(format!("compose up failed: {}", stderr)));
         }
 
         Ok(format!("{}{}", stdout, stderr))
     }
 
-    pub async fn compose_down(&self, project_dir: &str, file: Option<&str>) -> Result<String, AppError> {
+    pub async fn compose_down(
+        &self,
+        project_dir: &str,
+        file: Option<&str>,
+    ) -> Result<String, AppError> {
         let cmd_parts = self.compose_command().await?;
         let mut cmd = tokio::process::Command::new(&cmd_parts[0]);
         for arg in &cmd_parts[1..] {
@@ -904,7 +884,11 @@ impl DockerManager {
         Ok(format!("{}{}", stdout, stderr))
     }
 
-    pub async fn compose_restart(&self, project_dir: &str, file: Option<&str>) -> Result<String, AppError> {
+    pub async fn compose_restart(
+        &self,
+        project_dir: &str,
+        file: Option<&str>,
+    ) -> Result<String, AppError> {
         let cmd_parts = self.compose_command().await?;
         let mut cmd = tokio::process::Command::new(&cmd_parts[0]);
         for arg in &cmd_parts[1..] {
@@ -934,7 +918,11 @@ impl DockerManager {
         Ok(format!("{}{}", stdout, stderr))
     }
 
-    pub async fn compose_pull(&self, project_dir: &str, file: Option<&str>) -> Result<String, AppError> {
+    pub async fn compose_pull(
+        &self,
+        project_dir: &str,
+        file: Option<&str>,
+    ) -> Result<String, AppError> {
         let cmd_parts = self.compose_command().await?;
         let mut cmd = tokio::process::Command::new(&cmd_parts[0]);
         for arg in &cmd_parts[1..] {
@@ -1072,18 +1060,19 @@ impl DockerManager {
 
         let id = uuid::Uuid::new_v4().to_string();
 
-        sqlx::query(
-            "INSERT INTO compose_projects (id, name, file_path, cwd) VALUES (?, ?, ?, ?)",
-        )
-        .bind(&id)
-        .bind(name)
-        .bind(file_path)
-        .bind(cwd)
-        .execute(pool)
-        .await
-        .map_err(AppError::Database)?;
+        sqlx::query("INSERT INTO compose_projects (id, name, file_path, cwd) VALUES (?, ?, ?, ?)")
+            .bind(&id)
+            .bind(name)
+            .bind(file_path)
+            .bind(cwd)
+            .execute(pool)
+            .await
+            .map_err(AppError::Database)?;
 
-        let services = self.compose_ps(cwd, Some(file_path)).await.unwrap_or_default();
+        let services = self
+            .compose_ps(cwd, Some(file_path))
+            .await
+            .unwrap_or_default();
 
         Ok(ComposeProjectInfo {
             id,
@@ -1135,7 +1124,10 @@ mod tests {
     fn prune_images_targets_all_unused_images() {
         let options = DockerManager::prune_all_unused_image_options();
 
-        assert_eq!(options.filters.get("dangling"), Some(&vec!["false".to_string()]));
+        assert_eq!(
+            options.filters.get("dangling"),
+            Some(&vec!["false".to_string()])
+        );
     }
 
     #[test]

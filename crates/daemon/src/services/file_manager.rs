@@ -59,26 +59,23 @@ pub fn resolve_safe_path(path: &str) -> Result<PathBuf, AppError> {
 
     // Must be absolute
     if !path.is_absolute() {
-        return Err(AppError::BadRequest(
-            "Path must be absolute".into(),
-        ));
+        return Err(AppError::BadRequest("Path must be absolute".into()));
     }
 
     // Attempt to canonicalize; if path doesn't exist yet, canonicalize parent
     let resolved = if path.exists() {
-        path.canonicalize().map_err(|e| {
-            AppError::BadRequest(format!("Cannot resolve path: {}", e))
-        })?
+        path.canonicalize()
+            .map_err(|e| AppError::BadRequest(format!("Cannot resolve path: {}", e)))?
     } else {
-        let parent = path.parent().ok_or_else(|| {
-            AppError::BadRequest("Invalid path".into())
-        })?;
-        let file_name = path.file_name().ok_or_else(|| {
-            AppError::BadRequest("Invalid path".into())
-        })?;
-        let resolved_parent = parent.canonicalize().map_err(|e| {
-            AppError::BadRequest(format!("Cannot resolve parent path: {}", e))
-        })?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| AppError::BadRequest("Invalid path".into()))?;
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| AppError::BadRequest("Invalid path".into()))?;
+        let resolved_parent = parent
+            .canonicalize()
+            .map_err(|e| AppError::BadRequest(format!("Cannot resolve parent path: {}", e)))?;
         resolved_parent.join(file_name)
     };
 
@@ -137,7 +134,11 @@ async fn build_file_entry(path: &Path) -> Result<FileEntry, AppError> {
         .unwrap_or_default();
 
     let metadata = fs::symlink_metadata(path).await.map_err(|e| {
-        AppError::BadRequest(format!("Cannot read metadata for {}: {}", path.display(), e))
+        AppError::BadRequest(format!(
+            "Cannot read metadata for {}: {}",
+            path.display(),
+            e
+        ))
     })?;
 
     let file_type = if metadata.is_symlink() {
@@ -200,9 +201,9 @@ pub async fn list_directory(path: &str) -> Result<DirListing, AppError> {
     let resolved = resolve_safe_path(path)?;
     debug!("Listing directory: {}", resolved.display());
 
-    let metadata = fs::metadata(&resolved).await.map_err(|e| {
-        AppError::NotFound(format!("Path not found: {}", e))
-    })?;
+    let metadata = fs::metadata(&resolved)
+        .await
+        .map_err(|e| AppError::NotFound(format!("Path not found: {}", e)))?;
 
     if !metadata.is_dir() {
         return Err(AppError::BadRequest(format!(
@@ -212,13 +213,15 @@ pub async fn list_directory(path: &str) -> Result<DirListing, AppError> {
     }
 
     let mut entries = Vec::new();
-    let mut read_dir = fs::read_dir(&resolved).await.map_err(|e| {
-        AppError::BadRequest(format!("Cannot read directory: {}", e))
-    })?;
+    let mut read_dir = fs::read_dir(&resolved)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Cannot read directory: {}", e)))?;
 
-    while let Some(entry) = read_dir.next_entry().await.map_err(|e| {
-        AppError::BadRequest(format!("Error reading directory entry: {}", e))
-    })? {
+    while let Some(entry) = read_dir
+        .next_entry()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Error reading directory entry: {}", e)))?
+    {
         match build_file_entry(&entry.path()).await {
             Ok(file_entry) => entries.push(file_entry),
             Err(e) => {
@@ -231,7 +234,9 @@ pub async fn list_directory(path: &str) -> Result<DirListing, AppError> {
     entries.sort_by(|a, b| {
         let a_is_dir = matches!(a.file_type, FileType::Directory);
         let b_is_dir = matches!(b.file_type, FileType::Directory);
-        b_is_dir.cmp(&a_is_dir).then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+        b_is_dir
+            .cmp(&a_is_dir)
+            .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
 
     let total = entries.len();
@@ -269,9 +274,9 @@ pub async fn read_file_content(path: &str, max_bytes: usize) -> Result<String, A
         )));
     }
 
-    let metadata = fs::metadata(&resolved).await.map_err(|e| {
-        AppError::BadRequest(format!("Cannot read metadata: {}", e))
-    })?;
+    let metadata = fs::metadata(&resolved)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Cannot read metadata: {}", e)))?;
 
     if metadata.len() as usize > max_bytes {
         return Err(AppError::BadRequest(format!(
@@ -281,9 +286,9 @@ pub async fn read_file_content(path: &str, max_bytes: usize) -> Result<String, A
         )));
     }
 
-    let content = fs::read_to_string(&resolved).await.map_err(|e| {
-        AppError::BadRequest(format!("Cannot read file (may be binary): {}", e))
-    })?;
+    let content = fs::read_to_string(&resolved)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Cannot read file (may be binary): {}", e)))?;
 
     Ok(content)
 }
@@ -321,7 +326,11 @@ pub async fn create_directory(path: &str, parents: bool) -> Result<FileEntry, Ap
 pub async fn rename_path(from: &str, to: &str) -> Result<FileEntry, AppError> {
     let from_resolved = resolve_safe_path(from)?;
     let to_resolved = resolve_safe_path(to)?;
-    debug!("Rename: {} -> {}", from_resolved.display(), to_resolved.display());
+    debug!(
+        "Rename: {} -> {}",
+        from_resolved.display(),
+        to_resolved.display()
+    );
 
     if !from_resolved.exists() {
         return Err(AppError::NotFound(format!(
@@ -337,9 +346,9 @@ pub async fn rename_path(from: &str, to: &str) -> Result<FileEntry, AppError> {
         )));
     }
 
-    fs::rename(&from_resolved, &to_resolved).await.map_err(|e| {
-        AppError::BadRequest(format!("Cannot rename: {}", e))
-    })?;
+    fs::rename(&from_resolved, &to_resolved)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Cannot rename: {}", e)))?;
 
     build_file_entry(&to_resolved).await
 }
@@ -348,7 +357,11 @@ pub async fn rename_path(from: &str, to: &str) -> Result<FileEntry, AppError> {
 pub async fn copy_path(from: &str, to: &str) -> Result<FileEntry, AppError> {
     let from_resolved = resolve_safe_path(from)?;
     let to_resolved = resolve_safe_path(to)?;
-    debug!("Copy: {} -> {}", from_resolved.display(), to_resolved.display());
+    debug!(
+        "Copy: {} -> {}",
+        from_resolved.display(),
+        to_resolved.display()
+    );
 
     if !from_resolved.exists() {
         return Err(AppError::NotFound(format!(
@@ -364,16 +377,16 @@ pub async fn copy_path(from: &str, to: &str) -> Result<FileEntry, AppError> {
         )));
     }
 
-    let metadata = fs::metadata(&from_resolved).await.map_err(|e| {
-        AppError::BadRequest(format!("Cannot read source: {}", e))
-    })?;
+    let metadata = fs::metadata(&from_resolved)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Cannot read source: {}", e)))?;
 
     if metadata.is_dir() {
         copy_dir_recursive(&from_resolved, &to_resolved).await?;
     } else {
-        fs::copy(&from_resolved, &to_resolved).await.map_err(|e| {
-            AppError::BadRequest(format!("Cannot copy file: {}", e))
-        })?;
+        fs::copy(&from_resolved, &to_resolved)
+            .await
+            .map_err(|e| AppError::BadRequest(format!("Cannot copy file: {}", e)))?;
     }
 
     build_file_entry(&to_resolved).await
@@ -381,29 +394,31 @@ pub async fn copy_path(from: &str, to: &str) -> Result<FileEntry, AppError> {
 
 /// Recursive directory copy.
 async fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), AppError> {
-    fs::create_dir_all(to).await.map_err(|e| {
-        AppError::BadRequest(format!("Cannot create directory: {}", e))
-    })?;
+    fs::create_dir_all(to)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Cannot create directory: {}", e)))?;
 
-    let mut read_dir = fs::read_dir(from).await.map_err(|e| {
-        AppError::BadRequest(format!("Cannot read directory: {}", e))
-    })?;
+    let mut read_dir = fs::read_dir(from)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Cannot read directory: {}", e)))?;
 
-    while let Some(entry) = read_dir.next_entry().await.map_err(|e| {
-        AppError::BadRequest(format!("Error reading entry: {}", e))
-    })? {
+    while let Some(entry) = read_dir
+        .next_entry()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Error reading entry: {}", e)))?
+    {
         let entry_path = entry.path();
         let dest_path = to.join(entry.file_name());
-        let metadata = fs::metadata(&entry_path).await.map_err(|e| {
-            AppError::BadRequest(format!("Cannot read metadata: {}", e))
-        })?;
+        let metadata = fs::metadata(&entry_path)
+            .await
+            .map_err(|e| AppError::BadRequest(format!("Cannot read metadata: {}", e)))?;
 
         if metadata.is_dir() {
             Box::pin(copy_dir_recursive(&entry_path, &dest_path)).await?;
         } else {
-            fs::copy(&entry_path, &dest_path).await.map_err(|e| {
-                AppError::BadRequest(format!("Cannot copy file: {}", e))
-            })?;
+            fs::copy(&entry_path, &dest_path)
+                .await
+                .map_err(|e| AppError::BadRequest(format!("Cannot copy file: {}", e)))?;
         }
     }
 
@@ -422,9 +437,9 @@ pub async fn delete_path(path: &str, recursive: bool) -> Result<(), AppError> {
         )));
     }
 
-    let metadata = fs::symlink_metadata(&resolved).await.map_err(|e| {
-        AppError::BadRequest(format!("Cannot read metadata: {}", e))
-    })?;
+    let metadata = fs::symlink_metadata(&resolved)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Cannot read metadata: {}", e)))?;
 
     if metadata.is_dir() {
         if recursive {
@@ -434,9 +449,9 @@ pub async fn delete_path(path: &str, recursive: bool) -> Result<(), AppError> {
         }
         .map_err(|e| AppError::BadRequest(format!("Cannot delete directory: {}", e)))?;
     } else {
-        fs::remove_file(&resolved).await.map_err(|e| {
-            AppError::BadRequest(format!("Cannot delete file: {}", e))
-        })?;
+        fs::remove_file(&resolved)
+            .await
+            .map_err(|e| AppError::BadRequest(format!("Cannot delete file: {}", e)))?;
     }
 
     Ok(())
@@ -458,20 +473,29 @@ pub async fn chmod_path(path: &str, mode: u32) -> Result<FileEntry, AppError> {
     }
 
     let permissions = std::fs::Permissions::from_mode(mode);
-    fs::set_permissions(&resolved, permissions).await.map_err(|e| {
-        AppError::BadRequest(format!("Cannot set permissions: {}", e))
-    })?;
+    fs::set_permissions(&resolved, permissions)
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Cannot set permissions: {}", e)))?;
 
     build_file_entry(&resolved).await
 }
 
 /// Change file owner (Unix only). Requires appropriate privileges.
 #[cfg(unix)]
-pub async fn chown_path(path: &str, uid: Option<u32>, gid: Option<u32>) -> Result<FileEntry, AppError> {
+pub async fn chown_path(
+    path: &str,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<FileEntry, AppError> {
     use std::os::unix::ffi::OsStrExt;
 
     let resolved = resolve_safe_path(path)?;
-    debug!("Chown: {} -> uid={:?} gid={:?}", resolved.display(), uid, gid);
+    debug!(
+        "Chown: {} -> uid={:?} gid={:?}",
+        resolved.display(),
+        uid,
+        gid
+    );
 
     if !resolved.exists() {
         return Err(AppError::NotFound(format!(
@@ -480,9 +504,8 @@ pub async fn chown_path(path: &str, uid: Option<u32>, gid: Option<u32>) -> Resul
         )));
     }
 
-    let c_path = std::ffi::CString::new(resolved.as_os_str().as_bytes()).map_err(|_| {
-        AppError::BadRequest("Invalid path".into())
-    })?;
+    let c_path = std::ffi::CString::new(resolved.as_os_str().as_bytes())
+        .map_err(|_| AppError::BadRequest("Invalid path".into()))?;
 
     let result = unsafe {
         libc::chown(
@@ -494,7 +517,10 @@ pub async fn chown_path(path: &str, uid: Option<u32>, gid: Option<u32>) -> Resul
 
     if result != 0 {
         let err = std::io::Error::last_os_error();
-        return Err(AppError::BadRequest(format!("Cannot change owner: {}", err)));
+        return Err(AppError::BadRequest(format!(
+            "Cannot change owner: {}",
+            err
+        )));
     }
 
     build_file_entry(&resolved).await
@@ -516,12 +542,21 @@ pub async fn search_files(
     );
 
     if !resolved.is_dir() {
-        return Err(AppError::BadRequest("Search path must be a directory".into()));
+        return Err(AppError::BadRequest(
+            "Search path must be a directory".into(),
+        ));
     }
 
     let pattern_lower = pattern.to_lowercase();
     let mut results = Vec::new();
-    search_recursive(&resolved, &pattern_lower, recursive, max_results, &mut results).await?;
+    search_recursive(
+        &resolved,
+        &pattern_lower,
+        recursive,
+        max_results,
+        &mut results,
+    )
+    .await?;
 
     Ok(results)
 }
@@ -548,10 +583,7 @@ async fn search_recursive(
         }
 
         let entry_path = entry.path();
-        let name = entry
-            .file_name()
-            .to_string_lossy()
-            .to_string();
+        let name = entry.file_name().to_string_lossy().to_string();
 
         if name.to_lowercase().contains(pattern) {
             if let Ok(file_entry) = build_file_entry(&entry_path).await {
@@ -645,9 +677,9 @@ pub async fn prepare_folder_download(
 
     // Create temp file in system temp directory
     let temp_dir = std::env::temp_dir().join("xdeck-downloads");
-    tokio::fs::create_dir_all(&temp_dir).await.map_err(|e| {
-        AppError::Internal(format!("Cannot create temp dir: {}", e))
-    })?;
+    tokio::fs::create_dir_all(&temp_dir)
+        .await
+        .map_err(|e| AppError::Internal(format!("Cannot create temp dir: {}", e)))?;
 
     let temp_file = temp_dir.join(format!("{}.zip", folder_name));
     // Remove if already exists (from a previous attempt)
@@ -729,7 +761,9 @@ pub async fn compress_with_progress(
         }
     }
 
-    task_handle.update_progress(0, Some("Counting files...".into())).await;
+    task_handle
+        .update_progress(0, Some("Counting files...".into()))
+        .await;
 
     let paths_for_count = resolved_paths.clone();
     let output_clone = output.clone();
@@ -743,8 +777,12 @@ pub async fn compress_with_progress(
         let _ = progress_tx.send((0, total));
 
         match format {
-            ArchiveFormat::Zip => compress_zip_with_progress(&paths_for_count, &output_clone, &progress_tx, total),
-            ArchiveFormat::TarGz => compress_tar_gz_with_progress(&paths_for_count, &output_clone, &progress_tx, total),
+            ArchiveFormat::Zip => {
+                compress_zip_with_progress(&paths_for_count, &output_clone, &progress_tx, total)
+            }
+            ArchiveFormat::TarGz => {
+                compress_tar_gz_with_progress(&paths_for_count, &output_clone, &progress_tx, total)
+            }
         }
     });
 
@@ -776,12 +814,16 @@ pub async fn compress_with_progress(
 
     match result {
         Ok(()) => {
-            task_handle.complete(Some("Compression complete".into())).await;
+            task_handle
+                .complete(Some("Compression complete".into()))
+                .await;
             info!("Compressed {} file(s) to {}", paths.len(), output.display());
             build_file_entry(&output).await
         }
         Err(e) => {
-            task_handle.fail(Some(format!("Compression failed: {}", e))).await;
+            task_handle
+                .fail(Some(format!("Compression failed: {}", e)))
+                .await;
             Err(e)
         }
     }
@@ -806,8 +848,9 @@ fn compress_zip_with_progress(
             let name = path.file_name().unwrap().to_string_lossy().to_string();
             zip.start_file(&name, options)
                 .map_err(|e| AppError::Internal(format!("Zip error: {}", e)))?;
-            let data = std::fs::read(path)
-                .map_err(|e| AppError::BadRequest(format!("Cannot read {}: {}", path.display(), e)))?;
+            let data = std::fs::read(path).map_err(|e| {
+                AppError::BadRequest(format!("Cannot read {}: {}", path.display(), e))
+            })?;
             std::io::Write::write_all(&mut zip, &data)
                 .map_err(|e| AppError::Internal(format!("Zip write error: {}", e)))?;
             done += 1;
@@ -856,7 +899,8 @@ fn add_dir_to_zip_with_progress(
             done += 1;
             let _ = progress_tx.send((done, total));
         } else if path.is_dir() {
-            done = add_dir_to_zip_with_progress(zip, &path, &name, options, progress_tx, done, total)?;
+            done =
+                add_dir_to_zip_with_progress(zip, &path, &name, options, progress_tx, done, total)?;
         }
     }
     Ok(done)
@@ -913,7 +957,9 @@ pub async fn extract_with_progress(
     }
 
     if !dest.is_dir() {
-        task_handle.fail(Some("Destination must be a directory".into())).await;
+        task_handle
+            .fail(Some("Destination must be a directory".into()))
+            .await;
         return Err(AppError::BadRequest(
             "Destination must be a directory".into(),
         ));
@@ -923,7 +969,9 @@ pub async fn extract_with_progress(
         AppError::BadRequest("Unsupported archive format. Supported: .zip, .tar.gz, .tgz".into())
     })?;
 
-    task_handle.update_progress(0, Some("Starting extraction...".into())).await;
+    task_handle
+        .update_progress(0, Some("Starting extraction...".into()))
+        .await;
 
     let archive_clone = archive.clone();
     let dest_clone = dest.clone();
@@ -967,13 +1015,17 @@ pub async fn extract_with_progress(
 
     match result {
         Ok(()) => {
-            task_handle.complete(Some("Extraction complete".into())).await;
+            task_handle
+                .complete(Some("Extraction complete".into()))
+                .await;
             info!("Extracted {} to {}", archive.display(), dest.display());
             let entries = list_directory(dest_path).await?;
             Ok(entries.entries)
         }
         Err(e) => {
-            task_handle.fail(Some(format!("Extraction failed: {}", e))).await;
+            task_handle
+                .fail(Some(format!("Extraction failed: {}", e)))
+                .await;
             Err(e)
         }
     }

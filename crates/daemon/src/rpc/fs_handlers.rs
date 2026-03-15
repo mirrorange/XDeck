@@ -285,12 +285,9 @@ pub fn register(router: &mut RpcRouter, task_mgr: SharedTaskManager) {
 
             // Spawn the extraction in the background — return task_id immediately
             tokio::spawn(async move {
-                let _ = file_manager::extract_with_progress(
-                    &params.archive,
-                    &params.dest,
-                    task_handle,
-                )
-                .await;
+                let _ =
+                    file_manager::extract_with_progress(&params.archive, &params.dest, task_handle)
+                        .await;
                 // TaskHandle.complete() / .fail() is called inside extract_with_progress
             });
 
