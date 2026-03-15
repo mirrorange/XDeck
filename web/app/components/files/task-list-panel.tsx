@@ -56,12 +56,14 @@ function TaskRow({ task }: { task: Task }) {
       animate={{ opacity: 1, height: "auto" }}
       exit={{ opacity: 0, height: 0 }}
       transition={{ duration: 0.2 }}
-      className="overflow-hidden"
+      className="w-full min-w-0 overflow-hidden"
     >
       <div className="flex flex-col gap-1.5 px-3 py-2 border-b border-border/50 last:border-b-0">
         <div className="flex items-center gap-2 min-w-0">
           <TaskStatusIcon status={task.status} />
-          <span className="flex-1 truncate text-sm">{task.title}</span>
+          <span className="min-w-0 flex-1 truncate text-sm" title={task.title}>
+            {task.title}
+          </span>
           {isActive && (
             <Button
               variant="ghost"
@@ -96,7 +98,9 @@ function TaskRow({ task }: { task: Task }) {
         )}
 
         {task.message && (
-          <p className="text-xs text-muted-foreground truncate">{task.message}</p>
+          <p className="block truncate text-xs text-muted-foreground" title={task.message}>
+            {task.message}
+          </p>
         )}
       </div>
     </motion.div>

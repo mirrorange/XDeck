@@ -97,7 +97,7 @@ export function MoveDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>
+          <DialogTitle className="break-all leading-tight">
             {label} {names.length === 1 ? `"${names[0]}"` : `${names.length} items`}
           </DialogTitle>
           <DialogDescription>
@@ -150,7 +150,9 @@ export function MoveDialog({
                     disabled={isSource}
                   >
                     <Folder className="size-4 text-amber-500" />
-                    <span className="flex-1 text-left truncate">{entry.name}</span>
+                    <span className="min-w-0 flex-1 truncate text-left" title={entry.name}>
+                      {entry.name}
+                    </span>
                     <ChevronRight className="size-3 text-muted-foreground" />
                   </button>
                 );

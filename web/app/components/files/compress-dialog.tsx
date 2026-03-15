@@ -79,7 +79,7 @@ export function CompressDialog({
         <div className="space-y-4">
           <div className="space-y-2">
             <Label>Archive name</Label>
-            <div className="flex gap-2">
+            <div className="flex min-w-0 gap-2">
               <Input
                 value={outputName}
                 onChange={(e) => setOutputName(e.target.value)}
@@ -87,7 +87,7 @@ export function CompressDialog({
                 className="flex-1"
                 onKeyDown={(e) => e.key === "Enter" && handleCompress()}
               />
-              <span className="flex items-center text-sm text-muted-foreground font-mono">
+              <span className="flex shrink-0 items-center font-mono text-sm text-muted-foreground">
                 {extension}
               </span>
             </div>
@@ -109,11 +109,15 @@ export function CompressDialog({
           <div className="text-sm text-muted-foreground">
             <p>Files to compress:</p>
             <ul className="mt-1 max-h-32 overflow-y-auto space-y-0.5">
-              {paths.map((p) => (
-                <li key={p} className="truncate font-mono text-xs">
-                  {p.split("/").pop()}
-                </li>
-              ))}
+              {paths.map((path) => {
+                const name = path.split("/").pop() ?? path;
+
+                return (
+                  <li key={path} className="block truncate font-mono text-xs" title={name}>
+                    {name}
+                  </li>
+                );
+              })}
             </ul>
           </div>
 

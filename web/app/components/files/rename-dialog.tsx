@@ -71,7 +71,7 @@ export function RenameDialog({
             <Edit className="size-5" />
             Rename
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="break-all">
             Rename "{entry?.name}"
           </DialogDescription>
         </DialogHeader>

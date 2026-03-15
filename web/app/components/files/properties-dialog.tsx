@@ -97,37 +97,46 @@ export function PropertiesDialog({
 
         <div className="space-y-4">
           {/* File info header */}
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 items-center gap-3">
             <FileIcon type={entry.type} name={entry.name} className="size-10" />
-            <div className="min-w-0">
-              <p className="font-medium truncate">{entry.name}</p>
-              <p className="text-sm text-muted-foreground truncate">{entry.path}</p>
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-medium" title={entry.name}>
+                {entry.name}
+              </p>
+              <p className="truncate text-sm text-muted-foreground" title={entry.path}>
+                {entry.path}
+              </p>
             </div>
           </div>
 
           <Separator />
 
           {/* General info */}
-          <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
             <span className="text-muted-foreground">Type</span>
-            <span className="capitalize">{entry.type}{entry.symlink_target ? ` → ${entry.symlink_target}` : ""}</span>
+            <span className="min-w-0 break-all capitalize">
+              {entry.type}
+              {entry.symlink_target ? ` → ${entry.symlink_target}` : ""}
+            </span>
 
             <span className="text-muted-foreground">Size</span>
-            <span>{entry.type === "directory" ? "—" : formatFileSize(entry.size)}</span>
+            <span className="min-w-0">
+              {entry.type === "directory" ? "—" : formatFileSize(entry.size)}
+            </span>
 
             <span className="text-muted-foreground">Modified</span>
-            <span>{formatDate(entry.modified)}</span>
+            <span className="min-w-0">{formatDate(entry.modified)}</span>
 
             <span className="text-muted-foreground">Created</span>
-            <span>{formatDate(entry.created)}</span>
+            <span className="min-w-0">{formatDate(entry.created)}</span>
 
             <span className="text-muted-foreground">Read-only</span>
-            <span>{entry.readonly ? "Yes" : "No"}</span>
+            <span className="min-w-0">{entry.readonly ? "Yes" : "No"}</span>
 
             {entry.mode !== null && (
               <>
                 <span className="text-muted-foreground">Permissions</span>
-                <span className="font-mono text-xs">
+                <span className="min-w-0 break-all font-mono text-xs">
                   {formatPermissions(entry.mode)} ({(entry.mode & 0o777).toString(8)})
                 </span>
               </>
@@ -136,14 +145,18 @@ export function PropertiesDialog({
             {entry.owner !== null && (
               <>
                 <span className="text-muted-foreground">Owner</span>
-                <span>{entry.owner} (uid: {entry.uid})</span>
+                <span className="min-w-0 break-all">
+                  {entry.owner} (uid: {entry.uid})
+                </span>
               </>
             )}
 
             {entry.group !== null && (
               <>
                 <span className="text-muted-foreground">Group</span>
-                <span>{entry.group} (gid: {entry.gid})</span>
+                <span className="min-w-0 break-all">
+                  {entry.group} (gid: {entry.gid})
+                </span>
               </>
             )}
           </div>

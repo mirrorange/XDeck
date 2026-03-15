@@ -101,7 +101,7 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
         </DialogHeader>
 
         <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
+          <p className="break-all text-sm text-muted-foreground">
             Upload to: <span className="font-mono text-foreground">{currentPath}</span>
           </p>
 
@@ -179,7 +179,7 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
             <>
               {isFolderUpload && folderName && (
                 <p className="text-sm font-medium">
-                  Folder: <span className="font-mono">{folderName}</span>
+                  Folder: <span className="break-all font-mono">{folderName}</span>
                   <span className="text-muted-foreground ml-1">
                     ({selectedFiles.length} file{selectedFiles.length !== 1 ? "s" : ""})
                   </span>
@@ -187,8 +187,13 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
               )}
               <div className="max-h-40 overflow-y-auto space-y-1">
                 {selectedFiles.map((file, i) => (
-                  <div key={`${getDisplayName(file)}-${i}`} className="flex items-center justify-between gap-2 rounded px-2 py-1 text-sm bg-muted/50">
-                    <span className="truncate">{getDisplayName(file)}</span>
+                  <div
+                    key={`${getDisplayName(file)}-${i}`}
+                    className="flex min-w-0 items-center justify-between gap-2 rounded bg-muted/50 px-2 py-1 text-sm"
+                  >
+                    <span className="min-w-0 flex-1 truncate" title={getDisplayName(file)}>
+                      {getDisplayName(file)}
+                    </span>
                     <div className="flex items-center gap-2 shrink-0">
                       <span className="text-xs text-muted-foreground">
                         {(file.size / 1024).toFixed(1)} KB
