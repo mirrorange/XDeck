@@ -35,7 +35,7 @@ import { ToggleGroup, ToggleGroupItem } from "~/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "~/components/ui/tooltip";
 import { TaskListToggle } from "~/components/files/task-list-panel";
 import type { FileAction } from "~/components/files/file-context-menu";
-import { useMediaQuery } from "~/hooks/use-mobile";
+import { useIsMobile, useMediaQuery } from "~/hooks/use-mobile";
 import { cn } from "~/lib/utils";
 import { useFileStore, type ViewMode } from "~/stores/file-store";
 
@@ -65,6 +65,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, selectionCou
   const [editingPath, setEditingPath] = useState(false);
   const [inputPath, setInputPath] = useState(path);
   const isCompactLayout = useMediaQuery("(max-width: 1023px)");
+  const isMobile = useIsMobile();
   const buttonSizeClass = isCompactLayout ? "size-8" : "size-7";
 
   const handlePathSubmit = () => {
@@ -148,6 +149,42 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, selectionCou
           className={cn("mx-1 !h-4", isCompactLayout && "hidden sm:block")}
         />
 
+        {/* Path bar */}
+        {editingPath ? (
+          <Input
+            className={cn(
+              "text-sm font-mono",
+              isCompactLayout ? "order-last h-9 basis-full" : "h-7 flex-1"
+            )}
+            value={inputPath}
+            onChange={(e) => setInputPath(e.target.value)}
+            onBlur={handlePathSubmit}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handlePathSubmit();
+              if (e.key === "Escape") {
+                setEditingPath(false);
+                setInputPath(path);
+              }
+            }}
+            autoFocus
+          />
+        ) : (
+          <BreadcrumbPath
+            path={path}
+            compact={isCompactLayout}
+            onClick={() => {
+              setEditingPath(true);
+              setInputPath(path);
+            }}
+            onNavigate={(p) => navigateTo(tabId, p)}
+          />
+        )}
+
+        <Separator
+          orientation="vertical"
+          className={cn("mx-1 !h-4", isCompactLayout && "hidden sm:block")}
+        />
+
         {/* Action buttons */}
         <Tooltip>
           <TooltipTrigger asChild>
@@ -178,12 +215,8 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, selectionCou
         </Tooltip>
 
         {/* Selection actions dropdown */}
-        {selectionCount > 0 && (
+        {!isMobile && selectionCount > 0 && (
           <>
-            <Separator
-              orientation="vertical"
-              className={cn("mx-1 !h-4", isCompactLayout && "hidden sm:block")}
-            />
             <DropdownMenu>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -238,42 +271,6 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, selectionCou
               </DropdownMenuContent>
             </DropdownMenu>
           </>
-        )}
-
-        <Separator
-          orientation="vertical"
-          className={cn("mx-1 !h-4", isCompactLayout && "hidden sm:block")}
-        />
-
-        {/* Path bar */}
-        {editingPath ? (
-          <Input
-            className={cn(
-              "text-sm font-mono",
-              isCompactLayout ? "order-last h-9 basis-full" : "h-7 flex-1"
-            )}
-            value={inputPath}
-            onChange={(e) => setInputPath(e.target.value)}
-            onBlur={handlePathSubmit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handlePathSubmit();
-              if (e.key === "Escape") {
-                setEditingPath(false);
-                setInputPath(path);
-              }
-            }}
-            autoFocus
-          />
-        ) : (
-          <BreadcrumbPath
-            path={path}
-            compact={isCompactLayout}
-            onClick={() => {
-              setEditingPath(true);
-              setInputPath(path);
-            }}
-            onNavigate={(p) => navigateTo(tabId, p)}
-          />
         )}
 
         <Separator
