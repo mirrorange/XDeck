@@ -2,7 +2,7 @@ import {
   ArrowDown,
   ArrowUp,
 } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import {
   Table,
@@ -57,6 +57,7 @@ export function FileListView({
   onDragSelect,
 }: FileListViewProps) {
   const { selectFile, selectRange, setSortField } = useFileStore();
+  const lastInteractionTypeRef = useRef<"mouse" | "touch" | "pen" | null>(null);
 
   const { handleDragStart, handleDragEnd, handleDragOver, handleDragLeave, handleDrop, dragOverPath } = useFileDnd({
     tabId,
@@ -96,11 +97,13 @@ export function FileListView({
       onToggleSelect?.(entry);
       return;
     }
-    if (isMobile) {
-      // Single tap opens on mobile
+
+    if (lastInteractionTypeRef.current === "touch" || lastInteractionTypeRef.current === "pen") {
+      // Direct pointers open on tap, while mouse clicks keep their selection behavior.
       onOpen(entry);
       return;
     }
+
     if (e.shiftKey) {
       selectRange(tabId, entry.path);
     } else {
@@ -109,8 +112,19 @@ export function FileListView({
   };
 
   const handleDoubleClick = (entry: FileEntry) => {
-    if (multiSelectMode || isMobile) return;
+    if (multiSelectMode) return;
     onOpen(entry);
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === "mouse" || e.pointerType === "touch" || e.pointerType === "pen") {
+      lastInteractionTypeRef.current = e.pointerType;
+    }
+  };
+
+  const handleTouchStart = (entry: FileEntry, index: number, e: React.TouchEvent) => {
+    lastInteractionTypeRef.current = "touch";
+    touchDragStart(entry, index, e);
   };
 
   const SortIcon = ({ field }: { field: SortField }) => {
@@ -165,10 +179,11 @@ export function FileListView({
                 isDragOver && "bg-primary/10 ring-1 ring-inset ring-primary/30"
               )}
               draggable={!isMobile}
+              onPointerDown={handlePointerDown}
               onClick={(e) => handleClick(e, entry)}
               onDoubleClick={() => handleDoubleClick(entry)}
               onContextMenu={(e) => onContextMenu(e, entry)}
-              onTouchStart={isMobile ? (e) => touchDragStart(entry, index, e) : undefined}
+              onTouchStart={isMobile ? (e) => handleTouchStart(entry, index, e) : undefined}
               onTouchEnd={isMobile ? touchDragEnd : undefined}
               onTouchCancel={isMobile ? touchDragEnd : undefined}
               onDragStart={!isMobile ? (e) => handleDragStart(e, entry) : undefined}

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { motion } from "motion/react";
 
 import { FileIcon } from "~/components/files/file-icon";
@@ -37,6 +37,7 @@ export function FileGridView({
   onDragSelect,
 }: FileGridViewProps) {
   const { selectFile, selectRange } = useFileStore();
+  const lastInteractionTypeRef = useRef<"mouse" | "touch" | "pen" | null>(null);
 
   const { handleDragStart, handleDragEnd, handleDragOver, handleDragLeave, handleDrop, dragOverPath } = useFileDnd({
     tabId,
@@ -76,15 +77,28 @@ export function FileGridView({
       onToggleSelect?.(entry);
       return;
     }
-    if (isMobile) {
+
+    if (lastInteractionTypeRef.current === "touch" || lastInteractionTypeRef.current === "pen") {
       onOpen(entry);
       return;
     }
+
     if (e.shiftKey) {
       selectRange(tabId, entry.path);
     } else {
       selectFile(tabId, entry.path, e.metaKey || e.ctrlKey);
     }
+  };
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === "mouse" || e.pointerType === "touch" || e.pointerType === "pen") {
+      lastInteractionTypeRef.current = e.pointerType;
+    }
+  };
+
+  const handleTouchStart = (entry: FileEntry, index: number, e: React.TouchEvent) => {
+    lastInteractionTypeRef.current = "touch";
+    touchDragStart(entry, index, e);
   };
 
   if (entries.length === 0) {
@@ -126,9 +140,10 @@ export function FileGridView({
                 "select-none cursor-default"
               )}
               onClick={(e) => handleClick(e, entry)}
-              onDoubleClick={!isMobile && !multiSelectMode ? () => onOpen(entry) : undefined}
+              onPointerDown={handlePointerDown}
+              onDoubleClick={!multiSelectMode ? () => onOpen(entry) : undefined}
               onContextMenu={(e) => onContextMenu(e, entry)}
-              onTouchStart={isMobile ? (e) => touchDragStart(entry, index, e) : undefined}
+              onTouchStart={isMobile ? (e) => handleTouchStart(entry, index, e) : undefined}
               onTouchEnd={isMobile ? touchDragEnd : undefined}
               onTouchCancel={isMobile ? touchDragEnd : undefined}
               onDragStart={!isMobile ? (e) => handleDragStart(e, entry) : undefined}
