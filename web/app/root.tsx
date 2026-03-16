@@ -11,6 +11,7 @@ import {
 } from "react-router";
 
 import type { Route } from "./+types/root";
+import { initializeResumableUploads } from "~/lib/resumable-upload";
 import { getRpcClient } from "~/lib/rpc-client";
 import { useAuthStore } from "~/stores/auth-store";
 import "./app.css";
@@ -87,6 +88,13 @@ export default function App() {
     location.pathname,
     navigate,
   ]);
+
+  useEffect(() => {
+    if (!isSessionRestored || !isAuthenticated) {
+      return;
+    }
+    void initializeResumableUploads();
+  }, [isAuthenticated, isSessionRestored]);
 
   return <Outlet />;
 }

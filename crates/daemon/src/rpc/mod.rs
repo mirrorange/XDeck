@@ -1,6 +1,7 @@
 pub mod auth_handlers;
 pub mod docker_handlers;
 pub mod event_handlers;
+pub mod fs_handlers;
 pub mod params;
 pub mod process_handlers;
 pub mod process_params;
@@ -9,4 +10,5 @@ pub mod router;
 pub mod snippet_handlers;
 pub mod snippet_store_handlers;
 pub mod system_handlers;
+pub mod task_handlers;
 pub mod types;

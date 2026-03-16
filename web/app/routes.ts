@@ -18,5 +18,6 @@ export default [
     route("processes", "routes/processes.tsx"),
     route("docker", "routes/docker.tsx"),
     route("terminal", "routes/terminal.tsx"),
+    route("files", "routes/files.tsx"),
   ]),
 ] satisfies RouteConfig;

@@ -4,6 +4,7 @@ import { Outlet, useNavigate } from "react-router";
 import { SidebarInset, SidebarProvider } from "~/components/ui/sidebar";
 import { AppSidebar } from "~/components/app-sidebar";
 import { ConnectionStatus } from "~/components/connection-status";
+import { Toaster } from "~/components/ui/sonner";
 import { useAuthStore } from "~/stores/auth-store";
 import { useSystemStore } from "~/stores/system-store";
 import { getRpcClient } from "~/lib/rpc-client";
@@ -48,6 +49,7 @@ export default function AppLayout() {
         <Outlet />
       </SidebarInset>
       <ConnectionStatus />
+      <Toaster position="bottom-right" />
     </SidebarProvider>
   );
 }

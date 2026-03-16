@@ -2,6 +2,7 @@ import { NavLink, useLocation } from "react-router";
 import {
   Activity,
   Container,
+  FolderOpen,
   LayoutDashboard,
   LogOut,
   Server,
@@ -51,6 +52,11 @@ const navItems = [
     title: "Terminal",
     url: "/terminal",
     icon: TerminalSquare,
+  },
+  {
+    title: "Files",
+    url: "/files",
+    icon: FolderOpen,
   },
 ];
 
