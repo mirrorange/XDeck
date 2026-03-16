@@ -3,20 +3,38 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Copy,
+  Download,
+  Edit,
+  Ellipsis,
   Eye,
   EyeOff,
+  FileArchive,
+  FolderPlus,
   Grid3X3,
+  Info,
   List,
+  Move,
   RefreshCw,
   Search,
+  Trash2,
+  Upload,
 } from "lucide-react";
 
 import { Button } from "~/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "~/components/ui/dropdown-menu";
 import { Input } from "~/components/ui/input";
 import { Separator } from "~/components/ui/separator";
 import { ToggleGroup, ToggleGroupItem } from "~/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "~/components/ui/tooltip";
 import { TaskListToggle } from "~/components/files/task-list-panel";
+import type { FileAction } from "~/components/files/file-context-menu";
 import { useMediaQuery } from "~/hooks/use-mobile";
 import { cn } from "~/lib/utils";
 import { useFileStore, type ViewMode } from "~/stores/file-store";
@@ -26,10 +44,12 @@ interface FileToolbarProps {
   path: string;
   canGoBack: boolean;
   canGoForward: boolean;
+  selectionCount: number;
   onSearchToggle?: () => void;
+  onAction: (action: FileAction) => void;
 }
 
-export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchToggle }: FileToolbarProps) {
+export function FileToolbar({ tabId, path, canGoBack, canGoForward, selectionCount, onSearchToggle, onAction }: FileToolbarProps) {
   const {
     goBack,
     goForward,
@@ -122,6 +142,103 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, onSearchTogg
           </TooltipTrigger>
           <TooltipContent side="bottom">Refresh</TooltipContent>
         </Tooltip>
+
+        <Separator
+          orientation="vertical"
+          className={cn("mx-1 !h-4", isCompactLayout && "hidden sm:block")}
+        />
+
+        {/* Action buttons */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={buttonSizeClass}
+              onClick={() => onAction("new-folder")}
+            >
+              <FolderPlus className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">New Folder</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={buttonSizeClass}
+              onClick={() => onAction("upload")}
+            >
+              <Upload className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">Upload</TooltipContent>
+        </Tooltip>
+
+        {/* Selection actions dropdown */}
+        {selectionCount > 0 && (
+          <>
+            <Separator
+              orientation="vertical"
+              className={cn("mx-1 !h-4", isCompactLayout && "hidden sm:block")}
+            />
+            <DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className={buttonSizeClass}
+                    >
+                      <Ellipsis className="size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">
+                  Actions ({selectionCount})
+                </TooltipContent>
+              </Tooltip>
+              <DropdownMenuContent align="start" className="w-48">
+                <DropdownMenuItem onClick={() => onAction("download")}>
+                  <Download className="mr-2 size-4" />
+                  Download
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAction("rename")}>
+                  <Edit className="mr-2 size-4" />
+                  Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAction("copy")}>
+                  <Copy className="mr-2 size-4" />
+                  Copy to…
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAction("move")}>
+                  <Move className="mr-2 size-4" />
+                  Move to…
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => onAction("compress")}>
+                  <FileArchive className="mr-2 size-4" />
+                  Compress
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAction("properties")}>
+                  <Info className="mr-2 size-4" />
+                  Properties
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => onAction("delete")}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <Trash2 className="mr-2 size-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        )}
 
         <Separator
           orientation="vertical"

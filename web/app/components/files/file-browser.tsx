@@ -17,10 +17,12 @@ import { FileSearchPanel } from "~/components/files/file-search-panel";
 import { UploadDialog } from "~/components/files/upload-dialog";
 import { CompressDialog } from "~/components/files/compress-dialog";
 import { FilePreview } from "~/components/files/file-preview";
+import { MobileSelectionBar } from "~/components/files/mobile-selection-bar";
+import { MobileSelectionHeader } from "~/components/files/mobile-selection-header";
 import { TaskListPanel } from "~/components/files/task-list-panel";
 import { Drawer, DrawerContent } from "~/components/ui/drawer";
 import { ScrollArea } from "~/components/ui/scroll-area";
-import { useMediaQuery } from "~/hooks/use-mobile";
+import { useMediaQuery, useIsMobile } from "~/hooks/use-mobile";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
 import { downloadFile, downloadFolder, uploadFiles, uploadFolder } from "~/lib/file-transfer";
 import { isPreviewable } from "~/lib/file-utils";
@@ -49,6 +51,9 @@ export function FileBrowser() {
   const edgeScrollRafRef = useRef<number | null>(null);
   const lassoWasActiveRef = useRef(false);
   const isCompactLayout = useMediaQuery("(max-width: 1023px)");
+  const isMobile = useIsMobile();
+
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
 
   const [contextEntry, setContextEntry] = useState<FileEntry | null>(null);
   const [contextMenuContentKey, setContextMenuContentKey] = useState(0);
@@ -128,13 +133,45 @@ export function FileBrowser() {
     (entry: FileEntry) => {
       if (!activeTab) return;
       if (entry.type === "directory") {
+        // Exit multi-select mode when navigating to a new directory
+        if (multiSelectMode) setMultiSelectMode(false);
         void navigateTo(activeTab.id, entry.path);
       } else if (isPreviewable(entry.type, entry.name)) {
         setPreviewEntry(entry);
       }
     },
-    [activeTab, navigateTo]
+    [activeTab, navigateTo, multiSelectMode]
   );
+
+  const handleLongPress = useCallback(
+    (entry: FileEntry) => {
+      if (!activeTab || !isMobile) return;
+      setMultiSelectMode(true);
+      selectFile(activeTab.id, entry.path, false);
+    },
+    [activeTab, isMobile, selectFile]
+  );
+
+  const handleToggleSelect = useCallback(
+    (entry: FileEntry) => {
+      if (!activeTab) return;
+      selectFile(activeTab.id, entry.path, true);
+    },
+    [activeTab, selectFile]
+  );
+
+  const handleDragSelect = useCallback(
+    (paths: Set<string>) => {
+      if (!activeTab) return;
+      setSelection(activeTab.id, paths);
+    },
+    [activeTab, setSelection]
+  );
+
+  const handleExitMultiSelect = useCallback(() => {
+    setMultiSelectMode(false);
+    if (activeTab) clearSelection(activeTab.id);
+  }, [activeTab, clearSelection]);
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, entry: FileEntry) => {
@@ -169,9 +206,13 @@ export function FileBrowser() {
   const handleAction = useCallback(
     (action: FileAction) => {
       if (!activeTab) return;
+      // For toolbar actions, fall back to first selected entry when contextEntry is null
+      const targetEntry = contextEntry || (activeTab.selectedPaths.size > 0
+        ? activeTab.entries.find((e) => activeTab.selectedPaths.has(e.path)) ?? null
+        : null);
       switch (action) {
         case "open":
-          if (contextEntry) handleOpen(contextEntry);
+          if (targetEntry) handleOpen(targetEntry);
           break;
         case "refresh":
           void refresh(activeTab.id);
@@ -183,8 +224,8 @@ export function FileBrowser() {
           setNewFolderOpen(true);
           break;
         case "rename":
-          if (contextEntry) {
-            setRenameEntry(contextEntry);
+          if (targetEntry) {
+            setRenameEntry(targetEntry);
             setRenameOpen(true);
           }
           break;
@@ -197,8 +238,8 @@ export function FileBrowser() {
           break;
         }
         case "properties":
-          if (contextEntry) {
-            setPropertiesEntry(contextEntry);
+          if (targetEntry) {
+            setPropertiesEntry(targetEntry);
             setPropertiesOpen(true);
           }
           break;
@@ -249,15 +290,15 @@ export function FileBrowser() {
           break;
         }
         case "extract":
-          if (contextEntry) {
+          if (targetEntry) {
             void (async () => {
               try {
                 await getRpcClient().call("fs.extract", {
-                  archive: contextEntry.path,
+                  archive: targetEntry.path,
                   dest: activeTab.path,
                 });
                 // RPC returns immediately with task_id; progress tracked via task events
-                const archiveName = contextEntry.name;
+                const archiveName = targetEntry.name;
                 toast.info("Extraction started", {
                   description: archiveName,
                 });
@@ -322,7 +363,9 @@ export function FileBrowser() {
       }
 
       if (e.key === "Escape") {
-        if (searchOpen) {
+        if (multiSelectMode) {
+          handleExitMultiSelect();
+        } else if (searchOpen) {
           setSearchOpen(false);
         } else if (previewEntry) {
           setPreviewEntry(null);
@@ -370,7 +413,53 @@ export function FileBrowser() {
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [activeTab, selectAll, clearSelection, refresh, searchOpen]);
+  }, [activeTab, selectAll, clearSelection, refresh, searchOpen, multiSelectMode, handleExitMultiSelect]);
+
+  // Mobile: intercept browser back button/gesture for path navigation
+  useEffect(() => {
+    if (!isMobile || !activeTab) return;
+
+    // Push a state so popstate fires on back gesture
+    window.history.pushState({ xdeckFiles: true, path: activeTab.path }, "", window.location.href);
+
+    const handlePopState = (e: PopStateEvent) => {
+      // Intercept and handle our own back navigation
+      if (multiSelectMode) {
+        handleExitMultiSelect();
+        // Re-push so back gesture still works
+        window.history.pushState({ xdeckFiles: true, path: activeTab.path }, "", window.location.href);
+        return;
+      }
+
+      if (searchOpen) {
+        setSearchOpen(false);
+        window.history.pushState({ xdeckFiles: true, path: activeTab.path }, "", window.location.href);
+        return;
+      }
+
+      if (previewEntry) {
+        setPreviewEntry(null);
+        window.history.pushState({ xdeckFiles: true, path: activeTab.path }, "", window.location.href);
+        return;
+      }
+
+      const store = useFileStore.getState();
+      const tab = store.tabs.find((t) => t.id === activeTab.id);
+      if (tab && tab.historyIndex > 0) {
+        store.goBack(activeTab.id);
+        // Re-push so back gesture still works for next navigation
+        window.history.pushState({ xdeckFiles: true }, "", window.location.href);
+      } else {
+        // At root of history, let browser navigate normally
+        // Don't block — the popstate already consumed the history entry
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [isMobile, activeTab?.id, activeTab?.path, multiSelectMode, searchOpen, previewEntry, handleExitMultiSelect]);
 
   // Edge scroll: auto-scroll when dragging near top/bottom of scroll area
   const EDGE_ZONE = 40;
@@ -542,13 +631,30 @@ export function FileBrowser() {
     >
       <FileTabBar tabs={tabs} activeTabId={activeTabId} />
 
-      <FileToolbar
-        tabId={activeTab.id}
-        path={activeTab.path}
-        canGoBack={activeTab.historyIndex > 0}
-        canGoForward={activeTab.historyIndex < activeTab.history.length - 1}
-        onSearchToggle={() => setSearchOpen(!searchOpen)}
-      />
+      {isMobile && multiSelectMode ? (
+        <MobileSelectionHeader
+          selectionCount={activeTab.selectedPaths.size}
+          totalCount={activeTab.entries.length}
+          onExitSelection={handleExitMultiSelect}
+          onSelectAll={() => {
+            if (activeTab.selectedPaths.size === activeTab.entries.length) {
+              clearSelection(activeTab.id);
+            } else {
+              selectAll(activeTab.id);
+            }
+          }}
+        />
+      ) : (
+        <FileToolbar
+          tabId={activeTab.id}
+          path={activeTab.path}
+          canGoBack={activeTab.historyIndex > 0}
+          canGoForward={activeTab.historyIndex < activeTab.history.length - 1}
+          selectionCount={activeTab.selectedPaths.size}
+          onSearchToggle={() => setSearchOpen(!searchOpen)}
+          onAction={handleAction}
+        />
+      )}
 
       <div className="flex flex-1 min-h-0">
         <FileContextMenu
@@ -571,6 +677,8 @@ export function FileBrowser() {
                 lassoWasActiveRef.current = false;
                 return;
               }
+              // Don't clear selection in multi-select mode (use the X button to exit)
+              if (multiSelectMode) return;
               const target = e.target as HTMLElement;
               if (
                 !target.closest("[data-slot='table-row']") &&
@@ -606,9 +714,14 @@ export function FileBrowser() {
                       selectedPaths={activeTab.selectedPaths}
                       sortField={activeTab.sortField}
                       sortDirection={activeTab.sortDirection}
+                      isMobile={isMobile}
+                      multiSelectMode={multiSelectMode}
                       onOpen={handleOpen}
                       onContextMenu={handleContextMenu}
                       onDropFiles={handleDropFiles}
+                      onLongPress={handleLongPress}
+                      onToggleSelect={handleToggleSelect}
+                      onDragSelect={handleDragSelect}
                     />
                   </motion.div>
                 ) : (
@@ -623,9 +736,14 @@ export function FileBrowser() {
                       tabId={activeTab.id}
                       entries={activeTab.entries}
                       selectedPaths={activeTab.selectedPaths}
+                      isMobile={isMobile}
+                      multiSelectMode={multiSelectMode}
                       onOpen={handleOpen}
                       onContextMenu={handleContextMenu}
                       onDropFiles={handleDropFiles}
+                      onLongPress={handleLongPress}
+                      onToggleSelect={handleToggleSelect}
+                      onDragSelect={handleDragSelect}
                     />
                   </motion.div>
                 )}
@@ -699,7 +817,15 @@ export function FileBrowser() {
         </>
       )}
 
-      <FileStatusBar tab={activeTab} />
+      {!isMobile && <FileStatusBar tab={activeTab} />}
+
+      {/* Mobile multi-select bottom action bar */}
+      {isMobile && multiSelectMode && (
+        <MobileSelectionBar
+          selectionCount={activeTab.selectedPaths.size}
+          onAction={handleAction}
+        />
+      )}
 
       {/* Dialogs */}
       <NewFolderDialog

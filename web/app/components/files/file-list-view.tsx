@@ -2,6 +2,7 @@ import {
   ArrowDown,
   ArrowUp,
 } from "lucide-react";
+import { useEffect } from "react";
 
 import {
   Table,
@@ -12,6 +13,7 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { FileIcon } from "~/components/files/file-icon";
+import { Checkbox } from "~/components/ui/checkbox";
 import {
   formatFileSize,
   formatDate,
@@ -20,6 +22,7 @@ import {
 } from "~/lib/file-utils";
 import { useFileStore, type FileEntry, type SortField } from "~/stores/file-store";
 import { useFileDnd } from "~/lib/dnd-utils";
+import { useTouchDragSelect } from "~/hooks/use-touch-drag-select";
 import { cn } from "~/lib/utils";
 
 interface FileListViewProps {
@@ -28,9 +31,14 @@ interface FileListViewProps {
   selectedPaths: Set<string>;
   sortField: SortField;
   sortDirection: "asc" | "desc";
+  isMobile?: boolean;
+  multiSelectMode?: boolean;
   onOpen: (entry: FileEntry) => void;
   onContextMenu: (e: React.MouseEvent, entry: FileEntry) => void;
   onDropFiles?: (targetDir: string, sourcePaths: string[]) => void;
+  onLongPress?: (entry: FileEntry) => void;
+  onToggleSelect?: (entry: FileEntry) => void;
+  onDragSelect?: (paths: Set<string>) => void;
 }
 
 export function FileListView({
@@ -39,9 +47,14 @@ export function FileListView({
   selectedPaths,
   sortField,
   sortDirection,
+  isMobile,
+  multiSelectMode,
   onOpen,
   onContextMenu,
   onDropFiles,
+  onLongPress,
+  onToggleSelect,
+  onDragSelect,
 }: FileListViewProps) {
   const { selectFile, selectRange, setSortField } = useFileStore();
 
@@ -53,7 +66,41 @@ export function FileListView({
     onDropFiles,
   });
 
+  const {
+    handleTouchStart: touchDragStart,
+    handleTouchEnd: touchDragEnd,
+    longPressFiredRef,
+    setPreSelection,
+  } = useTouchDragSelect({
+    entries,
+    multiSelectMode: !!multiSelectMode,
+    isMobile: !!isMobile,
+    onDragSelect: onDragSelect ?? (() => {}),
+    onLongPress: onLongPress ?? (() => {}),
+    itemSelector: "[data-lasso-item]",
+  });
+
+  // Keep pre-selection in sync so drag can merge with existing selection
+  useEffect(() => {
+    setPreSelection(selectedPaths);
+  }, [selectedPaths, setPreSelection]);
+
   const handleClick = (e: React.MouseEvent, entry: FileEntry) => {
+    // Suppress click after long press or drag select
+    if (longPressFiredRef.current) {
+      longPressFiredRef.current = false;
+      e.preventDefault();
+      return;
+    }
+    if (multiSelectMode) {
+      onToggleSelect?.(entry);
+      return;
+    }
+    if (isMobile) {
+      // Single tap opens on mobile
+      onOpen(entry);
+      return;
+    }
     if (e.shiftKey) {
       selectRange(tabId, entry.path);
     } else {
@@ -62,6 +109,7 @@ export function FileListView({
   };
 
   const handleDoubleClick = (entry: FileEntry) => {
+    if (multiSelectMode || isMobile) return;
     onOpen(entry);
   };
 
@@ -117,18 +165,28 @@ export function FileListView({
                 isDragOver && "bg-primary/10 ring-1 ring-inset ring-primary/30"
               )}
               style={{ animationDelay: `${delay}ms` }}
-              draggable
+              draggable={!isMobile}
               onClick={(e) => handleClick(e, entry)}
               onDoubleClick={() => handleDoubleClick(entry)}
               onContextMenu={(e) => onContextMenu(e, entry)}
-              onDragStart={(e) => handleDragStart(e, entry)}
-              onDragEnd={handleDragEnd}
-              onDragOver={(e) => handleDragOver(e, entry)}
-              onDragLeave={handleDragLeave}
-              onDrop={(e) => handleDrop(e, entry)}
+              onTouchStart={isMobile ? (e) => touchDragStart(entry, index, e) : undefined}
+              onTouchEnd={isMobile ? touchDragEnd : undefined}
+              onDragStart={!isMobile ? (e) => handleDragStart(e, entry) : undefined}
+              onDragEnd={!isMobile ? handleDragEnd : undefined}
+              onDragOver={!isMobile ? (e) => handleDragOver(e, entry) : undefined}
+              onDragLeave={!isMobile ? handleDragLeave : undefined}
+              onDrop={!isMobile ? (e) => handleDrop(e, entry) : undefined}
             >
               <TableCell className="py-1.5">
                 <div className="flex items-center gap-2 py-1 sm:py-0">
+                  {multiSelectMode && (
+                    <Checkbox
+                      checked={isSelected}
+                      onCheckedChange={() => onToggleSelect?.(entry)}
+                      onClick={(e) => e.stopPropagation()}
+                      className="shrink-0"
+                    />
+                  )}
                   <FileIcon
                     type={entry.type}
                     name={entry.name}
