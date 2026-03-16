@@ -3,11 +3,13 @@ import {
   Download,
   Edit,
   FileArchive,
+  ExternalLink,
+  SquareArrowOutUpRight,
+  FolderOpen,
   FolderPlus,
   Info,
   Move,
   RefreshCw,
-  Scissors,
   ListChecks,
   Trash2,
   Upload,
@@ -25,6 +27,7 @@ import { useRef } from "react";
 
 export type FileAction =
   | "open"
+  | "open-in-new-tab"
   | "rename"
   | "copy"
   | "move"
@@ -95,9 +98,15 @@ export function FileContextMenu({
         {entry ? (
           <>
             <ContextMenuItem onSelect={(e) => handleSelect(e, "open")}>
-              <Edit className="mr-2 size-4" />
+              {isDir ? <FolderOpen className="mr-2 size-4" /> : <SquareArrowOutUpRight className="mr-2 size-4" />}
               Open
             </ContextMenuItem>
+            {isDir && (
+              <ContextMenuItem onSelect={(e) => handleSelect(e, "open-in-new-tab")}>
+                <ExternalLink className="mr-2 size-4" />
+                Open in New Tab
+              </ContextMenuItem>
+            )}
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={(e) => handleSelect(e, "rename")}>
               <Edit className="mr-2 size-4" />

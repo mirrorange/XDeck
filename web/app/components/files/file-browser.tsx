@@ -51,6 +51,7 @@ export function FileBrowser() {
   const edgeScrollRafRef = useRef<number | null>(null);
   const lassoWasActiveRef = useRef(false);
   const mobileBackTrapArmedRef = useRef(false);
+  const initialTabRequestedRef = useRef(false);
   const isCompactLayout = useMediaQuery("(max-width: 1023px)");
   const isMobile = useIsMobile();
 
@@ -78,17 +79,18 @@ export function FileBrowser() {
 
   // Initialize with home dir on first mount
   useEffect(() => {
-    if (tabs.length === 0) {
-      void (async () => {
-        try {
-          const home = await getHomeDir();
-          addTab(home);
-        } catch {
-          addTab("/");
-        }
-      })();
-    }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (tabs.length > 0 || initialTabRequestedRef.current) return;
+
+    initialTabRequestedRef.current = true;
+    void (async () => {
+      try {
+        const home = await getHomeDir();
+        addTab(home);
+      } catch {
+        addTab("/");
+      }
+    })();
+  }, [tabs.length, addTab, getHomeDir]);
 
   const activeTab = tabs.find((t) => t.id === activeTabId) || null;
 
@@ -225,6 +227,11 @@ export function FileBrowser() {
         case "open":
           if (targetEntry) handleOpen(targetEntry);
           break;
+        case "open-in-new-tab":
+          if (targetEntry?.type === "directory") {
+            addTab(targetEntry.path);
+          }
+          break;
         case "refresh":
           void refresh(activeTab.id);
           break;
@@ -324,7 +331,7 @@ export function FileBrowser() {
           break;
       }
     },
-    [activeTab, contextEntry, handleOpen, refresh, selectAll, getSelectedPaths]
+    [activeTab, addTab, contextEntry, handleOpen, refresh, selectAll, getSelectedPaths]
   );
 
   const handleRefreshCurrent = useCallback(() => {
@@ -433,75 +440,6 @@ export function FileBrowser() {
     activeTab.historyIndex > 0 ||
     tabs.length > 1
   );
-
-  // Mobile: keep one synthetic history entry armed while there is still in-app back handling available.
-  useEffect(() => {
-    if (!isMobile) {
-      mobileBackTrapArmedRef.current = false;
-      return;
-    }
-
-    if (!shouldTrapMobileBack) {
-      mobileBackTrapArmedRef.current = false;
-      return;
-    }
-
-    if (mobileBackTrapArmedRef.current) {
-      return;
-    }
-
-    window.history.pushState(
-      { ...(window.history.state ?? {}), xdeckFilesTrap: true },
-      "",
-      window.location.href
-    );
-    mobileBackTrapArmedRef.current = true;
-  }, [isMobile, shouldTrapMobileBack]);
-
-  // Mobile: intercept browser back button/gesture for path navigation and tab closing.
-  useEffect(() => {
-    if (!isMobile || !activeTab) return;
-
-    const handlePopState = (e: PopStateEvent) => {
-      if (!mobileBackTrapArmedRef.current && !e.state?.xdeckFilesTrap) {
-        return;
-      }
-
-      mobileBackTrapArmedRef.current = false;
-
-      // Intercept and handle our own back navigation
-      if (multiSelectMode) {
-        handleExitMultiSelect();
-        return;
-      }
-
-      if (searchOpen) {
-        setSearchOpen(false);
-        return;
-      }
-
-      if (previewEntry) {
-        setPreviewEntry(null);
-        return;
-      }
-
-      const store = useFileStore.getState();
-      const tab = store.tabs.find((t) => t.id === store.activeTabId);
-      if (tab && tab.historyIndex > 0) {
-        store.goBack(tab.id);
-        return;
-      }
-
-      if (tab && store.tabs.length > 1) {
-        store.closeTab(tab.id);
-      }
-    };
-
-    window.addEventListener("popstate", handlePopState);
-    return () => {
-      window.removeEventListener("popstate", handlePopState);
-    };
-  }, [isMobile, activeTab?.id, multiSelectMode, searchOpen, previewEntry, handleExitMultiSelect]);
 
   // Edge scroll: auto-scroll when dragging near top/bottom of scroll area
   const EDGE_ZONE = 40;
