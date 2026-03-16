@@ -55,6 +55,7 @@ export function FileContextMenu({
   selectionCount,
   onAction,
 }: FileContextMenuProps) {
+
   const openedAtRef = useRef(0);
   const ignoreFirstSelectRef = useRef(false);
   const isFile = entry && entry.type === "file";

@@ -50,6 +50,7 @@ export function FileBrowser() {
   const lassoContainerRef = useRef<HTMLElement | null>(null);
   const edgeScrollRafRef = useRef<number | null>(null);
   const lassoWasActiveRef = useRef(false);
+  const mobileBackTrapArmedRef = useRef(false);
   const isCompactLayout = useMediaQuery("(max-width: 1023px)");
   const isMobile = useIsMobile();
 
@@ -175,23 +176,33 @@ export function FileBrowser() {
 
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, entry: FileEntry) => {
+      if (isMobile) {
+        e.preventDefault();
+        return;
+      }
+
       setContextEntry(entry);
       setContextMenuContentKey((current) => current + 1);
       if (activeTab && !activeTab.selectedPaths.has(entry.path)) {
         selectFile(activeTab.id, entry.path, false);
       }
     },
-    [activeTab, selectFile]
+    [activeTab, isMobile, selectFile]
   );
 
   const handleEmptyContextMenu = useCallback(
     (e: React.MouseEvent) => {
+      if (isMobile) {
+        e.preventDefault();
+        return;
+      }
+
       if ((e.target as HTMLElement).closest("[data-slot='table-row']")) return;
       if ((e.target as HTMLElement).closest("button")) return;
       setContextEntry(null);
       setContextMenuContentKey((current) => current + 1);
     },
-    []
+    [isMobile]
   );
 
   const getSelectedPaths = useCallback((): string[] => {
@@ -415,43 +426,74 @@ export function FileBrowser() {
     return () => window.removeEventListener("keydown", handler);
   }, [activeTab, selectAll, clearSelection, refresh, searchOpen, multiSelectMode, handleExitMultiSelect]);
 
-  // Mobile: intercept browser back button/gesture for path navigation
+  const shouldTrapMobileBack = isMobile && !!activeTab && (
+    multiSelectMode ||
+    searchOpen ||
+    previewEntry !== null ||
+    activeTab.historyIndex > 0 ||
+    tabs.length > 1
+  );
+
+  // Mobile: keep one synthetic history entry armed while there is still in-app back handling available.
+  useEffect(() => {
+    if (!isMobile) {
+      mobileBackTrapArmedRef.current = false;
+      return;
+    }
+
+    if (!shouldTrapMobileBack) {
+      mobileBackTrapArmedRef.current = false;
+      return;
+    }
+
+    if (mobileBackTrapArmedRef.current) {
+      return;
+    }
+
+    window.history.pushState(
+      { ...(window.history.state ?? {}), xdeckFilesTrap: true },
+      "",
+      window.location.href
+    );
+    mobileBackTrapArmedRef.current = true;
+  }, [isMobile, shouldTrapMobileBack]);
+
+  // Mobile: intercept browser back button/gesture for path navigation and tab closing.
   useEffect(() => {
     if (!isMobile || !activeTab) return;
 
-    // Push a state so popstate fires on back gesture
-    window.history.pushState({ xdeckFiles: true, path: activeTab.path }, "", window.location.href);
-
     const handlePopState = (e: PopStateEvent) => {
+      if (!mobileBackTrapArmedRef.current && !e.state?.xdeckFilesTrap) {
+        return;
+      }
+
+      mobileBackTrapArmedRef.current = false;
+
       // Intercept and handle our own back navigation
       if (multiSelectMode) {
         handleExitMultiSelect();
-        // Re-push so back gesture still works
-        window.history.pushState({ xdeckFiles: true, path: activeTab.path }, "", window.location.href);
         return;
       }
 
       if (searchOpen) {
         setSearchOpen(false);
-        window.history.pushState({ xdeckFiles: true, path: activeTab.path }, "", window.location.href);
         return;
       }
 
       if (previewEntry) {
         setPreviewEntry(null);
-        window.history.pushState({ xdeckFiles: true, path: activeTab.path }, "", window.location.href);
         return;
       }
 
       const store = useFileStore.getState();
-      const tab = store.tabs.find((t) => t.id === activeTab.id);
+      const tab = store.tabs.find((t) => t.id === store.activeTabId);
       if (tab && tab.historyIndex > 0) {
-        store.goBack(activeTab.id);
-        // Re-push so back gesture still works for next navigation
-        window.history.pushState({ xdeckFiles: true }, "", window.location.href);
-      } else {
-        // At root of history, let browser navigate normally
-        // Don't block — the popstate already consumed the history entry
+        store.goBack(tab.id);
+        return;
+      }
+
+      if (tab && store.tabs.length > 1) {
+        store.closeTab(tab.id);
       }
     };
 
@@ -459,7 +501,7 @@ export function FileBrowser() {
     return () => {
       window.removeEventListener("popstate", handlePopState);
     };
-  }, [isMobile, activeTab?.id, activeTab?.path, multiSelectMode, searchOpen, previewEntry, handleExitMultiSelect]);
+  }, [isMobile, activeTab?.id, multiSelectMode, searchOpen, previewEntry, handleExitMultiSelect]);
 
   // Edge scroll: auto-scroll when dragging near top/bottom of scroll area
   const EDGE_ZONE = 40;
@@ -624,6 +666,7 @@ export function FileBrowser() {
   return (
     <div
       className="flex h-full flex-col relative"
+      onContextMenuCapture={isMobile ? (e) => e.preventDefault() : undefined}
       onDragEnter={handleDesktopDragEnter}
       onDragOver={handleDesktopDragOver}
       onDragLeave={handleDesktopDragLeave}

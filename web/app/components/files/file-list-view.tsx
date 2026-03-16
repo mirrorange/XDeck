@@ -164,18 +164,22 @@ export function FileListView({
                 isSelected && "bg-accent",
                 isDragOver && "bg-primary/10 ring-1 ring-inset ring-primary/30"
               )}
-              style={{ animationDelay: `${delay}ms` }}
               draggable={!isMobile}
               onClick={(e) => handleClick(e, entry)}
               onDoubleClick={() => handleDoubleClick(entry)}
               onContextMenu={(e) => onContextMenu(e, entry)}
               onTouchStart={isMobile ? (e) => touchDragStart(entry, index, e) : undefined}
               onTouchEnd={isMobile ? touchDragEnd : undefined}
+              onTouchCancel={isMobile ? touchDragEnd : undefined}
               onDragStart={!isMobile ? (e) => handleDragStart(e, entry) : undefined}
               onDragEnd={!isMobile ? handleDragEnd : undefined}
               onDragOver={!isMobile ? (e) => handleDragOver(e, entry) : undefined}
               onDragLeave={!isMobile ? handleDragLeave : undefined}
               onDrop={!isMobile ? (e) => handleDrop(e, entry) : undefined}
+              style={{
+                animationDelay: `${delay}ms`,
+                WebkitTouchCallout: "none",
+              }}
             >
               <TableCell className="py-1.5">
                 <div className="flex items-center gap-2 py-1 sm:py-0">

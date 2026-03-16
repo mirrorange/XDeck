@@ -114,6 +114,7 @@ export function FileGridView({
             transition={{ duration: 0.15, delay: Math.min(index * 0.008, 0.3) }}
           >
             <button
+              type="button"
               draggable={!isMobile}
               data-lasso-item
               data-path={entry.path}
@@ -129,11 +130,13 @@ export function FileGridView({
               onContextMenu={(e) => onContextMenu(e, entry)}
               onTouchStart={isMobile ? (e) => touchDragStart(entry, index, e) : undefined}
               onTouchEnd={isMobile ? touchDragEnd : undefined}
+              onTouchCancel={isMobile ? touchDragEnd : undefined}
               onDragStart={!isMobile ? (e) => handleDragStart(e, entry) : undefined}
               onDragEnd={!isMobile ? handleDragEnd : undefined}
               onDragOver={!isMobile ? (e) => handleDragOver(e, entry) : undefined}
               onDragLeave={!isMobile ? handleDragLeave : undefined}
               onDrop={!isMobile ? (e) => handleDrop(e, entry) : undefined}
+              style={{ WebkitTouchCallout: "none" }}
             >
               {multiSelectMode && (
                 <Checkbox

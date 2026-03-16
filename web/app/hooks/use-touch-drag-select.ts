@@ -19,11 +19,9 @@ interface UseTouchDragSelectOptions {
 /**
  * Hook for touch-drag range selection on mobile.
  *
- * Two modes:
- * 1. Long-press initiates multi-select, then continued drag selects a range
- *    from the anchor item to wherever the finger is.
- * 2. In multi-select mode, starting a touch on an item and dragging selects
- *    the range from the touched item to wherever the finger moves.
+ * Drag selection always requires a completed long-press first.
+ * Before the long-press threshold is reached, touch movement should keep
+ * the browser's default scrolling behavior intact.
  *
  * Returns touch handlers to attach to each item element.
  */
@@ -47,14 +45,12 @@ export function useTouchDragSelect({
   const touchStartPosRef = useRef<{ x: number; y: number } | null>(null);
   // Last index during drag to avoid redundant setSelection calls
   const lastDragIndexRef = useRef<number | null>(null);
-  // Paths selected before drag started (to preserve pre-existing selection)
+  // Paths selected before drag started (to preserve the snapshot we toggle against)
   const preSelectionRef = useRef<Set<string>>(new Set());
 
   // Keep fresh refs for values used in the native touchmove listener
   const entriesRef = useRef(entries);
   entriesRef.current = entries;
-  const multiSelectModeRef = useRef(multiSelectMode);
-  multiSelectModeRef.current = multiSelectMode;
   const onDragSelectRef = useRef(onDragSelect);
   onDragSelectRef.current = onDragSelect;
 
@@ -85,9 +81,10 @@ export function useTouchDragSelect({
   );
 
   /**
-   * Select the range from anchorIndex to currentIndex (inclusive).
+   * Toggle the range from anchorIndex to currentIndex (inclusive)
+   * against the selection snapshot captured at drag start.
    */
-  const selectRange = useCallback(
+  const toggleRangeSelection = useCallback(
     (currentIndex: number) => {
       const anchor = anchorIndexRef.current;
       if (anchor === null) return;
@@ -96,7 +93,12 @@ export function useTouchDragSelect({
       const hi = Math.max(anchor, currentIndex);
       const paths = new Set(preSelectionRef.current);
       for (let i = lo; i <= hi; i++) {
-        paths.add(currentEntries[i].path);
+        const path = currentEntries[i].path;
+        if (paths.has(path)) {
+          paths.delete(path);
+        } else {
+          paths.add(path);
+        }
       }
       onDragSelectRef.current(paths);
     },
@@ -120,35 +122,18 @@ export function useTouchDragSelect({
       const touch = e.touches[0];
       if (!touch) return;
 
-      // If we're not yet in drag mode
+      // If we're not yet in drag mode, only watch for cancellation of the
+      // pending long-press. Normal dragging should keep native scrolling.
       if (!dragActiveRef.current) {
-        if (!multiSelectModeRef.current) {
-          // For long-press: check if moved too much before timer fired
-          if (touchStartPosRef.current && longPressTimerRef.current) {
-            const dx = touch.clientX - touchStartPosRef.current.x;
-            const dy = touch.clientY - touchStartPosRef.current.y;
-            if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
-              // Moved too much, cancel long-press
-              clearLongPressTimer();
-            }
-          }
-          return;
-        }
-
-        // In multi-select mode, check movement threshold to start drag
-        if (touchStartPosRef.current) {
+        if (touchStartPosRef.current && longPressTimerRef.current) {
           const dx = touch.clientX - touchStartPosRef.current.x;
           const dy = touch.clientY - touchStartPosRef.current.y;
           if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
-            dragActiveRef.current = true;
-            longPressFiredRef.current = true; // Suppress click after drag
-          } else {
-            return;
+            clearLongPressTimer();
           }
         }
+        return;
       }
-
-      if (!dragActiveRef.current) return;
 
       // Prevent scrolling while drag-selecting
       e.preventDefault();
@@ -158,7 +143,7 @@ export function useTouchDragSelect({
       if (currentIndex === lastDragIndexRef.current) return; // No change
 
       lastDragIndexRef.current = currentIndex;
-      selectRange(currentIndex);
+      toggleRangeSelection(currentIndex);
     };
 
     const handleEnd = () => {
@@ -177,7 +162,7 @@ export function useTouchDragSelect({
       document.removeEventListener("touchend", handleEnd);
       document.removeEventListener("touchcancel", handleEnd);
     };
-  }, [isMobile, clearLongPressTimer, getEntryIndexAtPoint, selectRange]);
+  }, [isMobile, clearLongPressTimer, getEntryIndexAtPoint, toggleRangeSelection]);
 
   const handleTouchStart = useCallback(
     (entry: FileEntry, entryIndex: number, e: React.TouchEvent) => {
@@ -187,27 +172,27 @@ export function useTouchDragSelect({
       touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
       lastDragIndexRef.current = null;
       dragActiveRef.current = false;
+      anchorIndexRef.current = null;
+      longPressFiredRef.current = false;
+      clearLongPressTimer();
 
-      if (multiSelectMode) {
-        // In multi-select mode, start drag-select from this item.
-        // preSelectionRef is already kept in sync via setPreSelection()
+      longPressTimerRef.current = setTimeout(() => {
+        longPressTimerRef.current = null;
+        longPressFiredRef.current = true;
         anchorIndexRef.current = entryIndex;
-        longPressFiredRef.current = false;
-      } else {
-        // Not in multi-select: start long-press timer
-        longPressFiredRef.current = false;
-        longPressTimerRef.current = setTimeout(() => {
-          longPressFiredRef.current = true;
-          anchorIndexRef.current = entryIndex;
-          // Store empty pre-selection since we're just entering multi-select
+
+        if (!multiSelectMode) {
+          // Enter multi-select mode with the pressed item as the initial selection.
           preSelectionRef.current = new Set();
           onLongPress(entry);
-          // Immediately mark drag as potentially active so touchmove can extend
-          dragActiveRef.current = true;
-        }, 500);
-      }
+        }
+
+        // Only after the long press completes do we convert subsequent
+        // movement into drag-selection.
+        dragActiveRef.current = true;
+      }, 500);
     },
-    [isMobile, multiSelectMode, onLongPress]
+    [clearLongPressTimer, isMobile, multiSelectMode, onLongPress]
   );
 
   const handleTouchEnd = useCallback(() => {
@@ -219,8 +204,7 @@ export function useTouchDragSelect({
   }, [clearLongPressTimer]);
 
   /**
-   * Set the pre-existing selection (paths selected before drag starts).
-   * Call this when `selectedPaths` changes so drag can merge properly.
+   * Set the pre-existing selection snapshot used by long-press drag toggle.
    * Ignored while a drag is active to avoid overwriting the snapshot.
    */
   const setPreSelection = useCallback((paths: Set<string>) => {
