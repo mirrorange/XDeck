@@ -146,7 +146,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, selectionCou
 
         <Separator
           orientation="vertical"
-          className={cn("mx-1 !h-4", isCompactLayout && "hidden sm:block")}
+          className={cn("mx-1 !h-4", isCompactLayout && "hidden")}
         />
 
         {/* Path bar */}
@@ -182,7 +182,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, selectionCou
 
         <Separator
           orientation="vertical"
-          className={cn("mx-1 !h-4", isCompactLayout && "hidden sm:block")}
+          className={cn("mx-1 !h-4", isCompactLayout && "hidden")}
         />
 
         {/* Action buttons */}
