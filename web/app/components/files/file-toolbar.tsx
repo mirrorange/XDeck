@@ -31,13 +31,12 @@ import {
 } from "~/components/ui/dropdown-menu";
 import { Input } from "~/components/ui/input";
 import { Separator } from "~/components/ui/separator";
-import { ToggleGroup, ToggleGroupItem } from "~/components/ui/toggle-group";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "~/components/ui/tooltip";
 import { TaskListToggle } from "~/components/files/task-list-panel";
 import type { FileAction } from "~/components/files/file-context-menu";
 import { useIsMobile, useMediaQuery } from "~/hooks/use-mobile";
 import { cn } from "~/lib/utils";
-import { useFileStore, type ViewMode } from "~/stores/file-store";
+import { useFileStore } from "~/stores/file-store";
 
 interface FileToolbarProps {
   tabId: string;
@@ -67,6 +66,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, selectionCou
   const isCompactLayout = useMediaQuery("(max-width: 1023px)");
   const isMobile = useIsMobile();
   const buttonSizeClass = isCompactLayout ? "size-8" : "size-7";
+  const nextViewMode = viewMode === "grid" ? "list" : "grid";
 
   const handlePathSubmit = () => {
     setEditingPath(false);
@@ -293,30 +293,26 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, selectionCou
           <TooltipContent side="bottom">Search</TooltipContent>
         </Tooltip>
 
-        {/* View toggles */}
-        <ToggleGroup
-          type="single"
-          value={viewMode}
-          onValueChange={(v) => v && setViewMode(v as ViewMode)}
-          className="gap-0"
-        >
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <ToggleGroupItem value="list" className={cn(buttonSizeClass, "p-0")}>
-                <List className="size-4" />
-              </ToggleGroupItem>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">List view</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <ToggleGroupItem value="grid" className={cn(buttonSizeClass, "p-0")}>
+        {/* View toggle */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className={buttonSizeClass}
+              onClick={() => setViewMode(nextViewMode)}
+            >
+              {viewMode === "grid" ? (
                 <Grid3X3 className="size-4" />
-              </ToggleGroupItem>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">Grid view</TooltipContent>
-          </Tooltip>
-        </ToggleGroup>
+              ) : (
+                <List className="size-4" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            {viewMode === "grid" ? "Grid view" : "List view"}
+          </TooltipContent>
+        </Tooltip>
 
         {/* Hidden files toggle */}
         <Tooltip>

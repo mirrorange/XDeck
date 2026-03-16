@@ -138,7 +138,7 @@ function sortEntries(entries: FileEntry[], field: SortField, direction: SortDire
 export const useFileStore = create<FileStore>((set, get) => ({
   tabs: [],
   activeTabId: null,
-  viewMode: "list",
+  viewMode: "grid",
   showHidden: false,
 
   addTab: (path) => {
