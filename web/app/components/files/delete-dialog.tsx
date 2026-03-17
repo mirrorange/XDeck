@@ -89,12 +89,12 @@ export function DeleteDialog({
         <AlertDialogFooter>
           <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
           <AlertDialogAction
+            variant="destructive"
             onClick={(e) => {
               e.preventDefault();
               void handleDelete();
             }}
             disabled={isDeleting}
-            className="bg-destructive text-white hover:bg-destructive/90"
           >
             {isDeleting && <Loader2 className="mr-2 size-4 animate-spin" />}
             Delete
