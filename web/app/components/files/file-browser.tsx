@@ -63,6 +63,8 @@ export function FileBrowser() {
   const edgeScrollRafRef = useRef<number | null>(null);
   const lassoWasActiveRef = useRef(false);
   const initialTabRequestedRef = useRef(false);
+  const lastPointerTypeRef = useRef<"mouse" | "touch" | "pen" | null>(null);
+  const lastPointerTimeRef = useRef(0);
   const isCompactLayout = useMediaQuery("(max-width: 1023px)");
   const isMobile = useIsMobile();
   const taskPanelRequestedOpen = useTaskStore((state) => state.panelOpen);
@@ -252,9 +254,27 @@ export function FileBrowser() {
     if (activeTab) clearSelection(activeTab.id);
   }, [activeTab, clearSelection]);
 
+  const rememberPointerType = useCallback((pointerType: string | null | undefined) => {
+    if (pointerType !== "mouse" && pointerType !== "touch" && pointerType !== "pen") {
+      return;
+    }
+
+    lastPointerTypeRef.current = pointerType;
+    lastPointerTimeRef.current = performance.now();
+  }, []);
+
+  const shouldSuppressContextMenu = useCallback(() => {
+    const pointerType = lastPointerTypeRef.current;
+    if (pointerType !== "touch" && pointerType !== "pen") {
+      return false;
+    }
+
+    return performance.now() - lastPointerTimeRef.current < 1500;
+  }, []);
+
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, entry: FileEntry) => {
-      if (isMobile) {
+      if (shouldSuppressContextMenu()) {
         e.preventDefault();
         return;
       }
@@ -265,12 +285,12 @@ export function FileBrowser() {
         selectFile(activeTab.id, entry.path, false);
       }
     },
-    [activeTab, isMobile, selectFile]
+    [activeTab, selectFile, shouldSuppressContextMenu]
   );
 
   const handleEmptyContextMenu = useCallback(
     (e: React.MouseEvent) => {
-      if (isMobile) {
+      if (shouldSuppressContextMenu()) {
         e.preventDefault();
         return;
       }
@@ -280,7 +300,7 @@ export function FileBrowser() {
       setContextEntry(null);
       setContextMenuContentKey((current) => current + 1);
     },
-    [isMobile]
+    [shouldSuppressContextMenu]
   );
 
   const getSelectedPaths = useCallback((): string[] => {
@@ -816,7 +836,13 @@ export function FileBrowser() {
   return (
     <div
       className="flex h-full flex-col relative"
-      onContextMenuCapture={isMobile ? (e) => e.preventDefault() : undefined}
+      onPointerDownCapture={(e) => rememberPointerType(e.pointerType)}
+      onTouchStartCapture={() => rememberPointerType("touch")}
+      onContextMenuCapture={(e) => {
+        if (shouldSuppressContextMenu()) {
+          e.preventDefault();
+        }
+      }}
       onDragEnter={handleDesktopDragEnter}
       onDragOver={handleDesktopDragOver}
       onDragLeave={handleDesktopDragLeave}
