@@ -44,6 +44,7 @@ interface FileToolbarProps {
   canGoBack: boolean;
   canGoForward: boolean;
   selectionCount: number;
+  searchPanelOpen?: boolean;
   onSearchToggle?: () => void;
   taskPanelOpen?: boolean;
   onTaskPanelToggle?: () => void;
@@ -56,6 +57,7 @@ export function FileToolbar({
   canGoBack,
   canGoForward,
   selectionCount,
+  searchPanelOpen,
   onSearchToggle,
   taskPanelOpen,
   onTaskPanelToggle,
@@ -294,7 +296,7 @@ export function FileToolbar({
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
-              variant="ghost"
+              variant={searchPanelOpen ? "secondary" : "ghost"}
               size="icon"
               className={buttonSizeClass}
               onClick={onSearchToggle}

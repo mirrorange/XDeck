@@ -221,17 +221,16 @@ function TaskListPanelBody({
   );
 }
 
-interface TaskListPanelProps {
-  open?: boolean;
-  onOpenChange?: (open: boolean) => void;
+interface TaskListPanelContentProps {
+  onClose: () => void;
+  className?: string;
 }
 
-export function TaskListPanel({ open, onOpenChange }: TaskListPanelProps = {}) {
-  const { tasks, panelOpen, setPanelOpen, fetchTasks, subscribeToEvents } =
-    useTaskStore();
-  const isCompactLayout = useMediaQuery("(max-width: 1023px)");
-  const isOpen = open ?? panelOpen;
-  const handleOpenChange = onOpenChange ?? setPanelOpen;
+export function TaskListPanelContent({
+  onClose,
+  className,
+}: TaskListPanelContentProps) {
+  const { tasks, fetchTasks, subscribeToEvents } = useTaskStore();
 
   // Subscribe to task events and fetch initial task list
   useEffect(() => {
@@ -249,16 +248,33 @@ export function TaskListPanel({ open, onOpenChange }: TaskListPanelProps = {}) {
       t.status === "cancelled"
   );
 
+  return (
+    <TaskListPanelBody
+      taskList={taskList}
+      activeCount={activeCount}
+      hasFinished={hasFinished}
+      onClose={onClose}
+      className={className}
+    />
+  );
+}
+
+interface TaskListPanelProps {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function TaskListPanel({ open, onOpenChange }: TaskListPanelProps = {}) {
+  const { panelOpen, setPanelOpen } = useTaskStore();
+  const isCompactLayout = useMediaQuery("(max-width: 1023px)");
+  const isOpen = open ?? panelOpen;
+  const handleOpenChange = onOpenChange ?? setPanelOpen;
+
   if (isCompactLayout) {
     return (
       <Drawer open={isOpen} onOpenChange={handleOpenChange}>
         <DrawerContent className="h-[75dvh] max-h-[75dvh]">
-          <TaskListPanelBody
-            taskList={taskList}
-            activeCount={activeCount}
-            hasFinished={hasFinished}
-            onClose={() => handleOpenChange(false)}
-          />
+          <TaskListPanelContent onClose={() => handleOpenChange(false)} />
         </DrawerContent>
       </Drawer>
     );
@@ -274,12 +290,7 @@ export function TaskListPanel({ open, onOpenChange }: TaskListPanelProps = {}) {
           transition={{ duration: 0.2, ease: "easeInOut" }}
           className="shrink-0 border-l border-border flex flex-col bg-background overflow-hidden"
         >
-          <TaskListPanelBody
-            taskList={taskList}
-            activeCount={activeCount}
-            hasFinished={hasFinished}
-            onClose={() => handleOpenChange(false)}
-          />
+          <TaskListPanelContent onClose={() => handleOpenChange(false)} />
         </motion.div>
       )}
     </AnimatePresence>

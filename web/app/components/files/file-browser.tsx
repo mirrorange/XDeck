@@ -19,8 +19,13 @@ import { CompressDialog } from "~/components/files/compress-dialog";
 import { FilePreview } from "~/components/files/file-preview";
 import { MobileSelectionBar } from "~/components/files/mobile-selection-bar";
 import { MobileSelectionHeader } from "~/components/files/mobile-selection-header";
-import { TaskListPanel } from "~/components/files/task-list-panel";
+import { TaskListPanelContent } from "~/components/files/task-list-panel";
 import { Drawer, DrawerContent } from "~/components/ui/drawer";
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from "~/components/ui/resizable";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { useMediaQuery, useIsMobile } from "~/hooks/use-mobile";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
@@ -31,6 +36,12 @@ import { XDECK_MIME } from "~/lib/dnd-utils";
 import { useLassoSelection, LassoOverlay } from "~/lib/lasso-selection";
 import { getRpcClient } from "~/lib/rpc-client";
 import { toast } from "sonner";
+
+type FileSidePanelState =
+  | { kind: "closed" }
+  | { kind: "search" }
+  | { kind: "preview"; entry: FileEntry }
+  | { kind: "tasks" };
 
 export function FileBrowser() {
   const {
@@ -51,14 +62,17 @@ export function FileBrowser() {
   const lassoContainerRef = useRef<HTMLElement | null>(null);
   const edgeScrollRafRef = useRef<number | null>(null);
   const lassoWasActiveRef = useRef(false);
-  const mobileBackTrapArmedRef = useRef(false);
   const initialTabRequestedRef = useRef(false);
   const isCompactLayout = useMediaQuery("(max-width: 1023px)");
   const isMobile = useIsMobile();
-  const taskPanelOpen = useTaskStore((state) => state.panelOpen);
+  const taskPanelRequestedOpen = useTaskStore((state) => state.panelOpen);
   const setTaskPanelOpen = useTaskStore((state) => state.setPanelOpen);
 
   const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [sidePanel, setSidePanel] = useState<FileSidePanelState>(() =>
+    taskPanelRequestedOpen ? { kind: "tasks" } : { kind: "closed" }
+  );
+  const [desktopPanelSize, setDesktopPanelSize] = useState(32);
 
   const [contextEntry, setContextEntry] = useState<FileEntry | null>(null);
   const [contextMenuContentKey, setContextMenuContentKey] = useState(0);
@@ -74,12 +88,9 @@ export function FileBrowser() {
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveMode, setMoveMode] = useState<"copy" | "move">("move");
   const [movePaths, setMovePaths] = useState<string[]>([]);
-  const [searchOpen, setSearchOpen] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [compressOpen, setCompressOpen] = useState(false);
   const [compressPaths, setCompressPaths] = useState<string[]>([]);
-  const [previewEntry, setPreviewEntry] = useState<FileEntry | null>(null);
-  const previousTaskPanelOpenRef = useRef(taskPanelOpen);
 
   // Initialize with home dir on first mount
   useEffect(() => {
@@ -136,92 +147,66 @@ export function FileBrowser() {
     }
   }, [lassoState.active]);
 
-  const closeSearchPanel = useCallback(() => {
-    setSearchOpen(false);
-  }, []);
-
-  const closePreviewPanel = useCallback(() => {
-    setPreviewEntry(null);
-  }, []);
-
-  const closeTaskPanel = useCallback(() => {
-    setTaskPanelOpen(false);
-  }, [setTaskPanelOpen]);
-
-  const toggleSearchPanel = useCallback(() => {
-    setSearchOpen((prev) => {
-      const next = !prev;
-      if (next) {
-        setPreviewEntry(null);
-        setTaskPanelOpen(false);
-      }
-      return next;
-    });
-  }, [setTaskPanelOpen]);
-
-  const openPreviewPanel = useCallback(
-    (entry: FileEntry) => {
-      setSearchOpen(false);
-      setTaskPanelOpen(false);
-      setPreviewEntry(entry);
-    },
-    [setTaskPanelOpen]
-  );
-
-  const toggleTaskPanel = useCallback(() => {
-    if (taskPanelOpen) {
-      setTaskPanelOpen(false);
-      return;
-    }
-
-    setSearchOpen(false);
-    setPreviewEntry(null);
-    setTaskPanelOpen(true);
-  }, [taskPanelOpen, setTaskPanelOpen]);
-
-  const handleTaskPanelOpenChange = useCallback(
-    (open: boolean) => {
-      if (open) {
-        setSearchOpen(false);
-        setPreviewEntry(null);
-      }
-      setTaskPanelOpen(open);
-    },
-    [setTaskPanelOpen]
-  );
-
-  const handleSearchPanelOpenChange = useCallback(
-    (open: boolean) => {
-      if (open) {
-        setPreviewEntry(null);
-        setTaskPanelOpen(false);
-      }
-      setSearchOpen(open);
-    },
-    [setTaskPanelOpen]
-  );
-
-  const handlePreviewPanelOpenChange = useCallback(
-    (open: boolean) => {
-      if (open) {
-        setSearchOpen(false);
-        setTaskPanelOpen(false);
-        return;
-      }
-
-      setPreviewEntry(null);
+  const setActiveSidePanel = useCallback(
+    (nextPanel: FileSidePanelState) => {
+      setSidePanel(nextPanel);
+      setTaskPanelOpen(nextPanel.kind === "tasks");
     },
     [setTaskPanelOpen]
   );
 
   useEffect(() => {
-    if (taskPanelOpen && !previousTaskPanelOpenRef.current) {
-      setSearchOpen(false);
-      setPreviewEntry(null);
+    if (taskPanelRequestedOpen) {
+      setSidePanel((current) =>
+        current.kind === "tasks" ? current : { kind: "tasks" }
+      );
+      return;
     }
 
-    previousTaskPanelOpenRef.current = taskPanelOpen;
-  }, [taskPanelOpen]);
+    setSidePanel((current) =>
+      current.kind === "tasks" ? { kind: "closed" } : current
+    );
+  }, [taskPanelRequestedOpen]);
+
+  const closeSearchPanel = useCallback(() => {
+    setActiveSidePanel({ kind: "closed" });
+  }, [setActiveSidePanel]);
+
+  const closePreviewPanel = useCallback(() => {
+    setActiveSidePanel({ kind: "closed" });
+  }, [setActiveSidePanel]);
+
+  const closeTaskPanel = useCallback(() => {
+    setActiveSidePanel({ kind: "closed" });
+  }, [setActiveSidePanel]);
+
+  const toggleSearchPanel = useCallback(() => {
+    setActiveSidePanel(
+      sidePanel.kind === "search" ? { kind: "closed" } : { kind: "search" }
+    );
+  }, [sidePanel.kind, setActiveSidePanel]);
+
+  const openPreviewPanel = useCallback(
+    (entry: FileEntry) => {
+      setActiveSidePanel({ kind: "preview", entry });
+    },
+    [setActiveSidePanel]
+  );
+
+  const toggleTaskPanel = useCallback(() => {
+    setActiveSidePanel(
+      sidePanel.kind === "tasks" ? { kind: "closed" } : { kind: "tasks" }
+    );
+  }, [sidePanel.kind, setActiveSidePanel]);
+
+  const handleSidePanelOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) {
+        setActiveSidePanel({ kind: "closed" });
+      }
+    },
+    [setActiveSidePanel]
+  );
 
   const handleOpen = useCallback(
     (entry: FileEntry) => {
@@ -460,6 +445,12 @@ export function FileBrowser() {
     [activeTab, refresh]
   );
 
+  const activeSidePanelKind =
+    sidePanel.kind === "closed" ? null : sidePanel.kind;
+  const taskPanelOpen = activeSidePanelKind === "tasks";
+  const searchPanelOpen = activeSidePanelKind === "search";
+  const sidePanelOpen = activeSidePanelKind !== null;
+
   // Keyboard shortcuts
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -474,11 +465,7 @@ export function FileBrowser() {
       if (e.key === "Escape") {
         if (multiSelectMode) {
           handleExitMultiSelect();
-        } else if (searchOpen) {
-          closeSearchPanel();
-        } else if (previewEntry) {
-          closePreviewPanel();
-        } else if (taskPanelOpen) {
+        } else if (sidePanelOpen) {
           closeTaskPanel();
         } else {
           clearSelection(activeTab.id);
@@ -518,11 +505,7 @@ export function FileBrowser() {
 
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
         e.preventDefault();
-        if (!searchOpen) {
-          setPreviewEntry(null);
-          setTaskPanelOpen(false);
-        }
-        setSearchOpen(true);
+        setActiveSidePanel({ kind: "search" });
       }
     };
 
@@ -533,28 +516,12 @@ export function FileBrowser() {
     selectAll,
     clearSelection,
     refresh,
-    searchOpen,
     multiSelectMode,
     handleExitMultiSelect,
-    previewEntry,
-    taskPanelOpen,
-    closeSearchPanel,
-    closePreviewPanel,
+    sidePanelOpen,
     closeTaskPanel,
-    setTaskPanelOpen,
+    setActiveSidePanel,
   ]);
-
-  const shouldTrapMobileBack = isMobile && !!activeTab && (
-    multiSelectMode ||
-    searchOpen ||
-    previewEntry !== null ||
-    taskPanelOpen ||
-    activeTab.historyIndex > 0 ||
-    tabs.length > 1
-  );
-  const showTaskPanel = taskPanelOpen;
-  const showPreviewPanel = previewEntry !== null && !showTaskPanel;
-  const showSearchPanel = searchOpen && !showTaskPanel && previewEntry === null;
 
   // Edge scroll: auto-scroll when dragging near top/bottom of scroll area
   const EDGE_ZONE = 40;
@@ -716,6 +683,136 @@ export function FileBrowser() {
     );
   }
 
+  const sidePanelContent = (() => {
+    switch (sidePanel.kind) {
+      case "search":
+        return (
+          <FileSearchPanel
+            currentPath={activeTab.path}
+            onNavigate={(path) => void navigateTo(activeTab.id, path)}
+            onClose={closeSearchPanel}
+            className="h-full"
+          />
+        );
+      case "preview":
+        return (
+          <FilePreview
+            entry={sidePanel.entry}
+            onClose={closePreviewPanel}
+            className="h-full"
+          />
+        );
+      case "tasks":
+        return <TaskListPanelContent onClose={closeTaskPanel} className="h-full" />;
+      case "closed":
+        return null;
+    }
+  })();
+
+  const drawerHeightClass =
+    sidePanel.kind === "preview"
+      ? "h-[85dvh] max-h-[85dvh]"
+      : "h-[75dvh] max-h-[75dvh]";
+
+  const browserContent = (
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <FileContextMenu
+        contentKey={contextMenuContentKey}
+        entry={contextEntry}
+        hasSelection={activeTab.selectedPaths.size > 0}
+        selectionCount={activeTab.selectedPaths.size}
+        onAction={handleAction}
+      >
+        <ScrollArea
+          ref={scrollAreaRef}
+          className="flex-1"
+          onContextMenu={handleEmptyContextMenu}
+          onDragOver={handleScrollAreaDragOver}
+          onDragLeave={handleScrollAreaDragLeave}
+          onDrop={handleScrollAreaDrop}
+          onClick={(e) => {
+            // Don't clear selection if a lasso drag just finished
+            if (lassoWasActiveRef.current) {
+              lassoWasActiveRef.current = false;
+              return;
+            }
+            // Don't clear selection in multi-select mode (use the X button to exit)
+            if (multiSelectMode) return;
+            const target = e.target as HTMLElement;
+            if (
+              !target.closest("[data-slot='table-row']") &&
+              !target.closest("button") &&
+              !target.closest("[data-lasso-item]")
+            ) {
+              clearSelection(activeTab.id);
+            }
+          }}
+        >
+          {activeTab.isLoading ? (
+            <div className="flex h-64 items-center justify-center">
+              <Loader2 className="size-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : activeTab.error ? (
+            <div className="flex h-64 flex-col items-center justify-center gap-2 text-muted-foreground">
+              <p className="text-sm">Failed to load directory</p>
+              <p className="text-xs text-destructive">{activeTab.error}</p>
+            </div>
+          ) : (
+            <AnimatePresence mode="wait" initial={false}>
+              {viewMode === "list" ? (
+                <motion.div
+                  key="list-view"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                >
+                  <FileListView
+                    tabId={activeTab.id}
+                    entries={activeTab.entries}
+                    selectedPaths={activeTab.selectedPaths}
+                    sortField={activeTab.sortField}
+                    sortDirection={activeTab.sortDirection}
+                    isMobile={isMobile}
+                    multiSelectMode={multiSelectMode}
+                    onOpen={handleOpen}
+                    onContextMenu={handleContextMenu}
+                    onDropFiles={handleDropFiles}
+                    onLongPress={handleLongPress}
+                    onToggleSelect={handleToggleSelect}
+                    onDragSelect={handleDragSelect}
+                  />
+                </motion.div>
+              ) : (
+                <motion.div
+                  key="grid-view"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.15 }}
+                >
+                  <FileGridView
+                    tabId={activeTab.id}
+                    entries={activeTab.entries}
+                    selectedPaths={activeTab.selectedPaths}
+                    isMobile={isMobile}
+                    multiSelectMode={multiSelectMode}
+                    onOpen={handleOpen}
+                    onContextMenu={handleContextMenu}
+                    onDropFiles={handleDropFiles}
+                    onLongPress={handleLongPress}
+                    onToggleSelect={handleToggleSelect}
+                    onDragSelect={handleDragSelect}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          )}
+        </ScrollArea>
+      </FileContextMenu>
+    </div>
+  );
+
   return (
     <div
       className="flex h-full flex-col relative"
@@ -747,6 +844,7 @@ export function FileBrowser() {
           canGoBack={activeTab.historyIndex > 0}
           canGoForward={activeTab.historyIndex < activeTab.history.length - 1}
           selectionCount={activeTab.selectedPaths.size}
+          searchPanelOpen={searchPanelOpen}
           onSearchToggle={toggleSearchPanel}
           taskPanelOpen={taskPanelOpen}
           onTaskPanelToggle={toggleTaskPanel}
@@ -755,167 +853,41 @@ export function FileBrowser() {
       )}
 
       <div className="flex flex-1 min-h-0">
-        <FileContextMenu
-          contentKey={contextMenuContentKey}
-          entry={contextEntry}
-          hasSelection={activeTab.selectedPaths.size > 0}
-          selectionCount={activeTab.selectedPaths.size}
-          onAction={handleAction}
-        >
-          <ScrollArea
-            ref={scrollAreaRef}
-            className="flex-1"
-            onContextMenu={handleEmptyContextMenu}
-            onDragOver={handleScrollAreaDragOver}
-            onDragLeave={handleScrollAreaDragLeave}
-            onDrop={handleScrollAreaDrop}
-            onClick={(e) => {
-              // Don't clear selection if a lasso drag just finished
-              if (lassoWasActiveRef.current) {
-                lassoWasActiveRef.current = false;
-                return;
-              }
-              // Don't clear selection in multi-select mode (use the X button to exit)
-              if (multiSelectMode) return;
-              const target = e.target as HTMLElement;
-              if (
-                !target.closest("[data-slot='table-row']") &&
-                !target.closest("button") &&
-                !target.closest("[data-lasso-item]")
-              ) {
-                clearSelection(activeTab.id);
-              }
-            }}
+        {sidePanelOpen && !isCompactLayout ? (
+          <ResizablePanelGroup
+            orientation="horizontal"
+            className="flex-1 min-h-0"
           >
-            {activeTab.isLoading ? (
-              <div className="flex h-64 items-center justify-center">
-                <Loader2 className="size-6 animate-spin text-muted-foreground" />
-              </div>
-            ) : activeTab.error ? (
-              <div className="flex h-64 flex-col items-center justify-center gap-2 text-muted-foreground">
-                <p className="text-sm">Failed to load directory</p>
-                <p className="text-xs text-destructive">{activeTab.error}</p>
-              </div>
-            ) : (
-              <AnimatePresence mode="wait" initial={false}>
-                {viewMode === "list" ? (
-                  <motion.div
-                    key="list-view"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                  >
-                    <FileListView
-                      tabId={activeTab.id}
-                      entries={activeTab.entries}
-                      selectedPaths={activeTab.selectedPaths}
-                      sortField={activeTab.sortField}
-                      sortDirection={activeTab.sortDirection}
-                      isMobile={isMobile}
-                      multiSelectMode={multiSelectMode}
-                      onOpen={handleOpen}
-                      onContextMenu={handleContextMenu}
-                      onDropFiles={handleDropFiles}
-                      onLongPress={handleLongPress}
-                      onToggleSelect={handleToggleSelect}
-                      onDragSelect={handleDragSelect}
-                    />
-                  </motion.div>
-                ) : (
-                  <motion.div
-                    key="grid-view"
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.15 }}
-                  >
-                    <FileGridView
-                      tabId={activeTab.id}
-                      entries={activeTab.entries}
-                      selectedPaths={activeTab.selectedPaths}
-                      isMobile={isMobile}
-                      multiSelectMode={multiSelectMode}
-                      onOpen={handleOpen}
-                      onContextMenu={handleContextMenu}
-                      onDropFiles={handleDropFiles}
-                      onLongPress={handleLongPress}
-                      onToggleSelect={handleToggleSelect}
-                      onDragSelect={handleDragSelect}
-                    />
-                  </motion.div>
-                )}
-              </AnimatePresence>
-            )}
-          </ScrollArea>
-        </FileContextMenu>
-
-        <AnimatePresence>
-          {showSearchPanel && !isCompactLayout && (
-            <motion.div
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: "auto", opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              transition={{ duration: 0.2, ease: "easeInOut" }}
-              className="overflow-hidden shrink-0"
+            <ResizablePanel
+              defaultSize={`${Math.max(40, 100 - desktopPanelSize)}%`}
+              minSize="40%"
             >
-              <FileSearchPanel
-                currentPath={activeTab.path}
-                onNavigate={(path) => void navigateTo(activeTab.id, path)}
-                onClose={closeSearchPanel}
-                className="w-[350px] border-l"
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <AnimatePresence>
-          {showPreviewPanel && !isCompactLayout && previewEntry && (
-            <motion.div
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 400, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              transition={{ duration: 0.2, ease: "easeInOut" }}
-              className="shrink-0 overflow-hidden"
+              {browserContent}
+            </ResizablePanel>
+            <ResizableHandle withHandle />
+            <ResizablePanel
+              defaultSize={`${desktopPanelSize}%`}
+              minSize="320px"
+              maxSize="60%"
+              onResize={(size) => setDesktopPanelSize(size.asPercentage)}
+              className="min-w-[280px]"
             >
-              <FilePreview
-                entry={previewEntry}
-                onClose={closePreviewPanel}
-                className="border-l"
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <TaskListPanel open={showTaskPanel} onOpenChange={handleTaskPanelOpenChange} />
+              <div className="h-full min-w-0 overflow-hidden bg-background">
+                {sidePanelContent}
+              </div>
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        ) : (
+          browserContent
+        )}
       </div>
 
       {isCompactLayout && (
-        <>
-          <Drawer open={showSearchPanel} onOpenChange={handleSearchPanelOpenChange}>
-            <DrawerContent className="h-[75dvh] max-h-[75dvh]">
-              <FileSearchPanel
-                currentPath={activeTab.path}
-                onNavigate={(path) => void navigateTo(activeTab.id, path)}
-                onClose={closeSearchPanel}
-              />
-            </DrawerContent>
-          </Drawer>
-
-          <Drawer
-            open={showPreviewPanel}
-            onOpenChange={handlePreviewPanelOpenChange}
-          >
-            <DrawerContent className="h-[85dvh] max-h-[85dvh]">
-              {previewEntry && (
-                <FilePreview
-                  entry={previewEntry}
-                  onClose={closePreviewPanel}
-                />
-              )}
-            </DrawerContent>
-          </Drawer>
-        </>
+        <Drawer open={sidePanelOpen} onOpenChange={handleSidePanelOpenChange}>
+          <DrawerContent className={drawerHeightClass}>
+            {sidePanelContent}
+          </DrawerContent>
+        </Drawer>
       )}
 
       {!isMobile && <FileStatusBar tab={activeTab} />}
