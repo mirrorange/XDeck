@@ -1,14 +1,15 @@
 import { useCallback, useRef, useState } from "react";
 import { FolderUp, Upload, X } from "lucide-react";
 
-import { Button } from "~/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "~/components/ui/dialog";
+  ResponsiveModal,
+  ResponsiveModalContent,
+  ResponsiveModalDescription,
+  ResponsiveModalFooter,
+  ResponsiveModalHeader,
+  ResponsiveModalTitle,
+} from "~/components/responsive-modal";
+import { Button } from "~/components/ui/button";
 import {
   uploadFiles,
   uploadFolder,
@@ -94,26 +95,35 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
   };
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Upload {isFolderUpload ? "Folder" : "Files"}</DialogTitle>
-        </DialogHeader>
+    <ResponsiveModal open={open} onOpenChange={handleOpenChange}>
+      <ResponsiveModalContent className="sm:max-w-md">
+        <ResponsiveModalHeader>
+          <ResponsiveModalTitle>Upload {isFolderUpload ? "Folder" : "Files"}</ResponsiveModalTitle>
+          <ResponsiveModalDescription>
+            Choose files or a folder to upload.
+          </ResponsiveModalDescription>
+        </ResponsiveModalHeader>
 
-        <div className="space-y-4">
+        <div className="space-y-4 px-4 md:px-0">
           <p className="break-all text-sm text-muted-foreground">
             Upload to: <span className="font-mono text-foreground">{currentPath}</span>
           </p>
 
           {/* File/Folder input area */}
           {selectedFiles.length === 0 ? (
-            <div className="grid grid-cols-2 gap-3">
-              <div
-                className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-6 cursor-pointer hover:border-primary/50 transition-colors"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Upload className="size-8 text-muted-foreground" />
-                <p className="text-sm text-muted-foreground text-center">Select Files</p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <>
+                <button
+                  type="button"
+                  className="flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-5 text-center transition-colors hover:border-primary/50 hover:bg-muted/30"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Upload className="size-8 text-muted-foreground" />
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">Select Files</p>
+                    <p className="text-xs text-muted-foreground">Choose one or more files</p>
+                  </div>
+                </button>
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -121,13 +131,19 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
                   className="hidden"
                   onChange={handleFileSelect}
                 />
-              </div>
-              <div
-                className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-6 cursor-pointer hover:border-primary/50 transition-colors"
-                onClick={() => folderInputRef.current?.click()}
-              >
-                <FolderUp className="size-8 text-muted-foreground" />
-                <p className="text-sm text-muted-foreground text-center">Select Folder</p>
+              </>
+              <>
+                <button
+                  type="button"
+                  className="flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-5 text-center transition-colors hover:border-primary/50 hover:bg-muted/30"
+                  onClick={() => folderInputRef.current?.click()}
+                >
+                  <FolderUp className="size-8 text-muted-foreground" />
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium text-foreground">Select Folder</p>
+                    <p className="text-xs text-muted-foreground">Preserve the folder structure</p>
+                  </div>
+                </button>
                 <input
                   ref={folderInputRef}
                   type="file"
@@ -136,26 +152,28 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
                   className="hidden"
                   onChange={handleFolderSelect}
                 />
-              </div>
+              </>
             </div>
           ) : (
-            <div
-              className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-4 cursor-pointer hover:border-primary/50 transition-colors"
-              onClick={() => {
-                if (isFolderUpload) {
-                  folderInputRef.current?.click();
-                } else {
-                  fileInputRef.current?.click();
-                }
-              }}
-            >
-              {isFolderUpload ? (
-                <FolderUp className="size-6 text-muted-foreground" />
-              ) : (
-                <Upload className="size-6 text-muted-foreground" />
-              )}
-              <p className="text-xs text-muted-foreground">Click to change selection</p>
-              {/* Hidden inputs (need to stay in DOM) */}
+            <>
+              <button
+                type="button"
+                className="flex w-full flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-4 text-center transition-colors hover:border-primary/50 hover:bg-muted/30"
+                onClick={() => {
+                  if (isFolderUpload) {
+                    folderInputRef.current?.click();
+                  } else {
+                    fileInputRef.current?.click();
+                  }
+                }}
+              >
+                {isFolderUpload ? (
+                  <FolderUp className="size-6 text-muted-foreground" />
+                ) : (
+                  <Upload className="size-6 text-muted-foreground" />
+                )}
+                <p className="text-xs text-muted-foreground">Choose a different selection</p>
+              </button>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -171,7 +189,7 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
                 className="hidden"
                 onChange={handleFolderSelect}
               />
-            </div>
+            </>
           )}
 
           {/* Selected files summary */}
@@ -185,11 +203,11 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
                   </span>
                 </p>
               )}
-              <div className="max-h-40 overflow-y-auto space-y-1">
+              <div className="max-h-56 space-y-1 overflow-y-auto rounded-md border bg-muted/20 p-2">
                 {selectedFiles.map((file, i) => (
                   <div
                     key={`${getDisplayName(file)}-${i}`}
-                    className="flex min-w-0 items-center justify-between gap-2 rounded bg-muted/50 px-2 py-1 text-sm"
+                    className="flex min-w-0 items-center justify-between gap-2 rounded bg-background px-2 py-1.5 text-sm"
                   >
                     <span className="min-w-0 flex-1 truncate" title={getDisplayName(file)}>
                       {getDisplayName(file)}
@@ -199,7 +217,12 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
                         {(file.size / 1024).toFixed(1)} KB
                       </span>
                       {!isFolderUpload && (
-                        <button onClick={() => removeFile(i)} className="hover:text-destructive">
+                        <button
+                          type="button"
+                          onClick={() => removeFile(i)}
+                          className="hover:text-destructive"
+                          aria-label={`Remove ${file.name}`}
+                        >
                           <X className="size-3.5" />
                         </button>
                       )}
@@ -214,15 +237,15 @@ export function UploadDialog({ open, onOpenChange, currentPath, onUploaded }: Up
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
 
-        <DialogFooter>
+        <ResponsiveModalFooter>
           <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={handleUpload} disabled={selectedFiles.length === 0}>
             Upload {selectedFiles.length > 0 ? `(${selectedFiles.length})` : ""}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </ResponsiveModalFooter>
+      </ResponsiveModalContent>
+    </ResponsiveModal>
   );
 }
