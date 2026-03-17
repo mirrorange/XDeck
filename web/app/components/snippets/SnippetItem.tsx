@@ -185,8 +185,8 @@ export function SnippetItem({ snippet, onExecute, onEdit, onDelete }: SnippetIte
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              variant="destructive"
               onClick={() => onDelete(snippet.id)}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Delete
             </AlertDialogAction>

@@ -518,8 +518,8 @@ export function SnippetStoreDialog({ open, onOpenChange }: SnippetStoreDialogPro
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
+              variant="destructive"
               onClick={confirmUninstall}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               Remove
             </AlertDialogAction>
