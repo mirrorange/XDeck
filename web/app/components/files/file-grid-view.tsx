@@ -114,7 +114,7 @@ export function FileGridView({
       className="grid gap-2 p-2 sm:gap-3 sm:p-3"
       style={{
         gridTemplateColumns:
-          "repeat(auto-fit, minmax(clamp(7rem, 22vw, 9.5rem), 1fr))",
+          "repeat(auto-fill, minmax(clamp(7rem, 22vw, 9.5rem), 1fr))",
       }}
     >
       {entries.map((entry, index) => {
