@@ -24,6 +24,7 @@ import { Drawer, DrawerContent } from "~/components/ui/drawer";
 import { ScrollArea } from "~/components/ui/scroll-area";
 import { useMediaQuery, useIsMobile } from "~/hooks/use-mobile";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
+import { useTaskStore } from "~/stores/task-store";
 import { downloadFile, downloadFolder, uploadFiles, uploadFolder } from "~/lib/file-transfer";
 import { isPreviewable } from "~/lib/file-utils";
 import { XDECK_MIME } from "~/lib/dnd-utils";
@@ -54,6 +55,8 @@ export function FileBrowser() {
   const initialTabRequestedRef = useRef(false);
   const isCompactLayout = useMediaQuery("(max-width: 1023px)");
   const isMobile = useIsMobile();
+  const taskPanelOpen = useTaskStore((state) => state.panelOpen);
+  const setTaskPanelOpen = useTaskStore((state) => state.setPanelOpen);
 
   const [multiSelectMode, setMultiSelectMode] = useState(false);
 
@@ -76,6 +79,7 @@ export function FileBrowser() {
   const [compressOpen, setCompressOpen] = useState(false);
   const [compressPaths, setCompressPaths] = useState<string[]>([]);
   const [previewEntry, setPreviewEntry] = useState<FileEntry | null>(null);
+  const previousTaskPanelOpenRef = useRef(taskPanelOpen);
 
   // Initialize with home dir on first mount
   useEffect(() => {
@@ -132,6 +136,93 @@ export function FileBrowser() {
     }
   }, [lassoState.active]);
 
+  const closeSearchPanel = useCallback(() => {
+    setSearchOpen(false);
+  }, []);
+
+  const closePreviewPanel = useCallback(() => {
+    setPreviewEntry(null);
+  }, []);
+
+  const closeTaskPanel = useCallback(() => {
+    setTaskPanelOpen(false);
+  }, [setTaskPanelOpen]);
+
+  const toggleSearchPanel = useCallback(() => {
+    setSearchOpen((prev) => {
+      const next = !prev;
+      if (next) {
+        setPreviewEntry(null);
+        setTaskPanelOpen(false);
+      }
+      return next;
+    });
+  }, [setTaskPanelOpen]);
+
+  const openPreviewPanel = useCallback(
+    (entry: FileEntry) => {
+      setSearchOpen(false);
+      setTaskPanelOpen(false);
+      setPreviewEntry(entry);
+    },
+    [setTaskPanelOpen]
+  );
+
+  const toggleTaskPanel = useCallback(() => {
+    if (taskPanelOpen) {
+      setTaskPanelOpen(false);
+      return;
+    }
+
+    setSearchOpen(false);
+    setPreviewEntry(null);
+    setTaskPanelOpen(true);
+  }, [taskPanelOpen, setTaskPanelOpen]);
+
+  const handleTaskPanelOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) {
+        setSearchOpen(false);
+        setPreviewEntry(null);
+      }
+      setTaskPanelOpen(open);
+    },
+    [setTaskPanelOpen]
+  );
+
+  const handleSearchPanelOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) {
+        setPreviewEntry(null);
+        setTaskPanelOpen(false);
+      }
+      setSearchOpen(open);
+    },
+    [setTaskPanelOpen]
+  );
+
+  const handlePreviewPanelOpenChange = useCallback(
+    (open: boolean) => {
+      if (open) {
+        setSearchOpen(false);
+        setTaskPanelOpen(false);
+        return;
+      }
+
+      setPreviewEntry(null);
+    },
+    [setTaskPanelOpen]
+  );
+
+  useEffect(() => {
+    if (taskPanelOpen && !previousTaskPanelOpenRef.current) {
+      setSearchOpen(false);
+      setPreviewEntry(null);
+    }
+
+    previousTaskPanelOpenRef.current = taskPanelOpen;
+  }, [taskPanelOpen]);
+
   const handleOpen = useCallback(
     (entry: FileEntry) => {
       if (!activeTab) return;
@@ -140,10 +231,10 @@ export function FileBrowser() {
         if (multiSelectMode) setMultiSelectMode(false);
         void navigateTo(activeTab.id, entry.path);
       } else if (isPreviewable(entry.type, entry.name)) {
-        setPreviewEntry(entry);
+        openPreviewPanel(entry);
       }
     },
-    [activeTab, navigateTo, multiSelectMode]
+    [activeTab, navigateTo, multiSelectMode, openPreviewPanel]
   );
 
   const handleLongPress = useCallback(
@@ -384,9 +475,11 @@ export function FileBrowser() {
         if (multiSelectMode) {
           handleExitMultiSelect();
         } else if (searchOpen) {
-          setSearchOpen(false);
+          closeSearchPanel();
         } else if (previewEntry) {
-          setPreviewEntry(null);
+          closePreviewPanel();
+        } else if (taskPanelOpen) {
+          closeTaskPanel();
         } else {
           clearSelection(activeTab.id);
         }
@@ -425,21 +518,43 @@ export function FileBrowser() {
 
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
         e.preventDefault();
+        if (!searchOpen) {
+          setPreviewEntry(null);
+          setTaskPanelOpen(false);
+        }
         setSearchOpen(true);
       }
     };
 
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [activeTab, selectAll, clearSelection, refresh, searchOpen, multiSelectMode, handleExitMultiSelect]);
+  }, [
+    activeTab,
+    selectAll,
+    clearSelection,
+    refresh,
+    searchOpen,
+    multiSelectMode,
+    handleExitMultiSelect,
+    previewEntry,
+    taskPanelOpen,
+    closeSearchPanel,
+    closePreviewPanel,
+    closeTaskPanel,
+    setTaskPanelOpen,
+  ]);
 
   const shouldTrapMobileBack = isMobile && !!activeTab && (
     multiSelectMode ||
     searchOpen ||
     previewEntry !== null ||
+    taskPanelOpen ||
     activeTab.historyIndex > 0 ||
     tabs.length > 1
   );
+  const showTaskPanel = taskPanelOpen;
+  const showPreviewPanel = previewEntry !== null && !showTaskPanel;
+  const showSearchPanel = searchOpen && !showTaskPanel && previewEntry === null;
 
   // Edge scroll: auto-scroll when dragging near top/bottom of scroll area
   const EDGE_ZONE = 40;
@@ -632,7 +747,9 @@ export function FileBrowser() {
           canGoBack={activeTab.historyIndex > 0}
           canGoForward={activeTab.historyIndex < activeTab.history.length - 1}
           selectionCount={activeTab.selectedPaths.size}
-          onSearchToggle={() => setSearchOpen(!searchOpen)}
+          onSearchToggle={toggleSearchPanel}
+          taskPanelOpen={taskPanelOpen}
+          onTaskPanelToggle={toggleTaskPanel}
           onAction={handleAction}
         />
       )}
@@ -734,7 +851,7 @@ export function FileBrowser() {
         </FileContextMenu>
 
         <AnimatePresence>
-          {searchOpen && !isCompactLayout && (
+          {showSearchPanel && !isCompactLayout && (
             <motion.div
               initial={{ width: 0, opacity: 0 }}
               animate={{ width: "auto", opacity: 1 }}
@@ -745,7 +862,7 @@ export function FileBrowser() {
               <FileSearchPanel
                 currentPath={activeTab.path}
                 onNavigate={(path) => void navigateTo(activeTab.id, path)}
-                onClose={() => setSearchOpen(false)}
+                onClose={closeSearchPanel}
                 className="w-[350px] border-l"
               />
             </motion.div>
@@ -753,7 +870,7 @@ export function FileBrowser() {
         </AnimatePresence>
 
         <AnimatePresence>
-          {previewEntry && !isCompactLayout && (
+          {showPreviewPanel && !isCompactLayout && previewEntry && (
             <motion.div
               initial={{ width: 0, opacity: 0 }}
               animate={{ width: 400, opacity: 1 }}
@@ -763,34 +880,37 @@ export function FileBrowser() {
             >
               <FilePreview
                 entry={previewEntry}
-                onClose={() => setPreviewEntry(null)}
+                onClose={closePreviewPanel}
                 className="border-l"
               />
             </motion.div>
           )}
         </AnimatePresence>
 
-        <TaskListPanel />
+        <TaskListPanel open={showTaskPanel} onOpenChange={handleTaskPanelOpenChange} />
       </div>
 
       {isCompactLayout && (
         <>
-          <Drawer open={searchOpen} onOpenChange={setSearchOpen}>
+          <Drawer open={showSearchPanel} onOpenChange={handleSearchPanelOpenChange}>
             <DrawerContent className="h-[75dvh] max-h-[75dvh]">
               <FileSearchPanel
                 currentPath={activeTab.path}
                 onNavigate={(path) => void navigateTo(activeTab.id, path)}
-                onClose={() => setSearchOpen(false)}
+                onClose={closeSearchPanel}
               />
             </DrawerContent>
           </Drawer>
 
-          <Drawer open={previewEntry !== null} onOpenChange={(open) => !open && setPreviewEntry(null)}>
+          <Drawer
+            open={showPreviewPanel}
+            onOpenChange={handlePreviewPanelOpenChange}
+          >
             <DrawerContent className="h-[85dvh] max-h-[85dvh]">
               {previewEntry && (
                 <FilePreview
                   entry={previewEntry}
-                  onClose={() => setPreviewEntry(null)}
+                  onClose={closePreviewPanel}
                 />
               )}
             </DrawerContent>

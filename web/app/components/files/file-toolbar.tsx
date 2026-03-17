@@ -45,10 +45,22 @@ interface FileToolbarProps {
   canGoForward: boolean;
   selectionCount: number;
   onSearchToggle?: () => void;
+  taskPanelOpen?: boolean;
+  onTaskPanelToggle?: () => void;
   onAction: (action: FileAction) => void;
 }
 
-export function FileToolbar({ tabId, path, canGoBack, canGoForward, selectionCount, onSearchToggle, onAction }: FileToolbarProps) {
+export function FileToolbar({
+  tabId,
+  path,
+  canGoBack,
+  canGoForward,
+  selectionCount,
+  onSearchToggle,
+  taskPanelOpen,
+  onTaskPanelToggle,
+  onAction,
+}: FileToolbarProps) {
   const {
     goBack,
     goForward,
@@ -334,7 +346,7 @@ export function FileToolbar({ tabId, path, canGoBack, canGoForward, selectionCou
         {/* Task list toggle */}
         <Tooltip>
           <TooltipTrigger asChild>
-            <TaskListToggle />
+            <TaskListToggle open={taskPanelOpen} onToggle={onTaskPanelToggle} />
           </TooltipTrigger>
           <TooltipContent side="bottom">Tasks</TooltipContent>
         </Tooltip>

@@ -112,16 +112,23 @@ function TaskRow({ task }: { task: Task }) {
 
 // ── Toggle button (exported for toolbar use) ───────────────────────────────
 
-export function TaskListToggle() {
+interface TaskListToggleProps {
+  open?: boolean;
+  onToggle?: () => void;
+}
+
+export function TaskListToggle({ open, onToggle }: TaskListToggleProps) {
   const { tasks, togglePanel, panelOpen } = useTaskStore();
   const activeCount = getActiveTaskCount(tasks);
+  const isOpen = open ?? panelOpen;
+  const handleToggle = onToggle ?? togglePanel;
 
   return (
     <Button
-      variant={panelOpen ? "secondary" : "ghost"}
+      variant={isOpen ? "secondary" : "ghost"}
       size="icon"
       className="relative size-8"
-      onClick={togglePanel}
+      onClick={handleToggle}
       title="Task list"
     >
       <ListTodo className="size-4" />
@@ -214,10 +221,17 @@ function TaskListPanelBody({
   );
 }
 
-export function TaskListPanel() {
+interface TaskListPanelProps {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function TaskListPanel({ open, onOpenChange }: TaskListPanelProps = {}) {
   const { tasks, panelOpen, setPanelOpen, fetchTasks, subscribeToEvents } =
     useTaskStore();
   const isCompactLayout = useMediaQuery("(max-width: 1023px)");
+  const isOpen = open ?? panelOpen;
+  const handleOpenChange = onOpenChange ?? setPanelOpen;
 
   // Subscribe to task events and fetch initial task list
   useEffect(() => {
@@ -237,13 +251,13 @@ export function TaskListPanel() {
 
   if (isCompactLayout) {
     return (
-      <Drawer open={panelOpen} onOpenChange={setPanelOpen}>
+      <Drawer open={isOpen} onOpenChange={handleOpenChange}>
         <DrawerContent className="h-[75dvh] max-h-[75dvh]">
           <TaskListPanelBody
             taskList={taskList}
             activeCount={activeCount}
             hasFinished={hasFinished}
-            onClose={() => setPanelOpen(false)}
+            onClose={() => handleOpenChange(false)}
           />
         </DrawerContent>
       </Drawer>
@@ -252,7 +266,7 @@ export function TaskListPanel() {
 
   return (
     <AnimatePresence>
-      {panelOpen && (
+      {isOpen && (
         <motion.div
           initial={{ width: 0, opacity: 0 }}
           animate={{ width: 320, opacity: 1 }}
@@ -264,7 +278,7 @@ export function TaskListPanel() {
             taskList={taskList}
             activeCount={activeCount}
             hasFinished={hasFinished}
-            onClose={() => setPanelOpen(false)}
+            onClose={() => handleOpenChange(false)}
           />
         </motion.div>
       )}
