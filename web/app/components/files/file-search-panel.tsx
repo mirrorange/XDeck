@@ -12,7 +12,6 @@ import { FileIcon } from "~/components/files/file-icon";
 import { MobileSelectionBar } from "~/components/files/mobile-selection-bar";
 import { MobileSelectionHeader } from "~/components/files/mobile-selection-header";
 import { useContextMenuGuard } from "~/hooks/use-context-menu-guard";
-import { useIsMobile } from "~/hooks/use-mobile";
 import { useTouchDragSelect } from "~/hooks/use-touch-drag-select";
 import { startFileDrag } from "~/lib/dnd-utils";
 import { formatFileSize, truncateMiddleFilename } from "~/lib/file-utils";
@@ -40,7 +39,6 @@ export function FileSearchPanel({
   onClose,
   className,
 }: FileSearchPanelProps) {
-  const isMobile = useIsMobile();
   const dragPreviewCleanupRef = useRef<(() => void) | null>(null);
   const [query, setQuery] = useState("");
   const [recursive, setRecursive] = useState(true);
@@ -66,10 +64,9 @@ export function FileSearchPanel({
   );
 
   const handleLongPress = useCallback((entry: FileEntry) => {
-    if (!isMobile) return;
     setMultiSelectMode(true);
     setSelectedPaths(new Set([entry.path]));
-  }, [isMobile]);
+  }, []);
 
   const handleDragSelect = useCallback((paths: Set<string>) => {
     setSelectedPaths(new Set(paths));
@@ -83,7 +80,7 @@ export function FileSearchPanel({
   } = useTouchDragSelect({
     entries: results,
     multiSelectMode,
-    isMobile,
+    enabled: true,
     onDragSelect: handleDragSelect,
     onLongPress: handleLongPress,
     itemSelector: "[data-search-result-item]",
@@ -185,7 +182,7 @@ export function FileSearchPanel({
   }, []);
 
   const selectedEntries = results.filter((entry) => selectedPaths.has(entry.path));
-  const searchSelectionActive = isMobile && multiSelectMode;
+  const searchSelectionActive = multiSelectMode;
 
   const handleActionRequest = useCallback(
     (action: FileAction, entry?: FileEntry) => {
@@ -316,7 +313,7 @@ export function FileSearchPanel({
                 >
                   <button
                     type="button"
-                    draggable={!isMobile}
+                    draggable={!multiSelectMode}
                     data-search-result-item
                     data-path={entry.path}
                     className={cn(
@@ -326,11 +323,11 @@ export function FileSearchPanel({
                     )}
                     onClick={(e) => handleClick(e, entry)}
                     onContextMenu={(e) => handleContextMenu(e, entry)}
-                    onTouchStart={isMobile ? (e) => handleTouchStart(entry, index, e) : undefined}
-                    onTouchEnd={isMobile ? handleTouchEnd : undefined}
-                    onTouchCancel={isMobile ? handleTouchEnd : undefined}
-                    onDragStart={!isMobile ? (e) => handleDragStart(e, entry) : undefined}
-                    onDragEnd={!isMobile ? handleDragEnd : undefined}
+                    onTouchStart={(e) => handleTouchStart(entry, index, e)}
+                    onTouchEnd={handleTouchEnd}
+                    onTouchCancel={handleTouchEnd}
+                    onDragStart={!multiSelectMode ? (e) => handleDragStart(e, entry) : undefined}
+                    onDragEnd={!multiSelectMode ? handleDragEnd : undefined}
                     style={{ WebkitTouchCallout: "none" }}
                   >
                     {searchSelectionActive && (

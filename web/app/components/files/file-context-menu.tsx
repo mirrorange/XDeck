@@ -84,6 +84,16 @@ export function FileContextMenu({
     onAction(action);
   };
 
+  const suppressTouchContextMenu = (
+    event:
+      | React.PointerEvent<HTMLElement>
+      | React.MouseEvent<HTMLElement>
+  ) => {
+    if ("pointerType" in event && (event.pointerType === "touch" || event.pointerType === "pen")) {
+      event.preventDefault();
+    }
+  };
+
   return (
     <ContextMenu
       onOpenChange={(open) => {
@@ -93,7 +103,13 @@ export function FileContextMenu({
         }
       }}
     >
-      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuTrigger
+        asChild
+        onPointerDown={suppressTouchContextMenu}
+        onContextMenu={suppressTouchContextMenu}
+      >
+        {children}
+      </ContextMenuTrigger>
       <ContextMenuContent key={contentKey} className="w-56">
         {entry ? (
           <>

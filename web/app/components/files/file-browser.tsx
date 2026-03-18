@@ -231,11 +231,11 @@ export function FileBrowser() {
 
   const handleLongPress = useCallback(
     (entry: FileEntry) => {
-      if (!activeTab || !isMobile) return;
+      if (!activeTab) return;
       setMultiSelectMode(true);
       selectFile(activeTab.id, entry.path, false);
     },
-    [activeTab, isMobile, selectFile]
+    [activeTab, selectFile]
   );
 
   const handleToggleSelect = useCallback(
@@ -861,7 +861,7 @@ export function FileBrowser() {
     >
       <FileTabBar tabs={tabs} activeTabId={activeTabId} />
 
-      {isMobile && multiSelectMode ? (
+      {multiSelectMode ? (
         <MobileSelectionHeader
           selectionCount={activeTab.selectedPaths.size}
           totalCount={activeTab.entries.length}
@@ -929,10 +929,10 @@ export function FileBrowser() {
         </Drawer>
       )}
 
-      {!isMobile && <FileStatusBar tab={activeTab} />}
+      {!multiSelectMode && !isMobile && <FileStatusBar tab={activeTab} />}
 
       {/* Mobile multi-select bottom action bar */}
-      {isMobile && multiSelectMode && (
+      {multiSelectMode && (
         <MobileSelectionBar
           selectionCount={activeTab.selectedPaths.size}
           onAction={handleAction}

@@ -75,7 +75,7 @@ export function FileListView({
   } = useTouchDragSelect({
     entries,
     multiSelectMode: !!multiSelectMode,
-    isMobile: !!isMobile,
+    enabled: true,
     onDragSelect: onDragSelect ?? (() => {}),
     onLongPress: onLongPress ?? (() => {}),
     itemSelector: "[data-lasso-item]",
@@ -183,9 +183,9 @@ export function FileListView({
               onClick={(e) => handleClick(e, entry)}
               onDoubleClick={() => handleDoubleClick(entry)}
               onContextMenu={(e) => onContextMenu(e, entry)}
-              onTouchStart={isMobile ? (e) => handleTouchStart(entry, index, e) : undefined}
-              onTouchEnd={isMobile ? touchDragEnd : undefined}
-              onTouchCancel={isMobile ? touchDragEnd : undefined}
+              onTouchStart={(e) => handleTouchStart(entry, index, e)}
+              onTouchEnd={touchDragEnd}
+              onTouchCancel={touchDragEnd}
               onDragStart={!isMobile ? (e) => handleDragStart(e, entry) : undefined}
               onDragEnd={!isMobile ? handleDragEnd : undefined}
               onDragOver={!isMobile ? (e) => handleDragOver(e, entry) : undefined}

@@ -6,8 +6,8 @@ interface UseTouchDragSelectOptions {
   entries: FileEntry[];
   /** Whether multi-select mode is active */
   multiSelectMode: boolean;
-  /** Whether this is a mobile device */
-  isMobile: boolean;
+  /** Whether touch long-press drag selection is enabled */
+  enabled: boolean;
   /** Called with the set of paths that should be selected during drag */
   onDragSelect: (paths: Set<string>) => void;
   /** Called when long-press fires (enters multi-select + selects anchor) */
@@ -17,7 +17,7 @@ interface UseTouchDragSelectOptions {
 }
 
 /**
- * Hook for touch-drag range selection on mobile.
+ * Hook for touch-drag range selection.
  *
  * Drag selection always requires a completed long-press first.
  * Before the long-press threshold is reached, touch movement should keep
@@ -28,7 +28,7 @@ interface UseTouchDragSelectOptions {
 export function useTouchDragSelect({
   entries,
   multiSelectMode,
-  isMobile,
+  enabled,
   onDragSelect,
   onLongPress,
   itemSelector,
@@ -116,7 +116,7 @@ export function useTouchDragSelect({
    * original element.
    */
   useEffect(() => {
-    if (!isMobile) return;
+    if (!enabled) return;
 
     const handleMove = (e: TouchEvent) => {
       const touch = e.touches[0];
@@ -162,11 +162,11 @@ export function useTouchDragSelect({
       document.removeEventListener("touchend", handleEnd);
       document.removeEventListener("touchcancel", handleEnd);
     };
-  }, [isMobile, clearLongPressTimer, getEntryIndexAtPoint, toggleRangeSelection]);
+  }, [enabled, clearLongPressTimer, getEntryIndexAtPoint, toggleRangeSelection]);
 
   const handleTouchStart = useCallback(
     (entry: FileEntry, entryIndex: number, e: React.TouchEvent) => {
-      if (!isMobile) return;
+      if (!enabled) return;
 
       const touch = e.touches[0];
       touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
@@ -192,7 +192,7 @@ export function useTouchDragSelect({
         dragActiveRef.current = true;
       }, 500);
     },
-    [clearLongPressTimer, isMobile, multiSelectMode, onLongPress]
+    [clearLongPressTimer, enabled, multiSelectMode, onLongPress]
   );
 
   const handleTouchEnd = useCallback(() => {
