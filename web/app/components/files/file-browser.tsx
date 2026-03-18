@@ -27,6 +27,7 @@ import {
   ResizablePanelGroup,
 } from "~/components/ui/resizable";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import { useContextMenuGuard } from "~/hooks/use-context-menu-guard";
 import { useMediaQuery, useIsMobile } from "~/hooks/use-mobile";
 import { useFileStore, type FileEntry } from "~/stores/file-store";
 import { useTaskStore } from "~/stores/task-store";
@@ -42,6 +43,11 @@ type FileSidePanelState =
   | { kind: "search" }
   | { kind: "preview"; entry: FileEntry }
   | { kind: "tasks" };
+
+interface FileActionContext {
+  entry?: FileEntry | null;
+  selectedEntries?: FileEntry[];
+}
 
 export function FileBrowser() {
   const {
@@ -63,12 +69,11 @@ export function FileBrowser() {
   const edgeScrollRafRef = useRef<number | null>(null);
   const lassoWasActiveRef = useRef(false);
   const initialTabRequestedRef = useRef(false);
-  const lastPointerTypeRef = useRef<"mouse" | "touch" | "pen" | null>(null);
-  const lastPointerTimeRef = useRef(0);
   const isCompactLayout = useMediaQuery("(max-width: 1023px)");
   const isMobile = useIsMobile();
   const taskPanelRequestedOpen = useTaskStore((state) => state.panelOpen);
   const setTaskPanelOpen = useTaskStore((state) => state.setPanelOpen);
+  const { rememberPointerType, shouldSuppressContextMenu } = useContextMenuGuard();
 
   const [multiSelectMode, setMultiSelectMode] = useState(false);
   const [sidePanel, setSidePanel] = useState<FileSidePanelState>(() =>
@@ -254,24 +259,6 @@ export function FileBrowser() {
     if (activeTab) clearSelection(activeTab.id);
   }, [activeTab, clearSelection]);
 
-  const rememberPointerType = useCallback((pointerType: string | null | undefined) => {
-    if (pointerType !== "mouse" && pointerType !== "touch" && pointerType !== "pen") {
-      return;
-    }
-
-    lastPointerTypeRef.current = pointerType;
-    lastPointerTimeRef.current = performance.now();
-  }, []);
-
-  const shouldSuppressContextMenu = useCallback(() => {
-    const pointerType = lastPointerTypeRef.current;
-    if (pointerType !== "touch" && pointerType !== "pen") {
-      return false;
-    }
-
-    return performance.now() - lastPointerTimeRef.current < 1500;
-  }, []);
-
   const handleContextMenu = useCallback(
     (e: React.MouseEvent, entry: FileEntry) => {
       if (shouldSuppressContextMenu()) {
@@ -312,13 +299,40 @@ export function FileBrowser() {
     return selected;
   }, [activeTab, contextEntry]);
 
+  const resolveActionContext = useCallback(
+    (override?: FileActionContext) => {
+      const selectedEntries = override?.selectedEntries ?? (
+        activeTab
+          ? activeTab.entries.filter((entry) => activeTab.selectedPaths.has(entry.path))
+          : []
+      );
+      const selectedPaths =
+        override?.selectedEntries !== undefined
+          ? override.selectedEntries.map((entry) => entry.path)
+          : getSelectedPaths();
+      const targetEntry =
+        override?.entry ??
+        contextEntry ??
+        selectedEntries[0] ??
+        null;
+
+      return {
+        selectedEntries,
+        selectedPaths:
+          selectedPaths.length > 0 || !targetEntry
+            ? selectedPaths
+            : [targetEntry.path],
+        targetEntry,
+      };
+    },
+    [activeTab, contextEntry, getSelectedPaths]
+  );
+
   const handleAction = useCallback(
-    (action: FileAction) => {
+    (action: FileAction, override?: FileActionContext) => {
       if (!activeTab) return;
-      // For toolbar actions, fall back to first selected entry when contextEntry is null
-      const targetEntry = contextEntry || (activeTab.selectedPaths.size > 0
-        ? activeTab.entries.find((e) => activeTab.selectedPaths.has(e.path)) ?? null
-        : null);
+      const { selectedEntries, selectedPaths, targetEntry } = resolveActionContext(override);
+      const selectedEntryMap = new Map(selectedEntries.map((entry) => [entry.path, entry]));
       switch (action) {
         case "open":
           if (targetEntry) handleOpen(targetEntry);
@@ -344,9 +358,8 @@ export function FileBrowser() {
           }
           break;
         case "delete": {
-          const paths = getSelectedPaths();
-          if (paths.length > 0) {
-            setDeletePaths(paths);
+          if (selectedPaths.length > 0) {
+            setDeletePaths(selectedPaths);
             setDeleteOpen(true);
           }
           break;
@@ -358,28 +371,26 @@ export function FileBrowser() {
           }
           break;
         case "copy": {
-          const paths = getSelectedPaths();
-          if (paths.length > 0) {
-            setMovePaths(paths);
+          if (selectedPaths.length > 0) {
+            setMovePaths(selectedPaths);
             setMoveMode("copy");
             setMoveOpen(true);
           }
           break;
         }
         case "move": {
-          const paths = getSelectedPaths();
-          if (paths.length > 0) {
-            setMovePaths(paths);
+          if (selectedPaths.length > 0) {
+            setMovePaths(selectedPaths);
             setMoveMode("move");
             setMoveOpen(true);
           }
           break;
         }
         case "download": {
-          const paths = getSelectedPaths();
-          for (const p of paths) {
-            // Check if the path is a directory by looking at entries
-            const entry = activeTab.entries.find((e) => e.path === p);
+          for (const p of selectedPaths) {
+            const entry =
+              selectedEntryMap.get(p) ??
+              activeTab.entries.find((candidate) => candidate.path === p);
             if (entry?.type === "directory") {
               void downloadFolder(p).catch((err) => {
                 toast.error("Download failed", {
@@ -396,9 +407,8 @@ export function FileBrowser() {
           setUploadOpen(true);
           break;
         case "compress": {
-          const paths = getSelectedPaths();
-          if (paths.length > 0) {
-            setCompressPaths(paths);
+          if (selectedPaths.length > 0) {
+            setCompressPaths(selectedPaths);
             setCompressOpen(true);
           }
           break;
@@ -427,7 +437,7 @@ export function FileBrowser() {
           break;
       }
     },
-    [activeTab, addTab, contextEntry, handleOpen, refresh, selectAll, getSelectedPaths]
+    [activeTab, addTab, handleOpen, refresh, resolveActionContext, selectAll]
   );
 
   const handleRefreshCurrent = useCallback(() => {
@@ -710,6 +720,7 @@ export function FileBrowser() {
           <FileSearchPanel
             currentPath={activeTab.path}
             onNavigate={(path) => void navigateTo(activeTab.id, path)}
+            onAction={(action, payload) => handleAction(action, payload)}
             onClose={closeSearchPanel}
             className="h-full"
           />
@@ -911,7 +922,9 @@ export function FileBrowser() {
       {isCompactLayout && (
         <Drawer open={sidePanelOpen} onOpenChange={handleSidePanelOpenChange}>
           <DrawerContent className={drawerHeightClass}>
-            {sidePanelContent}
+            <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-background">
+              {sidePanelContent}
+            </div>
           </DrawerContent>
         </Drawer>
       )}

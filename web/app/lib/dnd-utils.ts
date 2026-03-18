@@ -86,6 +86,29 @@ export function setDragPreview(
   };
 }
 
+interface StartFileDragOptions {
+  entry: FileEntry;
+  entries: FileEntry[];
+  selectedPaths: Set<string>;
+}
+
+export function startFileDrag(
+  e: React.DragEvent,
+  { entry, entries, selectedPaths }: StartFileDragOptions
+): () => void {
+  const paths = selectedPaths.has(entry.path) ? [...selectedPaths] : [entry.path];
+
+  e.dataTransfer.setData(XDECK_MIME, JSON.stringify(paths));
+  e.dataTransfer.effectAllowed = "move";
+
+  const selectedEntries = entries.filter((candidate) => paths.includes(candidate.path));
+  return setDragPreview(
+    e,
+    selectedEntries.length > 0 ? selectedEntries : [entry],
+    selectedPaths
+  );
+}
+
 // ── Shared DnD hooks ───────────────────────────────────────────────────────
 
 interface UseDndOptions {
@@ -111,20 +134,11 @@ export function useFileDnd({
       if (!selectedPaths.has(entry.path)) {
         selectFile(tabId, entry.path, false);
       }
-      const paths = selectedPaths.has(entry.path)
-        ? [...selectedPaths]
-        : [entry.path];
-
-      e.dataTransfer.setData(XDECK_MIME, JSON.stringify(paths));
-      e.dataTransfer.effectAllowed = "move";
-
-      // Set custom drag preview
-      const selectedEntries = entries.filter((en) => paths.includes(en.path));
-      dragPreviewCleanup.current = setDragPreview(
-        e,
-        selectedEntries.length > 0 ? selectedEntries : [entry],
-        selectedPaths
-      );
+      dragPreviewCleanup.current = startFileDrag(e, {
+        entry,
+        entries,
+        selectedPaths,
+      });
     },
     [tabId, selectedPaths, entries, selectFile]
   );
