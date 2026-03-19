@@ -36,6 +36,7 @@ import { isPreviewable } from "~/lib/file-utils";
 import { XDECK_MIME } from "~/lib/dnd-utils";
 import { useLassoSelection, LassoOverlay } from "~/lib/lasso-selection";
 import { getRpcClient } from "~/lib/rpc-client";
+import { cn } from "~/lib/utils";
 import { toast } from "sonner";
 
 type FileSidePanelState =
@@ -48,6 +49,10 @@ interface FileActionContext {
   entry?: FileEntry | null;
   selectedEntries?: FileEntry[];
 }
+
+const PULL_TO_REFRESH_TRIGGER = 72;
+const PULL_TO_REFRESH_MAX = 108;
+const PULL_TO_REFRESH_RESISTANCE = 0.45;
 
 export function FileBrowser() {
   const {
@@ -66,9 +71,13 @@ export function FileBrowser() {
 
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const lassoContainerRef = useRef<HTMLElement | null>(null);
+  const scrollViewportRef = useRef<HTMLElement | null>(null);
   const edgeScrollRafRef = useRef<number | null>(null);
   const lassoWasActiveRef = useRef(false);
   const initialTabRequestedRef = useRef(false);
+  const lastTouchYRef = useRef<number | null>(null);
+  const pullStartYRef = useRef<number | null>(null);
+  const pullArmedRef = useRef(false);
   const isCompactLayout = useMediaQuery("(max-width: 1023px)");
   const isMobile = useIsMobile();
   const taskPanelRequestedOpen = useTaskStore((state) => state.panelOpen);
@@ -80,6 +89,10 @@ export function FileBrowser() {
     taskPanelRequestedOpen ? { kind: "tasks" } : { kind: "closed" }
   );
   const [desktopPanelSize, setDesktopPanelSize] = useState(32);
+  const [pullDistance, setPullDistance] = useState(0);
+  const [pullArmed, setPullArmed] = useState(false);
+  const [pullDragging, setPullDragging] = useState(false);
+  const [pullRefreshing, setPullRefreshing] = useState(false);
 
   const [contextEntry, setContextEntry] = useState<FileEntry | null>(null);
   const [contextMenuContentKey, setContextMenuContentKey] = useState(0);
@@ -122,7 +135,25 @@ export function FileBrowser() {
     if (!el) return;
     const viewport = el.querySelector("[data-slot='scroll-area-viewport']") as HTMLElement | null;
     lassoContainerRef.current = viewport;
+    scrollViewportRef.current = viewport;
   });
+
+  useEffect(() => {
+    if (pullRefreshing && !activeTab?.isLoading) {
+      setPullRefreshing(false);
+      setPullDistance(0);
+    }
+  }, [activeTab?.isLoading, pullRefreshing]);
+
+  useEffect(() => {
+    lastTouchYRef.current = null;
+    pullStartYRef.current = null;
+    pullArmedRef.current = false;
+    setPullDragging(false);
+    setPullArmed(false);
+    setPullDistance(0);
+    setPullRefreshing(false);
+  }, [activeTab?.id]);
 
   const handleLassoSelect = useCallback(
     (paths: Set<string>, additive: boolean) => {
@@ -444,6 +475,117 @@ export function FileBrowser() {
     if (activeTab) void refresh(activeTab.id);
   }, [activeTab, refresh]);
 
+  const resetPullState = useCallback(() => {
+    lastTouchYRef.current = null;
+    pullStartYRef.current = null;
+    pullArmedRef.current = false;
+    setPullDragging(false);
+    setPullArmed(false);
+    setPullDistance(0);
+  }, []);
+
+  const handlePullTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      if (!isMobile || !activeTab || pullRefreshing || e.touches.length !== 1) return;
+
+      const viewport = scrollViewportRef.current;
+      if (!viewport) return;
+
+      const touch = e.touches[0];
+      lastTouchYRef.current = touch.clientY;
+      pullStartYRef.current = viewport.scrollTop <= 0 ? touch.clientY : null;
+      pullArmedRef.current = false;
+      setPullDragging(false);
+      setPullArmed(false);
+      setPullDistance(0);
+    },
+    [activeTab, isMobile, pullRefreshing]
+  );
+
+  const handlePullTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      if (e.touches.length !== 1) {
+        resetPullState();
+        return;
+      }
+
+      const viewport = scrollViewportRef.current;
+      if (!viewport) {
+        resetPullState();
+        return;
+      }
+
+      const currentY = e.touches[0].clientY;
+      const lastY = lastTouchYRef.current ?? currentY;
+      const movingDown = currentY > lastY;
+
+      if (!pullDragging) {
+        lastTouchYRef.current = currentY;
+
+        if (viewport.scrollTop > 0 || !movingDown) {
+          pullStartYRef.current = viewport.scrollTop <= 0 ? currentY : null;
+          return;
+        }
+
+        pullStartYRef.current ??= currentY;
+        setPullDragging(true);
+      }
+
+      const startY = pullStartYRef.current;
+      if (startY == null) {
+        lastTouchYRef.current = currentY;
+        resetPullState();
+        return;
+      }
+
+      if (viewport.scrollTop > 0) {
+        lastTouchYRef.current = currentY;
+        resetPullState();
+        return;
+      }
+
+      const deltaY = currentY - startY;
+      lastTouchYRef.current = currentY;
+      if (deltaY <= 0) {
+        setPullArmed(false);
+        setPullDistance(0);
+        return;
+      }
+
+      e.preventDefault();
+
+      const nextDistance = Math.min(
+        PULL_TO_REFRESH_MAX,
+        deltaY * PULL_TO_REFRESH_RESISTANCE
+      );
+      const nextArmed = deltaY >= PULL_TO_REFRESH_TRIGGER;
+
+      pullArmedRef.current = nextArmed;
+      setPullDistance(nextDistance);
+      setPullArmed(nextArmed);
+    },
+    [pullDragging, resetPullState]
+  );
+
+  const handlePullTouchEnd = useCallback(() => {
+    if (!pullDragging || !activeTab) return;
+
+    const shouldRefresh = pullArmedRef.current && !pullRefreshing;
+    pullStartYRef.current = null;
+    pullArmedRef.current = false;
+    setPullDragging(false);
+    setPullArmed(false);
+
+    if (shouldRefresh) {
+      setPullRefreshing(true);
+      setPullDistance(PULL_TO_REFRESH_TRIGGER * PULL_TO_REFRESH_RESISTANCE);
+      void refresh(activeTab.id);
+      return;
+    }
+
+    setPullDistance(0);
+  }, [activeTab, pullDragging, pullRefreshing, refresh]);
+
   const handleDropFiles = useCallback(
     (targetDir: string, sourcePaths: string[]) => {
       if (!activeTab) return;
@@ -746,101 +888,143 @@ export function FileBrowser() {
       : "h-[75dvh] max-h-[75dvh]";
 
   const browserContent = (
-    <div className="flex h-full min-h-0 flex-1 flex-col">
-      <FileContextMenu
-        contentKey={contextMenuContentKey}
-        entry={contextEntry}
-        hasSelection={activeTab.selectedPaths.size > 0}
-        selectionCount={activeTab.selectedPaths.size}
-        onAction={handleAction}
-      >
-        <ScrollArea
-          ref={scrollAreaRef}
-          className="flex-1"
-          onContextMenu={handleEmptyContextMenu}
-          onDragOver={handleScrollAreaDragOver}
-          onDragLeave={handleScrollAreaDragLeave}
-          onDrop={handleScrollAreaDrop}
-          onClick={(e) => {
-            // Don't clear selection if a lasso drag just finished
-            if (lassoWasActiveRef.current) {
-              lassoWasActiveRef.current = false;
-              return;
-            }
-            // Don't clear selection in multi-select mode (use the X button to exit)
-            if (multiSelectMode) return;
-            const target = e.target as HTMLElement;
-            if (
-              !target.closest("[data-slot='table-row']") &&
-              !target.closest("button") &&
-              !target.closest("[data-lasso-item]")
-            ) {
-              clearSelection(activeTab.id);
-            }
+    <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        {(isMobile && (pullDistance > 0 || pullRefreshing)) && (
+          <div
+            className="pointer-events-none absolute inset-x-0 top-0 z-10 flex justify-center px-4 pt-2"
+            style={{
+              opacity: pullRefreshing ? 1 : Math.min(pullDistance / 48, 1),
+              transform: `translateY(${Math.min(pullDistance * 0.55, 42)}px)`,
+            }}
+          >
+            <div className="flex items-center gap-2 rounded-full border bg-background/95 px-3 py-1.5 text-xs text-muted-foreground shadow-sm backdrop-blur-sm">
+              <Loader2
+                className={cn(
+                  "size-3.5",
+                  (pullRefreshing || pullArmed) && "animate-spin"
+                )}
+              />
+              <span>
+                {pullRefreshing
+                  ? "Refreshing..."
+                  : pullArmed
+                    ? "Release to refresh"
+                    : "Pull to refresh"}
+              </span>
+            </div>
+          </div>
+        )}
+
+        <div
+          className="flex min-h-0 flex-1 flex-col"
+          style={{
+            transform: `translateY(${pullDistance}px)`,
+            transition: pullDragging
+              ? "none"
+              : "transform 180ms ease-out",
           }}
         >
-          {activeTab.isLoading ? (
-            <div className="flex h-64 items-center justify-center">
-              <Loader2 className="size-6 animate-spin text-muted-foreground" />
-            </div>
-          ) : activeTab.error ? (
-            <div className="flex h-64 flex-col items-center justify-center gap-2 text-muted-foreground">
-              <p className="text-sm">Failed to load directory</p>
-              <p className="text-xs text-destructive">{activeTab.error}</p>
-            </div>
-          ) : (
-            <AnimatePresence mode="wait" initial={false}>
-              {viewMode === "list" ? (
-                <motion.div
-                  key="list-view"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  <FileListView
-                    tabId={activeTab.id}
-                    entries={activeTab.entries}
-                    selectedPaths={activeTab.selectedPaths}
-                    sortField={activeTab.sortField}
-                    sortDirection={activeTab.sortDirection}
-                    isMobile={isMobile}
-                    multiSelectMode={multiSelectMode}
-                    onOpen={handleOpen}
-                    onContextMenu={handleContextMenu}
-                    onDropFiles={handleDropFiles}
-                    onLongPress={handleLongPress}
-                    onToggleSelect={handleToggleSelect}
-                    onDragSelect={handleDragSelect}
-                  />
-                </motion.div>
+          <FileContextMenu
+            contentKey={contextMenuContentKey}
+            entry={contextEntry}
+            hasSelection={activeTab.selectedPaths.size > 0}
+            selectionCount={activeTab.selectedPaths.size}
+            onAction={handleAction}
+          >
+            <ScrollArea
+              ref={scrollAreaRef}
+              className="flex-1"
+              onContextMenu={handleEmptyContextMenu}
+              onDragOver={handleScrollAreaDragOver}
+              onDragLeave={handleScrollAreaDragLeave}
+              onDrop={handleScrollAreaDrop}
+              onTouchStart={handlePullTouchStart}
+              onTouchMove={handlePullTouchMove}
+              onTouchEnd={handlePullTouchEnd}
+              onTouchCancel={handlePullTouchEnd}
+              onClick={(e) => {
+                // Don't clear selection if a lasso drag just finished
+                if (lassoWasActiveRef.current) {
+                  lassoWasActiveRef.current = false;
+                  return;
+                }
+                // Don't clear selection in multi-select mode (use the X button to exit)
+                if (multiSelectMode) return;
+                const target = e.target as HTMLElement;
+                if (
+                  !target.closest("[data-slot='table-row']") &&
+                  !target.closest("button") &&
+                  !target.closest("[data-lasso-item]")
+                ) {
+                  clearSelection(activeTab.id);
+                }
+              }}
+            >
+              {activeTab.isLoading ? (
+                <div className="flex h-64 items-center justify-center">
+                  <Loader2 className="size-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : activeTab.error ? (
+                <div className="flex h-64 flex-col items-center justify-center gap-2 text-muted-foreground">
+                  <p className="text-sm">Failed to load directory</p>
+                  <p className="text-xs text-destructive">{activeTab.error}</p>
+                </div>
               ) : (
-                <motion.div
-                  key="grid-view"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  transition={{ duration: 0.15 }}
-                >
-                  <FileGridView
-                    tabId={activeTab.id}
-                    entries={activeTab.entries}
-                    selectedPaths={activeTab.selectedPaths}
-                    isMobile={isMobile}
-                    multiSelectMode={multiSelectMode}
-                    onOpen={handleOpen}
-                    onContextMenu={handleContextMenu}
-                    onDropFiles={handleDropFiles}
-                    onLongPress={handleLongPress}
-                    onToggleSelect={handleToggleSelect}
-                    onDragSelect={handleDragSelect}
-                  />
-                </motion.div>
+                <AnimatePresence mode="wait" initial={false}>
+                  {viewMode === "list" ? (
+                    <motion.div
+                      key="list-view"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.15 }}
+                    >
+                      <FileListView
+                        tabId={activeTab.id}
+                        entries={activeTab.entries}
+                        selectedPaths={activeTab.selectedPaths}
+                        sortField={activeTab.sortField}
+                        sortDirection={activeTab.sortDirection}
+                        isMobile={isMobile}
+                        multiSelectMode={multiSelectMode}
+                        onOpen={handleOpen}
+                        onContextMenu={handleContextMenu}
+                        onDropFiles={handleDropFiles}
+                        onLongPress={handleLongPress}
+                        onToggleSelect={handleToggleSelect}
+                        onDragSelect={handleDragSelect}
+                      />
+                    </motion.div>
+                  ) : (
+                    <motion.div
+                      key="grid-view"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.15 }}
+                    >
+                      <FileGridView
+                        tabId={activeTab.id}
+                        entries={activeTab.entries}
+                        selectedPaths={activeTab.selectedPaths}
+                        isMobile={isMobile}
+                        multiSelectMode={multiSelectMode}
+                        onOpen={handleOpen}
+                        onContextMenu={handleContextMenu}
+                        onDropFiles={handleDropFiles}
+                        onLongPress={handleLongPress}
+                        onToggleSelect={handleToggleSelect}
+                        onDragSelect={handleDragSelect}
+                      />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               )}
-            </AnimatePresence>
-          )}
-        </ScrollArea>
-      </FileContextMenu>
+            </ScrollArea>
+          </FileContextMenu>
+        </div>
+      </div>
     </div>
   );
 
