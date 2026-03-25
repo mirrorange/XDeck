@@ -2,67 +2,19 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::services::event_bus::SharedEventBus;
 
-// ── Types ───────────────────────────────────────────────────────
-
-/// Current status of a task.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskStatus {
-    Pending,
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-/// Type of long-running task.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskType {
-    Compress,
-    Extract,
-    Upload,
-    Download,
-    FolderDownload,
-    Copy,
-}
-
-/// A tracked long-running task.
-#[derive(Debug, Clone, Serialize)]
-pub struct Task {
-    pub id: String,
-    pub task_type: TaskType,
-    pub title: String,
-    pub status: TaskStatus,
-    /// Progress percentage (0-100). None if indeterminate.
-    pub progress: Option<u8>,
-    /// Human-readable status message.
-    pub message: Option<String>,
-    /// Unix timestamp in milliseconds.
-    pub created_at: u64,
-    /// Unix timestamp in milliseconds.
-    pub updated_at: u64,
-}
+use super::{DismissTaskResult, Task, TaskStatus, TaskType};
 
 /// Handle returned to callers for updating task progress.
 #[derive(Clone)]
 pub struct TaskHandle {
     task_id: String,
     manager: SharedTaskManager,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DismissTaskResult {
-    Dismissed,
-    Active,
-    NotFound,
 }
 
 impl TaskHandle {
@@ -102,14 +54,12 @@ impl TaskHandle {
     }
 }
 
-// ── Task Manager ────────────────────────────────────────────────
-
 /// Manages long-running tasks and publishes progress events.
 pub struct TaskManager {
-    tasks: Mutex<HashMap<String, Task>>,
-    event_bus: SharedEventBus,
+    pub(super) tasks: Mutex<HashMap<String, Task>>,
+    pub(super) event_bus: SharedEventBus,
     /// Maximum number of completed/failed tasks to retain.
-    max_history: usize,
+    pub(super) max_history: usize,
 }
 
 /// Shared TaskManager reference.
@@ -216,7 +166,7 @@ impl TaskManager {
         let tasks = self.tasks.lock().await;
         tasks
             .get(task_id)
-            .map_or(false, |t| t.status == TaskStatus::Cancelled)
+            .is_some_and(|task| task.status == TaskStatus::Cancelled)
     }
 
     /// Update a task's status, progress, and message.
@@ -229,7 +179,6 @@ impl TaskManager {
     ) {
         let mut tasks = self.tasks.lock().await;
         if let Some(task) = tasks.get_mut(task_id) {
-            // Don't update cancelled tasks
             if task.status == TaskStatus::Cancelled {
                 return;
             }
@@ -253,7 +202,6 @@ impl TaskManager {
 
             debug!("Task {}: {:?} progress={:?}", task_id, status, progress);
 
-            // Clean up old completed tasks
             if status == TaskStatus::Completed || status == TaskStatus::Failed {
                 self.cleanup_old_tasks().await;
             }
@@ -267,19 +215,18 @@ impl TaskManager {
         let mut tasks = self.tasks.lock().await;
         let finished: Vec<(String, u64)> = tasks
             .iter()
-            .filter(|(_, t)| {
-                t.status == TaskStatus::Completed
-                    || t.status == TaskStatus::Failed
-                    || t.status == TaskStatus::Cancelled
+            .filter(|(_, task)| {
+                task.status == TaskStatus::Completed
+                    || task.status == TaskStatus::Failed
+                    || task.status == TaskStatus::Cancelled
             })
-            .map(|(id, t)| (id.clone(), t.updated_at))
+            .map(|(id, task)| (id.clone(), task.updated_at))
             .collect();
 
         if finished.len() > self.max_history {
             let mut sorted = finished;
             sorted.sort_by(|a, b| b.1.cmp(&a.1));
 
-            // Remove oldest beyond max_history
             for (id, _) in sorted.into_iter().skip(self.max_history) {
                 tasks.remove(&id);
             }
@@ -326,152 +273,5 @@ pub async fn create_task(
     TaskHandle {
         task_id: id,
         manager: manager.clone(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::services::event_bus::EventBus;
-
-    #[tokio::test]
-    async fn test_create_and_update_task() {
-        let event_bus = Arc::new(EventBus::new(16));
-        let mut rx = event_bus.subscribe();
-        let manager = new_shared(event_bus);
-
-        let handle = create_task(&manager, TaskType::Compress, "Test compress".into()).await;
-
-        // Should have received task.created event
-        let event = rx.recv().await.unwrap();
-        assert_eq!(event.topic, "task.created");
-
-        // Update progress
-        handle
-            .update_progress(50, Some("Halfway done".into()))
-            .await;
-        let event = rx.recv().await.unwrap();
-        assert_eq!(event.topic, "task.progress");
-        assert_eq!(event.payload["progress"], 50);
-
-        // Complete
-        handle.complete(Some("Done!".into())).await;
-        let event = rx.recv().await.unwrap();
-        assert_eq!(event.topic, "task.completed");
-        assert_eq!(event.payload["progress"], 100);
-
-        // List tasks
-        let tasks = manager.list_tasks().await;
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].status, TaskStatus::Completed);
-    }
-
-    #[tokio::test]
-    async fn test_cancel_task() {
-        let event_bus = Arc::new(EventBus::new(16));
-        let manager = new_shared(event_bus);
-
-        let handle = create_task(&manager, TaskType::Extract, "Test extract".into()).await;
-
-        assert!(!handle.is_cancelled().await);
-
-        let cancelled = manager.cancel_task(handle.id()).await;
-        assert!(cancelled);
-        assert!(handle.is_cancelled().await);
-
-        // Updating a cancelled task should be a no-op
-        handle.update_progress(50, None).await;
-        let tasks = manager.list_tasks().await;
-        assert_eq!(tasks[0].status, TaskStatus::Cancelled);
-    }
-
-    #[tokio::test]
-    async fn test_dismiss_finished_task() {
-        let event_bus = Arc::new(EventBus::new(16));
-        let mut rx = event_bus.subscribe();
-        let manager = new_shared(event_bus);
-
-        let handle = create_task(&manager, TaskType::Compress, "Dismiss me".into()).await;
-        let _ = rx.recv().await.unwrap();
-
-        handle.complete(None).await;
-        let _ = rx.recv().await.unwrap();
-
-        let result = manager.dismiss_task(handle.id()).await;
-        assert_eq!(result, DismissTaskResult::Dismissed);
-
-        let event = rx.recv().await.unwrap();
-        assert_eq!(event.topic, "task.dismissed");
-        assert_eq!(event.payload["id"], handle.id());
-        assert!(manager.list_tasks().await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_cannot_dismiss_active_task() {
-        let event_bus = Arc::new(EventBus::new(16));
-        let manager = new_shared(event_bus);
-
-        let handle = create_task(&manager, TaskType::Extract, "Still running".into()).await;
-
-        let result = manager.dismiss_task(handle.id()).await;
-        assert_eq!(result, DismissTaskResult::Active);
-        assert_eq!(manager.list_tasks().await.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_clear_finished_tasks_keeps_active_tasks() {
-        let event_bus = Arc::new(EventBus::new(32));
-        let mut rx = event_bus.subscribe();
-        let manager = new_shared(event_bus);
-
-        let active = create_task(&manager, TaskType::Upload, "Active".into()).await;
-        let _ = rx.recv().await.unwrap();
-
-        let completed = create_task(&manager, TaskType::Compress, "Completed".into()).await;
-        let _ = rx.recv().await.unwrap();
-        completed.complete(None).await;
-        let _ = rx.recv().await.unwrap();
-
-        let cancelled = create_task(&manager, TaskType::Extract, "Cancelled".into()).await;
-        let _ = rx.recv().await.unwrap();
-        assert!(manager.cancel_task(cancelled.id()).await);
-        let _ = rx.recv().await.unwrap();
-
-        let cleared = manager.clear_finished_tasks().await;
-        assert_eq!(cleared, 2);
-
-        let event = rx.recv().await.unwrap();
-        assert_eq!(event.topic, "task.cleared");
-        let ids = event.payload["ids"].as_array().unwrap();
-        assert_eq!(ids.len(), 2);
-
-        let tasks = manager.list_tasks().await;
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].id, active.id());
-    }
-
-    #[tokio::test]
-    async fn test_cleanup_old_tasks() {
-        let event_bus = Arc::new(EventBus::new(256));
-        let manager = Arc::new(TaskManager {
-            tasks: Mutex::new(HashMap::new()),
-            event_bus,
-            max_history: 3,
-        });
-
-        // Create and complete more tasks than max_history
-        for i in 0..5 {
-            let handle = create_task(&manager, TaskType::Compress, format!("Task {}", i)).await;
-            handle.complete(None).await;
-            // Small delay to ensure different timestamps
-            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        }
-
-        let tasks = manager.list_tasks().await;
-        assert!(
-            tasks.len() <= 3,
-            "Should retain at most 3 finished tasks, got {}",
-            tasks.len()
-        );
     }
 }
