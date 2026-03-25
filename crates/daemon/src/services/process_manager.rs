@@ -5,12 +5,13 @@ use std::time::Duration;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Local, LocalResult, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, oneshot, Mutex, RwLock};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -78,6 +79,83 @@ impl Default for RestartPolicy {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessMode {
+    #[default]
+    Daemon,
+    Schedule,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleOverlapPolicy {
+    Ignore,
+    Restart,
+    StartNew,
+}
+
+impl Default for ScheduleOverlapPolicy {
+    fn default() -> Self {
+        Self::Ignore
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduleWeekday {
+    Monday,
+    Tuesday,
+    Wednesday,
+    Thursday,
+    Friday,
+    Saturday,
+    Sunday,
+}
+
+impl ScheduleWeekday {
+    fn from_chrono(weekday: chrono::Weekday) -> Self {
+        match weekday {
+            chrono::Weekday::Mon => Self::Monday,
+            chrono::Weekday::Tue => Self::Tuesday,
+            chrono::Weekday::Wed => Self::Wednesday,
+            chrono::Weekday::Thu => Self::Thursday,
+            chrono::Weekday::Fri => Self::Friday,
+            chrono::Weekday::Sat => Self::Saturday,
+            chrono::Weekday::Sun => Self::Sunday,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ScheduleConfig {
+    Once {
+        run_at: String,
+    },
+    Daily {
+        hour: u8,
+        minute: u8,
+    },
+    Weekly {
+        weekdays: Vec<ScheduleWeekday>,
+        hour: u8,
+        minute: u8,
+    },
+    Interval {
+        every_seconds: u64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ScheduleState {
+    pub next_run_at: Option<String>,
+    pub last_triggered_at: Option<String>,
+    pub last_skipped_at: Option<String>,
+    #[serde(default)]
+    pub trigger_count: u64,
+}
+
 /// Per-process log configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProcessLogConfig {
@@ -111,6 +189,8 @@ impl Default for ProcessLogConfig {
 pub struct ProcessDefinition {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub mode: ProcessMode,
     pub command: String,
     pub args: Vec<String>,
     pub cwd: String,
@@ -127,12 +207,161 @@ pub struct ProcessDefinition {
     pub instance_count: u32,
     #[serde(default)]
     pub pty_mode: bool,
+    #[serde(default)]
+    pub schedule: Option<ScheduleConfig>,
+    #[serde(default)]
+    pub schedule_overlap_policy: ScheduleOverlapPolicy,
+    #[serde(default)]
+    pub schedule_state: ScheduleState,
     pub created_at: String,
     pub updated_at: String,
 }
 
 fn default_instance_count() -> u32 {
     1
+}
+
+fn parse_utc_datetime(value: &str) -> Result<DateTime<Utc>, AppError> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&Utc))
+        .map_err(|err| {
+            AppError::BadRequest(format!("Invalid RFC3339 datetime '{}': {}", value, err))
+        })
+}
+
+fn local_datetime_for(date: chrono::NaiveDate, hour: u8, minute: u8) -> DateTime<Utc> {
+    let naive = date
+        .and_hms_opt(hour as u32, minute as u32, 0)
+        .expect("validated schedule time should always produce a local time");
+    match Local.from_local_datetime(&naive) {
+        LocalResult::Single(dt) => dt.with_timezone(&Utc),
+        LocalResult::Ambiguous(first, _) => first.with_timezone(&Utc),
+        LocalResult::None => {
+            let fallback = naive + chrono::Duration::hours(1);
+            Local
+                .from_local_datetime(&fallback)
+                .earliest()
+                .expect("one-hour fallback should resolve to a local datetime")
+                .with_timezone(&Utc)
+        }
+    }
+}
+
+fn compute_initial_next_run(
+    schedule: &ScheduleConfig,
+    now: DateTime<Utc>,
+) -> Result<Option<DateTime<Utc>>, AppError> {
+    match schedule {
+        ScheduleConfig::Once { run_at } => Ok(Some(parse_utc_datetime(run_at)?)),
+        ScheduleConfig::Daily { hour, minute } => Ok(Some(next_daily_run(*hour, *minute, now))),
+        ScheduleConfig::Weekly {
+            weekdays,
+            hour,
+            minute,
+        } => Ok(Some(next_weekly_run(weekdays, *hour, *minute, now)?)),
+        ScheduleConfig::Interval { every_seconds } => Ok(Some(
+            now + chrono::Duration::seconds((*every_seconds).try_into().unwrap_or(i64::MAX)),
+        )),
+    }
+}
+
+fn compute_next_run_after_trigger(
+    schedule: &ScheduleConfig,
+    now: DateTime<Utc>,
+) -> Result<Option<DateTime<Utc>>, AppError> {
+    match schedule {
+        ScheduleConfig::Once { .. } => Ok(None),
+        ScheduleConfig::Daily { hour, minute } => Ok(Some(next_daily_run(*hour, *minute, now))),
+        ScheduleConfig::Weekly {
+            weekdays,
+            hour,
+            minute,
+        } => Ok(Some(next_weekly_run(weekdays, *hour, *minute, now)?)),
+        ScheduleConfig::Interval { every_seconds } => Ok(Some(
+            now + chrono::Duration::seconds((*every_seconds).try_into().unwrap_or(i64::MAX)),
+        )),
+    }
+}
+
+fn next_daily_run(hour: u8, minute: u8, now: DateTime<Utc>) -> DateTime<Utc> {
+    let local_now = now.with_timezone(&Local);
+    let today = local_now.date_naive();
+    let today_run = local_datetime_for(today, hour, minute);
+    if today_run > now {
+        today_run
+    } else {
+        local_datetime_for(
+            today.succ_opt().expect("next day should exist"),
+            hour,
+            minute,
+        )
+    }
+}
+
+fn next_weekly_run(
+    weekdays: &[ScheduleWeekday],
+    hour: u8,
+    minute: u8,
+    now: DateTime<Utc>,
+) -> Result<DateTime<Utc>, AppError> {
+    if weekdays.is_empty() {
+        return Err(AppError::BadRequest(
+            "Weekly schedule must include at least one weekday".to_string(),
+        ));
+    }
+
+    let local_now = now.with_timezone(&Local);
+    let today = local_now.date_naive();
+
+    for offset in 0..14 {
+        let date = today + chrono::Duration::days(offset);
+        let weekday = ScheduleWeekday::from_chrono(date.weekday());
+        if !weekdays.contains(&weekday) {
+            continue;
+        }
+
+        let candidate = local_datetime_for(date, hour, minute);
+        if candidate > now {
+            return Ok(candidate);
+        }
+    }
+
+    Err(AppError::Internal(
+        "Failed to compute next weekly schedule run".to_string(),
+    ))
+}
+
+fn process_definition_from_row(row: &SqliteRow) -> ProcessDefinition {
+    ProcessDefinition {
+        id: row.get("id"),
+        name: row.get("name"),
+        mode: serde_json::from_str::<ProcessMode>(&row.get::<String, _>("mode"))
+            .unwrap_or_default(),
+        command: row.get("command"),
+        args: serde_json::from_str(&row.get::<String, _>("args")).unwrap_or_default(),
+        cwd: row.get("cwd"),
+        env: serde_json::from_str(&row.get::<String, _>("env")).unwrap_or_default(),
+        restart_policy: serde_json::from_str(&row.get::<String, _>("restart_policy"))
+            .unwrap_or_default(),
+        auto_start: row.get::<i32, _>("auto_start") != 0,
+        group_name: row.get("group_name"),
+        log_config: serde_json::from_str(&row.get::<String, _>("log_config")).unwrap_or_default(),
+        run_as: row.get("run_as"),
+        instance_count: u32::try_from(row.get::<i64, _>("instance_count"))
+            .unwrap_or(default_instance_count()),
+        pty_mode: row.get::<i32, _>("pty_mode") != 0,
+        schedule: row
+            .get::<Option<String>, _>("schedule")
+            .and_then(|value| serde_json::from_str::<ScheduleConfig>(&value).ok()),
+        schedule_overlap_policy: serde_json::from_str(
+            &row.get::<String, _>("schedule_overlap_policy"),
+        )
+        .unwrap_or_default(),
+        schedule_state: serde_json::from_str(&row.get::<String, _>("schedule_state"))
+            .unwrap_or_default(),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    }
 }
 
 /// Per-instance runtime process info (in memory).
@@ -160,6 +389,7 @@ pub struct ProcessInfo {
 #[derive(Debug, Clone)]
 pub struct CreateProcessRequest {
     pub name: String,
+    pub mode: ProcessMode,
     pub command: String,
     pub args: Vec<String>,
     pub cwd: String,
@@ -172,6 +402,8 @@ pub struct CreateProcessRequest {
     pub run_as: Option<String>,
     pub instance_count: u32,
     pub pty_mode: bool,
+    pub schedule: Option<ScheduleConfig>,
+    pub schedule_overlap_policy: ScheduleOverlapPolicy,
 }
 
 /// Update process request payload (PATCH semantics).
@@ -179,6 +411,7 @@ pub struct CreateProcessRequest {
 pub struct UpdateProcessRequest {
     pub id: String,
     pub name: Option<String>,
+    pub mode: Option<ProcessMode>,
     pub command: Option<String>,
     pub args: Option<Vec<String>>,
     pub cwd: Option<String>,
@@ -192,6 +425,8 @@ pub struct UpdateProcessRequest {
     pub run_as: Option<Option<String>>,
     pub instance_count: Option<u32>,
     pub pty_mode: Option<bool>,
+    pub schedule: Option<ScheduleConfig>,
+    pub schedule_overlap_policy: Option<ScheduleOverlapPolicy>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -290,6 +525,17 @@ struct RunningProcess {
     exit_code: Option<i32>,
     /// Sender to signal the supervisor task to stop
     cancel_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    ephemeral: bool,
+}
+
+struct ScheduleTaskHandle {
+    cancel_tx: oneshot::Sender<()>,
+    join_handle: JoinHandle<()>,
+}
+
+enum ScheduleTriggerSource {
+    Manual,
+    Scheduled(DateTime<Utc>),
 }
 
 // ── Process Manager ─────────────────────────────────────────────
@@ -303,6 +549,7 @@ pub struct ProcessManager {
     pty_manager: Arc<PtyManager>,
     /// Root directory for process log files
     log_dir: PathBuf,
+    schedule_tasks: RwLock<HashMap<String, ScheduleTaskHandle>>,
 }
 
 impl ProcessManager {
@@ -323,6 +570,7 @@ impl ProcessManager {
             event_bus,
             pty_manager,
             log_dir,
+            schedule_tasks: RwLock::new(HashMap::new()),
         })
     }
 
@@ -336,12 +584,28 @@ impl ProcessManager {
                 .await;
         }
 
-        let auto_start_defs: Vec<_> = definitions.into_iter().filter(|d| d.auto_start).collect();
-        info!("Auto-starting {} processes", auto_start_defs.len());
+        let mut daemon_defs = Vec::new();
+        let mut scheduled_defs = Vec::new();
 
-        for def in auto_start_defs {
+        for def in definitions {
+            match def.mode {
+                ProcessMode::Daemon if def.auto_start => daemon_defs.push(def),
+                ProcessMode::Schedule if def.auto_start => scheduled_defs.push(def),
+                _ => {}
+            }
+        }
+
+        info!("Auto-starting {} daemon processes", daemon_defs.len());
+        for def in daemon_defs {
             if let Err(e) = self.start_process_internal(&def.id).await {
-                error!("Failed to restore process {}: {}", def.id, e);
+                error!("Failed to restore daemon process {}: {}", def.id, e);
+            }
+        }
+
+        info!("Arming {} scheduled processes", scheduled_defs.len());
+        for def in scheduled_defs {
+            if let Err(e) = self.ensure_schedule_task(&def.id).await {
+                error!("Failed to arm schedule for process {}: {}", def.id, e);
             }
         }
 
@@ -370,6 +634,7 @@ impl ProcessManager {
         let definition = ProcessDefinition {
             id: id.clone(),
             name: req.name,
+            mode: req.mode,
             command: req.command,
             args: req.args,
             cwd: req.cwd,
@@ -381,9 +646,15 @@ impl ProcessManager {
             run_as: req.run_as,
             instance_count: req.instance_count,
             pty_mode: req.pty_mode,
+            schedule: req.schedule,
+            schedule_overlap_policy: req.schedule_overlap_policy,
+            schedule_state: ScheduleState::default(),
             created_at: now.clone(),
             updated_at: now,
         };
+
+        self.validate_process_definition(&definition)?;
+        let definition = self.initialize_schedule_state(definition)?;
 
         // Store in database
         self.save_definition(&definition).await?;
@@ -391,6 +662,10 @@ impl ProcessManager {
         // Register in runtime state
         self.ensure_runtime_instances(&id, definition.instance_count)
             .await;
+
+        if definition.mode == ProcessMode::Schedule && definition.auto_start {
+            self.ensure_schedule_task(&id).await?;
+        }
 
         info!("Created process: {} ({})", definition.name, id);
 
@@ -414,6 +689,15 @@ impl ProcessManager {
             if updated.name != name {
                 updated.name = name;
                 changed_fields.push("name");
+            }
+        }
+        if let Some(mode) = req.mode {
+            if updated.mode != mode {
+                updated.mode = mode;
+                if updated.mode == ProcessMode::Daemon {
+                    updated.schedule = None;
+                }
+                changed_fields.push("mode");
             }
         }
         if let Some(command) = req.command {
@@ -482,17 +766,51 @@ impl ProcessManager {
                 changed_fields.push("pty_mode");
             }
         }
+        if let Some(schedule) = req.schedule {
+            if updated.schedule != Some(schedule.clone()) {
+                updated.schedule = Some(schedule);
+                changed_fields.push("schedule");
+            }
+        }
+        if let Some(overlap_policy) = req.schedule_overlap_policy {
+            if updated.schedule_overlap_policy != overlap_policy {
+                updated.schedule_overlap_policy = overlap_policy;
+                changed_fields.push("schedule_overlap_policy");
+            }
+        }
+
+        self.validate_process_definition(&updated)?;
+        let schedule_changed = changed_fields
+            .iter()
+            .any(|field| matches!(*field, "mode" | "schedule" | "schedule_overlap_policy"));
+        if schedule_changed {
+            updated.schedule_state = ScheduleState::default();
+            updated = self.initialize_schedule_state(updated)?;
+        }
 
         let launch_param_changed = changed_fields.iter().any(|field| {
             matches!(
                 *field,
-                "command" | "args" | "cwd" | "env" | "run_as" | "instance_count" | "pty_mode"
+                "command"
+                    | "args"
+                    | "cwd"
+                    | "env"
+                    | "run_as"
+                    | "instance_count"
+                    | "pty_mode"
+                    | "mode"
             )
         });
         let is_running = self.is_running(&req.id).await;
 
         updated.updated_at = Utc::now().to_rfc3339();
         self.save_definition(&updated).await?;
+
+        if updated.mode == ProcessMode::Schedule && updated.auto_start {
+            self.ensure_schedule_task(&updated.id).await?;
+        } else {
+            self.cancel_schedule_task(&updated.id).await;
+        }
 
         if existing.instance_count != updated.instance_count {
             self.ensure_runtime_instances(&updated.id, updated.instance_count)
@@ -528,7 +846,11 @@ impl ProcessManager {
             .ok_or_else(|| AppError::NotFound(format!("Process {} not found", id)))?;
         self.ensure_runtime_instances(id, def.instance_count).await;
 
-        self.start_process_internal(id).await
+        if def.mode == ProcessMode::Schedule {
+            self.trigger_scheduled_process(id).await
+        } else {
+            self.start_process_internal(id).await
+        }
     }
 
     /// Build a `Command` from a `ProcessDefinition`, applying user switching on Unix.
@@ -838,6 +1160,20 @@ impl ProcessManager {
         def: &ProcessDefinition,
         instance_idx: u32,
     ) -> Result<(), AppError> {
+        self.ensure_runtime_instance_slot(
+            &def.id,
+            instance_idx,
+            instance_idx >= def.instance_count,
+        )
+        .await;
+        self.start_instance_with_mode(def, instance_idx).await
+    }
+
+    async fn start_instance_with_mode(
+        self: &Arc<Self>,
+        def: &ProcessDefinition,
+        instance_idx: u32,
+    ) -> Result<(), AppError> {
         let key = (def.id.clone(), instance_idx);
         let instances = self.instances.read().await;
         let instance_mutex = instances
@@ -849,6 +1185,7 @@ impl ProcessManager {
             return Ok(());
         }
 
+        proc.ephemeral = instance_idx >= def.instance_count;
         proc.status = ProcessStatus::Starting;
 
         let proc_log_dir = self
@@ -1504,6 +1841,390 @@ impl ProcessManager {
         }
     }
 
+    fn validate_process_definition(&self, def: &ProcessDefinition) -> Result<(), AppError> {
+        match def.mode {
+            ProcessMode::Daemon => Ok(()),
+            ProcessMode::Schedule => {
+                let schedule = def.schedule.as_ref().ok_or_else(|| {
+                    AppError::BadRequest(
+                        "Scheduled process must include a schedule configuration".to_string(),
+                    )
+                })?;
+                Self::validate_schedule_config(schedule)
+            }
+        }
+    }
+
+    fn validate_schedule_config(schedule: &ScheduleConfig) -> Result<(), AppError> {
+        match schedule {
+            ScheduleConfig::Once { run_at } => {
+                let _ = parse_utc_datetime(run_at)?;
+            }
+            ScheduleConfig::Daily { hour, minute } => {
+                Self::validate_schedule_time(*hour, *minute)?;
+            }
+            ScheduleConfig::Weekly {
+                weekdays,
+                hour,
+                minute,
+            } => {
+                Self::validate_schedule_time(*hour, *minute)?;
+                if weekdays.is_empty() {
+                    return Err(AppError::BadRequest(
+                        "Weekly schedule must include at least one weekday".to_string(),
+                    ));
+                }
+            }
+            ScheduleConfig::Interval { every_seconds } => {
+                if *every_seconds == 0 {
+                    return Err(AppError::BadRequest(
+                        "Interval schedule must be at least 1 second".to_string(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn validate_schedule_time(hour: u8, minute: u8) -> Result<(), AppError> {
+        if hour > 23 {
+            return Err(AppError::BadRequest(format!(
+                "Schedule hour must be in range [0, 23], got {}",
+                hour
+            )));
+        }
+        if minute > 59 {
+            return Err(AppError::BadRequest(format!(
+                "Schedule minute must be in range [0, 59], got {}",
+                minute
+            )));
+        }
+        Ok(())
+    }
+
+    fn initialize_schedule_state(
+        &self,
+        mut definition: ProcessDefinition,
+    ) -> Result<ProcessDefinition, AppError> {
+        if definition.mode != ProcessMode::Schedule {
+            definition.schedule = None;
+            definition.schedule_state = ScheduleState::default();
+            return Ok(definition);
+        }
+
+        let schedule = definition.schedule.as_ref().ok_or_else(|| {
+            AppError::BadRequest("Scheduled process must include a schedule".to_string())
+        })?;
+
+        if definition.schedule_state.next_run_at.is_none() {
+            definition.schedule_state.next_run_at =
+                compute_initial_next_run(schedule, Utc::now())?.map(|dt| dt.to_rfc3339());
+        }
+
+        Ok(definition)
+    }
+
+    async fn ensure_schedule_task(self: &Arc<Self>, id: &str) -> Result<(), AppError> {
+        self.cancel_schedule_task(id).await;
+
+        let Some(definition) = self.load_definition(id).await? else {
+            return Ok(());
+        };
+
+        if definition.mode != ProcessMode::Schedule {
+            return Ok(());
+        }
+        if !definition.auto_start {
+            return Ok(());
+        }
+
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let process_id = id.to_string();
+        let manager = self.clone();
+        let join_handle = tokio::spawn(async move {
+            manager.schedule_loop(process_id, cancel_rx).await;
+        });
+
+        let mut tasks = self.schedule_tasks.write().await;
+        tasks.insert(
+            id.to_string(),
+            ScheduleTaskHandle {
+                cancel_tx,
+                join_handle,
+            },
+        );
+        Ok(())
+    }
+
+    async fn cancel_schedule_task(&self, id: &str) {
+        let handle = {
+            let mut tasks = self.schedule_tasks.write().await;
+            tasks.remove(id)
+        };
+
+        if let Some(handle) = handle {
+            let _ = handle.cancel_tx.send(());
+            handle.join_handle.abort();
+        }
+    }
+
+    async fn schedule_loop(self: Arc<Self>, id: String, mut cancel_rx: oneshot::Receiver<()>) {
+        loop {
+            let Some(definition) = self.load_definition(&id).await.ok().flatten() else {
+                return;
+            };
+
+            if definition.mode != ProcessMode::Schedule {
+                return;
+            }
+
+            let Some(next_run_at) = definition.schedule_state.next_run_at.as_deref() else {
+                return;
+            };
+
+            let next_run = match parse_utc_datetime(next_run_at) {
+                Ok(next_run) => next_run,
+                Err(err) => {
+                    error!(
+                        "Failed to parse next schedule run for process {}: {}",
+                        id, err
+                    );
+                    return;
+                }
+            };
+
+            let now = Utc::now();
+            if next_run > now {
+                let wait = match (next_run - now).to_std() {
+                    Ok(wait) => wait,
+                    Err(_) => Duration::from_secs(0),
+                };
+                let sleep = tokio::time::sleep(wait);
+                tokio::pin!(sleep);
+                tokio::select! {
+                    _ = &mut cancel_rx => return,
+                    _ = &mut sleep => {}
+                }
+            }
+
+            tokio::select! {
+                _ = &mut cancel_rx => return,
+                result = self.run_schedule_trigger(&id, ScheduleTriggerSource::Scheduled(next_run)) => {
+                    if let Err(err) = result {
+                        error!("Scheduled trigger failed for process {}: {}", id, err);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn run_schedule_trigger(
+        self: &Arc<Self>,
+        id: &str,
+        source: ScheduleTriggerSource,
+    ) -> Result<(), AppError> {
+        let definition = self
+            .load_definition(id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Process {} not found", id)))?;
+        if definition.mode != ProcessMode::Schedule {
+            return Err(AppError::BadRequest(format!(
+                "Process {} is not configured in schedule mode",
+                id
+            )));
+        }
+
+        let schedule = definition.schedule.as_ref().ok_or_else(|| {
+            AppError::BadRequest(format!(
+                "Scheduled process {} is missing schedule configuration",
+                id
+            ))
+        })?;
+
+        let mut running_instances = self.running_instance_indices(id).await;
+        running_instances.sort_unstable();
+
+        let mut updated_definition = definition.clone();
+        let trigger_time = Utc::now();
+        let mut action = "started";
+
+        let selected_instance = match source {
+            ScheduleTriggerSource::Scheduled(due_at) => {
+                updated_definition.schedule_state.last_triggered_at =
+                    Some(trigger_time.to_rfc3339());
+                updated_definition.schedule_state.trigger_count += 1;
+                updated_definition.schedule_state.next_run_at =
+                    compute_next_run_after_trigger(schedule, trigger_time)?
+                        .map(|dt| dt.to_rfc3339());
+
+                if !running_instances.is_empty() {
+                    match definition.schedule_overlap_policy {
+                        ScheduleOverlapPolicy::Ignore => {
+                            action = "ignored";
+                            updated_definition.schedule_state.last_skipped_at =
+                                Some(trigger_time.to_rfc3339());
+                            self.save_definition(&updated_definition).await?;
+                            self.event_bus.publish(
+                                "process.schedule_triggered",
+                                serde_json::json!({
+                                    "process_id": id,
+                                    "action": action,
+                                    "due_at": due_at.to_rfc3339(),
+                                    "triggered_at": trigger_time.to_rfc3339(),
+                                    "overlap_policy": definition.schedule_overlap_policy,
+                                    "running_instances": running_instances,
+                                    "next_run_at": updated_definition.schedule_state.next_run_at,
+                                }),
+                            );
+                            return Ok(());
+                        }
+                        ScheduleOverlapPolicy::Restart => {
+                            self.stop_process(id).await?;
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            action = "restarted";
+                        }
+                        ScheduleOverlapPolicy::StartNew => {
+                            action = "started_new";
+                        }
+                    }
+                }
+
+                self.save_definition(&updated_definition).await?;
+                let selected_instance = self
+                    .select_schedule_instance_index(
+                        &definition,
+                        matches!(
+                            definition.schedule_overlap_policy,
+                            ScheduleOverlapPolicy::StartNew
+                        ),
+                    )
+                    .await?;
+                self.event_bus.publish(
+                    "process.schedule_triggered",
+                    serde_json::json!({
+                        "process_id": id,
+                        "action": action,
+                        "due_at": due_at.to_rfc3339(),
+                        "triggered_at": trigger_time.to_rfc3339(),
+                        "overlap_policy": definition.schedule_overlap_policy,
+                        "instance": selected_instance,
+                        "next_run_at": updated_definition.schedule_state.next_run_at,
+                    }),
+                );
+                selected_instance
+            }
+            ScheduleTriggerSource::Manual => {
+                if !running_instances.is_empty() {
+                    match definition.schedule_overlap_policy {
+                        ScheduleOverlapPolicy::Ignore => return Ok(()),
+                        ScheduleOverlapPolicy::Restart => {
+                            self.stop_process(id).await?;
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        ScheduleOverlapPolicy::StartNew => {}
+                    }
+                }
+
+                self.select_schedule_instance_index(
+                    &definition,
+                    matches!(
+                        definition.schedule_overlap_policy,
+                        ScheduleOverlapPolicy::StartNew
+                    ),
+                )
+                .await?
+            }
+        };
+
+        let instance_idx = selected_instance;
+        self.ensure_runtime_instance_slot(
+            id,
+            instance_idx,
+            instance_idx >= definition.instance_count,
+        )
+        .await;
+        self.start_instance_with_mode(&definition, instance_idx)
+            .await?;
+        Ok(())
+    }
+
+    async fn trigger_scheduled_process(self: &Arc<Self>, id: &str) -> Result<(), AppError> {
+        self.run_schedule_trigger(id, ScheduleTriggerSource::Manual)
+            .await
+    }
+
+    async fn running_instance_indices(&self, id: &str) -> Vec<u32> {
+        let keys = self.instance_keys(id).await;
+        let instances = self.instances.read().await;
+        let mut running = Vec::new();
+        for key in keys {
+            if let Some(instance_mutex) = instances.get(&key) {
+                let proc = instance_mutex.lock().await;
+                if proc.status == ProcessStatus::Running || proc.status == ProcessStatus::Starting {
+                    running.push(key.1);
+                }
+            }
+        }
+        running
+    }
+
+    async fn select_schedule_instance_index(
+        &self,
+        def: &ProcessDefinition,
+        allow_new_instance: bool,
+    ) -> Result<u32, AppError> {
+        for idx in 0..def.instance_count {
+            self.ensure_runtime_instance_slot(&def.id, idx, false).await;
+            let instances = self.instances.read().await;
+            if let Some(instance_mutex) = instances.get(&(def.id.clone(), idx)) {
+                let proc = instance_mutex.lock().await;
+                if proc.status != ProcessStatus::Running && proc.status != ProcessStatus::Starting {
+                    return Ok(idx);
+                }
+            }
+        }
+
+        if allow_new_instance {
+            return Ok(self.next_ephemeral_instance_index(&def.id).await);
+        }
+
+        Err(AppError::Internal(format!(
+            "No available instance slot for scheduled process {}",
+            def.id
+        )))
+    }
+
+    async fn next_ephemeral_instance_index(&self, id: &str) -> u32 {
+        let mut max_idx = {
+            let instances = self.instances.read().await;
+            instances
+                .keys()
+                .filter(|(proc_id, _)| proc_id == id)
+                .map(|(_, idx)| *idx)
+                .max()
+                .unwrap_or(0)
+        };
+
+        let log_dir = self.log_dir.join(id);
+        if let Ok(entries) = std::fs::read_dir(log_dir) {
+            for entry in entries.flatten() {
+                let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+                    continue;
+                };
+                let Some(idx_str) = name.strip_prefix("instance-") else {
+                    continue;
+                };
+                if let Ok(idx) = idx_str.parse::<u32>() {
+                    max_idx = max_idx.max(idx);
+                }
+            }
+        }
+
+        max_idx.saturating_add(1)
+    }
+
     /// Stop a process by ID.
     pub async fn stop_process(&self, id: &str) -> Result<(), AppError> {
         let keys = self.instance_keys(id).await;
@@ -1579,9 +2300,28 @@ impl ProcessManager {
                     started_at: None,
                     exit_code: None,
                     cancel_tx: None,
+                    ephemeral: false,
                 })
             });
         }
+    }
+
+    async fn ensure_runtime_instance_slot(&self, id: &str, instance_idx: u32, ephemeral: bool) {
+        let mut instances = self.instances.write().await;
+        let key = (id.to_string(), instance_idx);
+        instances.entry(key).or_insert_with(|| {
+            Mutex::new(RunningProcess {
+                child: None,
+                pty_session_id: None,
+                status: ProcessStatus::Created,
+                pid: None,
+                restart_count: 0,
+                started_at: None,
+                exit_code: None,
+                cancel_tx: None,
+                ephemeral,
+            })
+        });
     }
 
     async fn trim_runtime_instances(&self, id: &str, instance_count: u32) {
@@ -1621,6 +2361,11 @@ impl ProcessManager {
         keys
     }
 
+    async fn instance_exists(&self, id: &str, instance_idx: u32) -> bool {
+        let instances = self.instances.read().await;
+        instances.contains_key(&(id.to_string(), instance_idx))
+    }
+
     /// Restart a process by ID.
     pub async fn restart_process(self: &Arc<Self>, id: &str) -> Result<(), AppError> {
         self.stop_process(id).await?;
@@ -1630,6 +2375,7 @@ impl ProcessManager {
 
     /// Delete a process by ID. Stops it first if running.
     pub async fn delete_process(&self, id: &str) -> Result<(), AppError> {
+        self.cancel_schedule_task(id).await;
         // Stop if running
         let _ = self.stop_process(id).await;
 
@@ -1672,17 +2418,17 @@ impl ProcessManager {
             .await?
             .ok_or_else(|| AppError::NotFound(format!("Process {} not found", req.id)))?;
 
-        if req.instance >= definition.instance_count {
+        let proc_log_dir = self
+            .log_dir
+            .join(&req.id)
+            .join(format!("instance-{}", req.instance));
+
+        if !self.instance_exists(&req.id, req.instance).await && !proc_log_dir.exists() {
             return Err(AppError::BadRequest(format!(
                 "Instance {} out of range for process {}",
                 req.instance, req.id
             )));
         }
-
-        let proc_log_dir = self
-            .log_dir
-            .join(&req.id)
-            .join(format!("instance-{}", req.instance));
 
         let mut all_lines: Vec<LogLine> = Vec::new();
 
@@ -1753,23 +2499,28 @@ impl ProcessManager {
         req: PtyReplayRequest,
     ) -> Result<PtyReplayResponse, AppError> {
         // Verify process exists
-        let definition = self
+        let _definition = self
             .load_definition(&req.id)
             .await?
             .ok_or_else(|| AppError::NotFound(format!("Process {} not found", req.id)))?;
-
-        if req.instance >= definition.instance_count {
-            return Err(AppError::BadRequest(format!(
-                "Instance {} out of range for process {}",
-                req.instance, req.id
-            )));
-        }
 
         let raw_log_path = self
             .log_dir
             .join(&req.id)
             .join(format!("instance-{}", req.instance))
             .join("pty_raw.log");
+
+        if !self.instance_exists(&req.id, req.instance).await
+            && !raw_log_path
+                .parent()
+                .map(|dir| dir.exists())
+                .unwrap_or(false)
+        {
+            return Err(AppError::BadRequest(format!(
+                "Instance {} out of range for process {}",
+                req.instance, req.id
+            )));
+        }
 
         if !raw_log_path.exists() {
             return Ok(PtyReplayResponse {
@@ -1832,36 +2583,10 @@ impl ProcessManager {
     /// List all processes with their current status.
     pub async fn list_processes(&self) -> Result<Vec<ProcessInfo>, AppError> {
         let definitions = self.load_all_definitions().await?;
-        let instances = self.instances.read().await;
 
         let mut result = Vec::new();
         for def in definitions {
-            let mut instance_infos = Vec::new();
-            for idx in 0..def.instance_count {
-                let key = (def.id.clone(), idx);
-                if let Some(proc_mutex) = instances.get(&key) {
-                    let proc = proc_mutex.lock().await;
-                    instance_infos.push(InstanceInfo {
-                        index: idx,
-                        status: proc.status.clone(),
-                        pid: proc.pid,
-                        pty_session_id: proc.pty_session_id.clone(),
-                        restart_count: proc.restart_count,
-                        started_at: proc.started_at.map(|t| t.to_rfc3339()),
-                        exit_code: proc.exit_code,
-                    });
-                } else {
-                    instance_infos.push(InstanceInfo {
-                        index: idx,
-                        status: ProcessStatus::Created,
-                        pid: None,
-                        pty_session_id: None,
-                        restart_count: 0,
-                        started_at: None,
-                        exit_code: None,
-                    });
-                }
-            }
+            let instance_infos = self.collect_instance_info(&def).await;
             result.push(ProcessInfo {
                 definition: def,
                 instances: instance_infos,
@@ -1878,13 +2603,31 @@ impl ProcessManager {
             .await?
             .ok_or_else(|| AppError::NotFound(format!("Process {} not found", id)))?;
 
+        let instance_infos = self.collect_instance_info(&def).await;
+
+        Ok(ProcessInfo {
+            definition: def,
+            instances: instance_infos,
+        })
+    }
+
+    async fn collect_instance_info(&self, def: &ProcessDefinition) -> Vec<InstanceInfo> {
+        let mut indices: Vec<u32> = (0..def.instance_count).collect();
+        let keys = self.instance_keys(&def.id).await;
+        for (_, idx) in keys {
+            if !indices.contains(&idx) {
+                indices.push(idx);
+            }
+        }
+        indices.sort_unstable();
+
         let instances = self.instances.read().await;
-        let mut instance_infos = Vec::new();
-        for idx in 0..def.instance_count {
+        let mut infos = Vec::with_capacity(indices.len());
+        for idx in indices {
             let key = (def.id.clone(), idx);
             if let Some(proc_mutex) = instances.get(&key) {
                 let proc = proc_mutex.lock().await;
-                instance_infos.push(InstanceInfo {
+                infos.push(InstanceInfo {
                     index: idx,
                     status: proc.status.clone(),
                     pid: proc.pid,
@@ -1894,7 +2637,7 @@ impl ProcessManager {
                     exit_code: proc.exit_code,
                 });
             } else {
-                instance_infos.push(InstanceInfo {
+                infos.push(InstanceInfo {
                     index: idx,
                     status: ProcessStatus::Created,
                     pid: None,
@@ -1906,10 +2649,7 @@ impl ProcessManager {
             }
         }
 
-        Ok(ProcessInfo {
-            definition: def,
-            instances: instance_infos,
-        })
+        infos
     }
 
     pub async fn list_groups(&self) -> Result<Vec<String>, AppError> {
@@ -1967,11 +2707,8 @@ impl ProcessManager {
         &self,
         group_name: &str,
     ) -> Result<Vec<ProcessDefinition>, AppError> {
-        let rows: Vec<(
-            String, String, String, String, String,
-            String, String, i32, Option<String>, String, Option<String>, i64, i32, String, String,
-        )> = sqlx::query_as(
-            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, created_at, updated_at FROM processes WHERE group_name = ?1 ORDER BY created_at",
+        let rows = sqlx::query(
+            "SELECT id, name, mode, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at FROM processes WHERE group_name = ?1 ORDER BY created_at",
         )
         .bind(group_name)
         .fetch_all(&self.pool)
@@ -1979,37 +2716,29 @@ impl ProcessManager {
 
         Ok(rows
             .into_iter()
-            .map(|r| ProcessDefinition {
-                id: r.0,
-                name: r.1,
-                command: r.2,
-                args: serde_json::from_str(&r.3).unwrap_or_default(),
-                cwd: r.4,
-                env: serde_json::from_str(&r.5).unwrap_or_default(),
-                restart_policy: serde_json::from_str(&r.6).unwrap_or_default(),
-                auto_start: r.7 != 0,
-                group_name: r.8,
-                log_config: serde_json::from_str(&r.9).unwrap_or_default(),
-                run_as: r.10,
-                instance_count: u32::try_from(r.11).unwrap_or(default_instance_count()),
-                pty_mode: r.12 != 0,
-                created_at: r.13,
-                updated_at: r.14,
-            })
+            .map(|row| process_definition_from_row(&row))
             .collect())
     }
 
     async fn save_definition(&self, def: &ProcessDefinition) -> Result<(), AppError> {
+        let mode_json = serde_json::to_string(&def.mode).unwrap();
         let args_json = serde_json::to_string(&def.args).unwrap();
         let env_json = serde_json::to_string(&def.env).unwrap();
         let policy_json = serde_json::to_string(&def.restart_policy).unwrap();
         let log_config_json = serde_json::to_string(&def.log_config).unwrap();
+        let schedule_json = def
+            .schedule
+            .as_ref()
+            .map(|schedule| serde_json::to_string(schedule).unwrap());
+        let overlap_policy_json = serde_json::to_string(&def.schedule_overlap_policy).unwrap();
+        let schedule_state_json = serde_json::to_string(&def.schedule_state).unwrap();
 
         sqlx::query(
-            "INSERT OR REPLACE INTO processes (id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            "INSERT OR REPLACE INTO processes (id, name, mode, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         )
         .bind(&def.id)
         .bind(&def.name)
+        .bind(&mode_json)
         .bind(&def.command)
         .bind(&args_json)
         .bind(&def.cwd)
@@ -2021,6 +2750,9 @@ impl ProcessManager {
         .bind(&def.run_as)
         .bind(def.instance_count as i64)
         .bind(def.pty_mode as i32)
+        .bind(&schedule_json)
+        .bind(&overlap_policy_json)
+        .bind(&schedule_state_json)
         .bind(&def.created_at)
         .bind(&def.updated_at)
         .execute(&self.pool)
@@ -2030,64 +2762,26 @@ impl ProcessManager {
     }
 
     async fn load_definition(&self, id: &str) -> Result<Option<ProcessDefinition>, AppError> {
-        let row: Option<(
-            String, String, String, String, String,
-            String, String, i32, Option<String>, String, Option<String>, i64, i32, String, String,
-        )> = sqlx::query_as(
-            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, created_at, updated_at FROM processes WHERE id = ?1",
+        let row = sqlx::query(
+            "SELECT id, name, mode, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at FROM processes WHERE id = ?1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|r| ProcessDefinition {
-            id: r.0,
-            name: r.1,
-            command: r.2,
-            args: serde_json::from_str(&r.3).unwrap_or_default(),
-            cwd: r.4,
-            env: serde_json::from_str(&r.5).unwrap_or_default(),
-            restart_policy: serde_json::from_str(&r.6).unwrap_or_default(),
-            auto_start: r.7 != 0,
-            group_name: r.8,
-            log_config: serde_json::from_str(&r.9).unwrap_or_default(),
-            run_as: r.10,
-            instance_count: u32::try_from(r.11).unwrap_or(default_instance_count()),
-            pty_mode: r.12 != 0,
-            created_at: r.13,
-            updated_at: r.14,
-        }))
+        Ok(row.map(|row| process_definition_from_row(&row)))
     }
 
     async fn load_all_definitions(&self) -> Result<Vec<ProcessDefinition>, AppError> {
-        let rows: Vec<(
-            String, String, String, String, String,
-            String, String, i32, Option<String>, String, Option<String>, i64, i32, String, String,
-        )> = sqlx::query_as(
-            "SELECT id, name, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, created_at, updated_at FROM processes ORDER BY created_at",
+        let rows = sqlx::query(
+            "SELECT id, name, mode, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at FROM processes ORDER BY created_at",
         )
         .fetch_all(&self.pool)
         .await?;
 
         let defs = rows
             .into_iter()
-            .map(|r| ProcessDefinition {
-                id: r.0,
-                name: r.1,
-                command: r.2,
-                args: serde_json::from_str(&r.3).unwrap_or_default(),
-                cwd: r.4,
-                env: serde_json::from_str(&r.5).unwrap_or_default(),
-                restart_policy: serde_json::from_str(&r.6).unwrap_or_default(),
-                auto_start: r.7 != 0,
-                group_name: r.8,
-                log_config: serde_json::from_str(&r.9).unwrap_or_default(),
-                run_as: r.10,
-                instance_count: u32::try_from(r.11).unwrap_or(default_instance_count()),
-                pty_mode: r.12 != 0,
-                created_at: r.13,
-                updated_at: r.14,
-            })
+            .map(|row| process_definition_from_row(&row))
             .collect();
 
         Ok(defs)
@@ -2258,6 +2952,7 @@ mod tests {
     fn sleep_process_request(name: &str) -> CreateProcessRequest {
         CreateProcessRequest {
             name: name.to_string(),
+            mode: ProcessMode::Daemon,
             command: "sleep".to_string(),
             args: vec!["60".to_string()],
             cwd: "/tmp".to_string(),
@@ -2272,6 +2967,34 @@ mod tests {
             run_as: None,
             instance_count: 1,
             pty_mode: false,
+            schedule: None,
+            schedule_overlap_policy: ScheduleOverlapPolicy::Ignore,
+        }
+    }
+
+    fn scheduled_sleep_process_request(
+        name: &str,
+        overlap_policy: ScheduleOverlapPolicy,
+    ) -> CreateProcessRequest {
+        CreateProcessRequest {
+            name: name.to_string(),
+            mode: ProcessMode::Schedule,
+            command: "sleep".to_string(),
+            args: vec!["60".to_string()],
+            cwd: "/tmp".to_string(),
+            env: HashMap::new(),
+            restart_policy: RestartPolicy {
+                strategy: RestartStrategy::Never,
+                ..Default::default()
+            },
+            auto_start: false,
+            group_name: None,
+            log_config: ProcessLogConfig::default(),
+            run_as: None,
+            instance_count: 1,
+            pty_mode: false,
+            schedule: Some(ScheduleConfig::Interval { every_seconds: 60 }),
+            schedule_overlap_policy: overlap_policy,
         }
     }
 
@@ -2311,6 +3034,7 @@ mod tests {
         let info = pm
             .create_process(CreateProcessRequest {
                 name: "test-echo".to_string(),
+                mode: ProcessMode::Daemon,
                 command: "echo".to_string(),
                 args: vec!["hello".to_string()],
                 cwd: "/tmp".to_string(),
@@ -2322,6 +3046,8 @@ mod tests {
                 run_as: None,
                 instance_count: 1,
                 pty_mode: false,
+                schedule: None,
+                schedule_overlap_policy: ScheduleOverlapPolicy::Ignore,
             })
             .await
             .unwrap();
@@ -2336,6 +3062,7 @@ mod tests {
         let info = pm
             .create_process(CreateProcessRequest {
                 name: "multi-create".to_string(),
+                mode: ProcessMode::Daemon,
                 command: "echo".to_string(),
                 args: vec!["hello".to_string()],
                 cwd: "/tmp".to_string(),
@@ -2347,6 +3074,8 @@ mod tests {
                 run_as: None,
                 instance_count: 3,
                 pty_mode: false,
+                schedule: None,
+                schedule_overlap_policy: ScheduleOverlapPolicy::Ignore,
             })
             .await
             .unwrap();
@@ -2425,6 +3154,7 @@ mod tests {
         let info = pm
             .create_process(CreateProcessRequest {
                 name: "instance-logs".to_string(),
+                mode: ProcessMode::Daemon,
                 command: "sh".to_string(),
                 args: vec!["-c".to_string(), "echo hello-from-instance".to_string()],
                 cwd: "/tmp".to_string(),
@@ -2439,6 +3169,8 @@ mod tests {
                 run_as: None,
                 instance_count: 2,
                 pty_mode: false,
+                schedule: None,
+                schedule_overlap_policy: ScheduleOverlapPolicy::Ignore,
             })
             .await
             .unwrap();
@@ -2532,6 +3264,7 @@ mod tests {
             .update_process(UpdateProcessRequest {
                 id: id.clone(),
                 name: Some("name-only-updated".to_string()),
+                mode: None,
                 command: None,
                 args: None,
                 cwd: None,
@@ -2543,6 +3276,8 @@ mod tests {
                 run_as: None,
                 instance_count: None,
                 pty_mode: None,
+                schedule: None,
+                schedule_overlap_policy: None,
             })
             .await
             .unwrap();
@@ -2572,6 +3307,7 @@ mod tests {
             .update_process(UpdateProcessRequest {
                 id: id.clone(),
                 name: None,
+                mode: None,
                 command: Some("sh".to_string()),
                 args: Some(vec!["-c".to_string(), "sleep 60".to_string()]),
                 cwd: None,
@@ -2583,6 +3319,8 @@ mod tests {
                 run_as: None,
                 instance_count: None,
                 pty_mode: None,
+                schedule: None,
+                schedule_overlap_policy: None,
             })
             .await
             .unwrap();
@@ -2613,6 +3351,7 @@ mod tests {
             .update_process(UpdateProcessRequest {
                 id: id.clone(),
                 name: None,
+                mode: None,
                 command: None,
                 args: None,
                 cwd: None,
@@ -2629,6 +3368,8 @@ mod tests {
                 run_as: None,
                 instance_count: None,
                 pty_mode: None,
+                schedule: None,
+                schedule_overlap_policy: None,
             })
             .await
             .unwrap();
@@ -2656,6 +3397,7 @@ mod tests {
             .update_process(UpdateProcessRequest {
                 id: id.clone(),
                 name: None,
+                mode: None,
                 command: None,
                 args: None,
                 cwd: None,
@@ -2667,6 +3409,8 @@ mod tests {
                 run_as: None,
                 instance_count: None,
                 pty_mode: None,
+                schedule: None,
+                schedule_overlap_policy: None,
             })
             .await
             .unwrap();
@@ -2689,6 +3433,7 @@ mod tests {
             .update_process(UpdateProcessRequest {
                 id: id.clone(),
                 name: None,
+                mode: None,
                 command: Some("echo".to_string()),
                 args: Some(vec!["hello".to_string()]),
                 cwd: None,
@@ -2700,6 +3445,8 @@ mod tests {
                 run_as: None,
                 instance_count: None,
                 pty_mode: None,
+                schedule: None,
+                schedule_overlap_policy: None,
             })
             .await
             .unwrap();
@@ -2722,6 +3469,7 @@ mod tests {
         pm.update_process(UpdateProcessRequest {
             id: id.clone(),
             name: Some("event-update-2".to_string()),
+            mode: None,
             command: None,
             args: None,
             cwd: None,
@@ -2733,6 +3481,8 @@ mod tests {
             run_as: None,
             instance_count: None,
             pty_mode: None,
+            schedule: None,
+            schedule_overlap_policy: None,
         })
         .await
         .unwrap();
@@ -2771,6 +3521,7 @@ mod tests {
             .update_process(UpdateProcessRequest {
                 id: id.clone(),
                 name: None,
+                mode: None,
                 command: None,
                 args: None,
                 cwd: None,
@@ -2782,6 +3533,8 @@ mod tests {
                 run_as: None,
                 instance_count: Some(2),
                 pty_mode: None,
+                schedule: None,
+                schedule_overlap_policy: None,
             })
             .await
             .unwrap();
@@ -2790,6 +3543,235 @@ mod tests {
         assert_eq!(instance(&updated, 0).status, ProcessStatus::Running);
         assert_eq!(instance(&updated, 1).status, ProcessStatus::Running);
         assert_ne!(instance(&updated, 0).pid, old_pid);
+    }
+
+    #[tokio::test]
+    async fn test_schedule_once_auto_triggers_and_updates_state() {
+        let (pm, _pool) = test_pm().await;
+        let info = pm
+            .create_process(CreateProcessRequest {
+                name: "schedule-once-auto".to_string(),
+                mode: ProcessMode::Schedule,
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), "echo scheduled-once".to_string()],
+                cwd: "/tmp".to_string(),
+                env: HashMap::new(),
+                restart_policy: RestartPolicy {
+                    strategy: RestartStrategy::Never,
+                    ..Default::default()
+                },
+                auto_start: true,
+                group_name: None,
+                log_config: ProcessLogConfig::default(),
+                run_as: None,
+                instance_count: 1,
+                pty_mode: false,
+                schedule: Some(ScheduleConfig::Once {
+                    run_at: (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
+                }),
+                schedule_overlap_policy: ScheduleOverlapPolicy::Ignore,
+            })
+            .await
+            .unwrap();
+        let id = info.definition.id;
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let process = pm.get_process(&id).await.unwrap();
+        assert!(process
+            .definition
+            .schedule_state
+            .last_triggered_at
+            .is_some());
+        assert_eq!(process.definition.schedule_state.next_run_at, None);
+        let logs = pm
+            .get_logs(GetLogsRequest {
+                id,
+                stream: LogStream::Stdout,
+                lines: 50,
+                offset: 0,
+                instance: 0,
+            })
+            .await
+            .unwrap();
+        assert!(logs
+            .lines
+            .iter()
+            .any(|line| line.line.contains("scheduled-once")));
+    }
+
+    #[tokio::test]
+    async fn test_schedule_overlap_ignore_skips_when_instance_running() {
+        let (pm, _pool) = test_pm().await;
+        let created = pm
+            .create_process(scheduled_sleep_process_request(
+                "schedule-ignore",
+                ScheduleOverlapPolicy::Ignore,
+            ))
+            .await
+            .unwrap();
+        let id = created.definition.id.clone();
+
+        pm.start_process(&id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        pm.run_schedule_trigger(&id, ScheduleTriggerSource::Scheduled(Utc::now()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let process = pm.get_process(&id).await.unwrap();
+        let running: Vec<_> = process
+            .instances
+            .iter()
+            .filter(|instance| instance.status == ProcessStatus::Running)
+            .collect();
+        assert_eq!(running.len(), 1);
+        assert_eq!(process.definition.schedule_state.trigger_count, 1);
+        assert!(process.definition.schedule_state.last_skipped_at.is_some());
+
+        let _ = pm.stop_process(&id).await;
+    }
+
+    #[tokio::test]
+    async fn test_schedule_overlap_restart_replaces_running_instance() {
+        let (pm, _pool) = test_pm().await;
+        let created = pm
+            .create_process(scheduled_sleep_process_request(
+                "schedule-restart",
+                ScheduleOverlapPolicy::Restart,
+            ))
+            .await
+            .unwrap();
+        let id = created.definition.id.clone();
+
+        pm.start_process(&id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let before = pm.get_process(&id).await.unwrap();
+        let old_pid = instance(&before, 0)
+            .pid
+            .expect("manual trigger should start instance");
+
+        pm.run_schedule_trigger(&id, ScheduleTriggerSource::Scheduled(Utc::now()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let after = pm.get_process(&id).await.unwrap();
+        let new_pid = instance(&after, 0)
+            .pid
+            .expect("scheduled restart should start a replacement instance");
+        assert_ne!(new_pid, old_pid);
+        assert_eq!(after.definition.schedule_state.trigger_count, 1);
+
+        let _ = pm.stop_process(&id).await;
+    }
+
+    #[tokio::test]
+    async fn test_schedule_overlap_start_new_adds_ephemeral_instance() {
+        let (pm, _pool) = test_pm().await;
+        let created = pm
+            .create_process(scheduled_sleep_process_request(
+                "schedule-start-new",
+                ScheduleOverlapPolicy::StartNew,
+            ))
+            .await
+            .unwrap();
+        let id = created.definition.id.clone();
+
+        pm.start_process(&id).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        pm.run_schedule_trigger(&id, ScheduleTriggerSource::Scheduled(Utc::now()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+
+        let process = pm.get_process(&id).await.unwrap();
+        let running_instances: Vec<_> = process
+            .instances
+            .iter()
+            .filter(|instance| instance.status == ProcessStatus::Running)
+            .map(|instance| instance.index)
+            .collect();
+        assert_eq!(running_instances, vec![0, 1]);
+        assert_eq!(process.definition.schedule_state.trigger_count, 1);
+
+        let _ = pm.stop_process(&id).await;
+    }
+
+    #[tokio::test]
+    async fn test_restore_processes_arms_scheduled_processes() {
+        let pool = crate::db::connect_in_memory().await.unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
+        let data_dir =
+            std::env::temp_dir().join(format!("xdeck-schedule-restore-{}", uuid::Uuid::new_v4()));
+
+        let event_bus_1 = Arc::new(EventBus::default());
+        let pty_manager_1 = PtyManager::new(event_bus_1.clone(), Duration::from_secs(30 * 60));
+        let pm_1 = ProcessManager::new(pool.clone(), event_bus_1, pty_manager_1, &data_dir);
+
+        let created = pm_1
+            .create_process(CreateProcessRequest {
+                name: "restore-schedule".to_string(),
+                mode: ProcessMode::Schedule,
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), "echo restore-schedule".to_string()],
+                cwd: "/tmp".to_string(),
+                env: HashMap::new(),
+                restart_policy: RestartPolicy {
+                    strategy: RestartStrategy::Never,
+                    ..Default::default()
+                },
+                auto_start: false,
+                group_name: None,
+                log_config: ProcessLogConfig::default(),
+                run_as: None,
+                instance_count: 1,
+                pty_mode: false,
+                schedule: Some(ScheduleConfig::Once {
+                    run_at: (Utc::now() + chrono::Duration::minutes(10)).to_rfc3339(),
+                }),
+                schedule_overlap_policy: ScheduleOverlapPolicy::Ignore,
+            })
+            .await
+            .unwrap();
+        let id = created.definition.id.clone();
+
+        let mut definition = pm_1.load_definition(&id).await.unwrap().unwrap();
+        definition.auto_start = true;
+        definition.schedule_state.next_run_at =
+            Some((Utc::now() - chrono::Duration::seconds(1)).to_rfc3339());
+        pm_1.save_definition(&definition).await.unwrap();
+
+        let event_bus_2 = Arc::new(EventBus::default());
+        let pty_manager_2 = PtyManager::new(event_bus_2.clone(), Duration::from_secs(30 * 60));
+        let pm_2 = ProcessManager::new(pool.clone(), event_bus_2, pty_manager_2, &data_dir);
+        pm_2.restore_processes().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let restored = pm_2.get_process(&id).await.unwrap();
+        assert!(restored
+            .definition
+            .schedule_state
+            .last_triggered_at
+            .is_some());
+        assert_eq!(restored.definition.schedule_state.next_run_at, None);
+
+        let logs = pm_2
+            .get_logs(GetLogsRequest {
+                id: id.clone(),
+                stream: LogStream::Stdout,
+                lines: 50,
+                offset: 0,
+                instance: 0,
+            })
+            .await
+            .unwrap();
+        assert!(logs
+            .lines
+            .iter()
+            .any(|line| line.line.contains("restore-schedule")));
     }
 
     #[cfg(unix)]
@@ -2863,6 +3845,7 @@ mod tests {
         let info = pm
             .create_process(CreateProcessRequest {
                 name: "pty-exit-status".to_string(),
+                mode: ProcessMode::Daemon,
                 command: "sh".to_string(),
                 args: vec!["-c".to_string(), "exit 0".to_string()],
                 cwd: "/tmp".to_string(),
@@ -2877,6 +3860,8 @@ mod tests {
                 run_as: None,
                 instance_count: 1,
                 pty_mode: true,
+                schedule: None,
+                schedule_overlap_policy: ScheduleOverlapPolicy::Ignore,
             })
             .await
             .unwrap();
@@ -2903,6 +3888,7 @@ mod tests {
         let info = pm
             .create_process(CreateProcessRequest {
                 name: "pty-restart-event".to_string(),
+                mode: ProcessMode::Daemon,
                 command: "sh".to_string(),
                 args: vec![
                     "-c".to_string(),
@@ -2923,6 +3909,8 @@ mod tests {
                 run_as: None,
                 instance_count: 1,
                 pty_mode: true,
+                schedule: None,
+                schedule_overlap_policy: ScheduleOverlapPolicy::Ignore,
             })
             .await
             .unwrap();
@@ -2959,6 +3947,7 @@ mod tests {
         let info = pm
             .create_process(CreateProcessRequest {
                 name: "pty-log-flow".to_string(),
+                mode: ProcessMode::Daemon,
                 command: "sh".to_string(),
                 args: vec![
                     "-c".to_string(),
@@ -2976,6 +3965,8 @@ mod tests {
                 run_as: None,
                 instance_count: 1,
                 pty_mode: true,
+                schedule: None,
+                schedule_overlap_policy: ScheduleOverlapPolicy::Ignore,
             })
             .await
             .unwrap();

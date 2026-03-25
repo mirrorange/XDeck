@@ -7,14 +7,16 @@ use serde::{Deserialize, Deserializer};
 use crate::error::{AppError, ValidationIssue};
 use crate::rpc::params::parse_required_params;
 use crate::services::process_manager::{
-    CreateProcessRequest, GetLogsRequest, LogStream, ProcessLogConfig, PtyReplayRequest,
-    RestartPolicy, UpdateProcessRequest,
+    CreateProcessRequest, GetLogsRequest, LogStream, ProcessLogConfig, ProcessMode,
+    PtyReplayRequest, RestartPolicy, ScheduleConfig, ScheduleOverlapPolicy, UpdateProcessRequest,
 };
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateProcessParams {
     name: String,
+    #[serde(default)]
+    mode: ProcessMode,
     command: String,
     #[serde(default)]
     args: Vec<String>,
@@ -33,6 +35,9 @@ struct CreateProcessParams {
     instance_count: u32,
     #[serde(default)]
     pty_mode: bool,
+    schedule: Option<ScheduleConfig>,
+    #[serde(default)]
+    schedule_overlap_policy: ScheduleOverlapPolicy,
 }
 
 #[derive(Debug, Deserialize)]
@@ -40,6 +45,7 @@ struct CreateProcessParams {
 struct UpdateProcessParams {
     id: String,
     name: Option<String>,
+    mode: Option<ProcessMode>,
     command: Option<String>,
     args: Option<Vec<String>>,
     cwd: Option<String>,
@@ -53,6 +59,8 @@ struct UpdateProcessParams {
     run_as: Option<Option<String>>,
     instance_count: Option<u32>,
     pty_mode: Option<bool>,
+    schedule: Option<ScheduleConfig>,
+    schedule_overlap_policy: Option<ScheduleOverlapPolicy>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,6 +206,7 @@ pub fn parse_pty_replay_request(
 fn parse_create_payload(raw: CreateProcessParams) -> Result<CreateProcessRequest, AppError> {
     let CreateProcessParams {
         name,
+        mode,
         command,
         args,
         cwd,
@@ -209,6 +218,8 @@ fn parse_create_payload(raw: CreateProcessParams) -> Result<CreateProcessRequest
         run_as,
         instance_count,
         pty_mode,
+        schedule,
+        schedule_overlap_policy,
     } = raw;
 
     let mut issues = Vec::new();
@@ -235,6 +246,7 @@ fn parse_create_payload(raw: CreateProcessParams) -> Result<CreateProcessRequest
     let restart_policy = validate_restart_policy(Some(restart_policy), &mut issues).and_then(|v| v);
     let log_config = validate_log_config(Some(log_config), &mut issues).and_then(|v| v);
     let instance_count = validate_instance_count(Some(instance_count), &mut issues).and_then(|v| v);
+    validate_schedule_fields(mode.clone(), schedule.as_ref(), &mut issues);
 
     if !issues.is_empty() {
         return Err(AppError::bad_request_with_details(
@@ -245,6 +257,7 @@ fn parse_create_payload(raw: CreateProcessParams) -> Result<CreateProcessRequest
 
     Ok(CreateProcessRequest {
         name: name.expect("name is present when issues is empty"),
+        mode,
         command: command.expect("command is present when issues is empty"),
         args,
         cwd: cwd.expect("cwd is present when issues is empty"),
@@ -256,6 +269,8 @@ fn parse_create_payload(raw: CreateProcessParams) -> Result<CreateProcessRequest
         run_as: run_as.and_then(trimmed_non_empty),
         instance_count: instance_count.expect("instance_count is present when issues is empty"),
         pty_mode,
+        schedule,
+        schedule_overlap_policy,
     })
 }
 
@@ -263,6 +278,7 @@ fn parse_update_payload(raw: UpdateProcessParams) -> Result<UpdateProcessRequest
     let UpdateProcessParams {
         id,
         name,
+        mode,
         command,
         args,
         cwd,
@@ -274,6 +290,8 @@ fn parse_update_payload(raw: UpdateProcessParams) -> Result<UpdateProcessRequest
         run_as,
         instance_count,
         pty_mode,
+        schedule,
+        schedule_overlap_policy,
     } = raw;
 
     let mut issues = Vec::new();
@@ -324,6 +342,7 @@ fn parse_update_payload(raw: UpdateProcessParams) -> Result<UpdateProcessRequest
     Ok(UpdateProcessRequest {
         id: id.expect("id is present when issues is empty"),
         name: name.expect("name is present when issues is empty"),
+        mode,
         command: command.expect("command is present when issues is empty"),
         args,
         cwd: cwd.expect("cwd is present when issues is empty"),
@@ -335,6 +354,8 @@ fn parse_update_payload(raw: UpdateProcessParams) -> Result<UpdateProcessRequest
         run_as: run_as.map(|v| v.and_then(trimmed_non_empty)),
         instance_count: instance_count.expect("instance_count is present when issues is empty"),
         pty_mode,
+        schedule,
+        schedule_overlap_policy,
     })
 }
 
@@ -489,6 +510,78 @@ fn validate_restart_policy(
             }
         }
         None => Some(None),
+    }
+}
+
+fn validate_schedule_fields(
+    mode: ProcessMode,
+    schedule: Option<&ScheduleConfig>,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    match mode {
+        ProcessMode::Daemon => {}
+        ProcessMode::Schedule => {
+            let Some(schedule) = schedule else {
+                issues.push(ValidationIssue::new(
+                    "schedule",
+                    "schedule mode requires a schedule configuration",
+                ));
+                return;
+            };
+            validate_schedule_config(schedule, issues);
+        }
+    }
+}
+
+fn validate_schedule_config(schedule: &ScheduleConfig, issues: &mut Vec<ValidationIssue>) {
+    match schedule {
+        ScheduleConfig::Once { run_at } => {
+            if chrono::DateTime::parse_from_rfc3339(run_at).is_err() {
+                issues.push(ValidationIssue::new(
+                    "schedule.run_at",
+                    "must be a valid RFC3339 datetime",
+                ));
+            }
+        }
+        ScheduleConfig::Daily { hour, minute } => {
+            validate_schedule_time(*hour, *minute, issues);
+        }
+        ScheduleConfig::Weekly {
+            weekdays,
+            hour,
+            minute,
+        } => {
+            validate_schedule_time(*hour, *minute, issues);
+            if weekdays.is_empty() {
+                issues.push(ValidationIssue::new(
+                    "schedule.weekdays",
+                    "must include at least one weekday",
+                ));
+            }
+        }
+        ScheduleConfig::Interval { every_seconds } => {
+            if *every_seconds == 0 {
+                issues.push(ValidationIssue::new(
+                    "schedule.every_seconds",
+                    "must be greater than 0",
+                ));
+            }
+        }
+    }
+}
+
+fn validate_schedule_time(hour: u8, minute: u8, issues: &mut Vec<ValidationIssue>) {
+    if hour > 23 {
+        issues.push(ValidationIssue::new(
+            "schedule.hour",
+            "must be in range [0, 23]",
+        ));
+    }
+    if minute > 59 {
+        issues.push(ValidationIssue::new(
+            "schedule.minute",
+            "must be in range [0, 59]",
+        ));
     }
 }
 
@@ -647,6 +740,73 @@ mod tests {
         .unwrap();
 
         assert!(!parsed.pty_mode);
+    }
+
+    #[test]
+    fn test_create_schedule_process_requires_schedule_payload() {
+        let err = parse_create_request(Some(serde_json::json!({
+            "name": "scheduled-proc",
+            "mode": "schedule",
+            "command": "echo",
+            "cwd": "/tmp"
+        })))
+        .unwrap_err();
+
+        match err {
+            AppError::BadRequestWithDetails { details, .. } => {
+                assert!(details.iter().any(|issue| issue.field == "schedule"));
+            }
+            other => panic!("Expected BadRequestWithDetails, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_create_schedule_process_accepts_interval_schedule() {
+        let parsed = parse_create_request(Some(serde_json::json!({
+            "name": "scheduled-proc",
+            "mode": "schedule",
+            "command": "echo",
+            "cwd": "/tmp",
+            "schedule": {
+                "type": "interval",
+                "every_seconds": 300
+            },
+            "schedule_overlap_policy": "start_new"
+        })))
+        .unwrap();
+
+        assert_eq!(parsed.mode, ProcessMode::Schedule);
+        assert_eq!(
+            parsed.schedule,
+            Some(ScheduleConfig::Interval { every_seconds: 300 })
+        );
+        assert_eq!(
+            parsed.schedule_overlap_policy,
+            ScheduleOverlapPolicy::StartNew
+        );
+    }
+
+    #[test]
+    fn test_create_schedule_process_rejects_invalid_daily_time() {
+        let err = parse_create_request(Some(serde_json::json!({
+            "name": "scheduled-proc",
+            "mode": "schedule",
+            "command": "echo",
+            "cwd": "/tmp",
+            "schedule": {
+                "type": "daily",
+                "hour": 24,
+                "minute": 0
+            }
+        })))
+        .unwrap_err();
+
+        match err {
+            AppError::BadRequestWithDetails { details, .. } => {
+                assert!(details.iter().any(|issue| issue.field == "schedule.hour"));
+            }
+            other => panic!("Expected BadRequestWithDetails, got {:?}", other),
+        }
     }
 
     #[test]
