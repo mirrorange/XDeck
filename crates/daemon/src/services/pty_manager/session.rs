@@ -12,9 +12,7 @@ use tokio::task::JoinHandle;
 
 use crate::error::AppError;
 
-use super::types::{
-    PtySessionExitedEvent, PtySessionInfo, PtySessionType, PtySessionTypeLabel,
-};
+use super::types::{PtySessionExitedEvent, PtySessionInfo, PtySessionType, PtySessionTypeLabel};
 
 pub struct PtySession {
     pub id: String,

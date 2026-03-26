@@ -1,20 +1,24 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{debug, error};
 
 use crate::services::event_bus::SharedEventBus;
 
+pub(super) struct LogStreamContext {
+    pub process_id: String,
+    pub instance_idx: u32,
+    pub stream_name: &'static str,
+    pub log_path: PathBuf,
+    pub max_file_size: u64,
+    pub max_files: u32,
+}
+
 /// Stream from an async reader to both a log file (with rotation) and the event bus.
 pub(super) async fn stream_to_file_and_bus<R: tokio::io::AsyncRead + Unpin>(
     reader: R,
-    bus: &SharedEventBus,
-    process_id: &str,
-    instance_idx: u32,
-    stream_name: &str,
-    log_path: &Path,
-    max_file_size: u64,
-    max_files: u32,
+    bus: SharedEventBus,
+    context: LogStreamContext,
 ) {
     let mut buf_reader = BufReader::new(reader);
     let mut line_buf = String::new();
@@ -22,21 +26,21 @@ pub(super) async fn stream_to_file_and_bus<R: tokio::io::AsyncRead + Unpin>(
     let file = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(log_path)
+        .open(&context.log_path)
         .await;
 
     let mut file = match file {
         Ok(file) => file,
         Err(err) => {
-            error!("Failed to open log file {:?}: {}", log_path, err);
+            error!("Failed to open log file {:?}: {}", context.log_path, err);
             let mut lines = BufReader::new(buf_reader).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 bus.publish(
                     "process.log",
                     serde_json::json!({
-                        "process_id": process_id,
-                        "instance": instance_idx,
-                        "stream": stream_name,
+                        "process_id": &context.process_id,
+                        "instance": context.instance_idx,
+                        "stream": context.stream_name,
                         "line": line,
                     }),
                 );
@@ -45,7 +49,7 @@ pub(super) async fn stream_to_file_and_bus<R: tokio::io::AsyncRead + Unpin>(
         }
     };
 
-    let mut current_size = std::fs::metadata(log_path)
+    let mut current_size = std::fs::metadata(&context.log_path)
         .map(|metadata| metadata.len())
         .unwrap_or(0);
 
@@ -62,18 +66,18 @@ pub(super) async fn stream_to_file_and_bus<R: tokio::io::AsyncRead + Unpin>(
                 }
                 current_size += log_line.len() as u64;
 
-                if current_size >= max_file_size {
+                if current_size >= context.max_file_size {
                     let _ = file.flush().await;
                     drop(file);
 
-                    rotate_log_files(log_path, max_files);
+                    rotate_log_files(&context.log_path, context.max_files);
                     current_size = 0;
 
                     file = match tokio::fs::OpenOptions::new()
                         .create(true)
                         .write(true)
                         .truncate(true)
-                        .open(log_path)
+                        .open(&context.log_path)
                         .await
                     {
                         Ok(file) => file,
@@ -87,9 +91,9 @@ pub(super) async fn stream_to_file_and_bus<R: tokio::io::AsyncRead + Unpin>(
                 bus.publish(
                     "process.log",
                     serde_json::json!({
-                        "process_id": process_id,
-                        "instance": instance_idx,
-                        "stream": stream_name,
+                        "process_id": &context.process_id,
+                        "instance": context.instance_idx,
+                        "stream": context.stream_name,
                         "line": line,
                     }),
                 );
@@ -97,7 +101,7 @@ pub(super) async fn stream_to_file_and_bus<R: tokio::io::AsyncRead + Unpin>(
             Err(err) => {
                 debug!(
                     "Log stream read error for {}/{}/{}: {}",
-                    process_id, instance_idx, stream_name, err
+                    context.process_id, context.instance_idx, context.stream_name, err
                 );
                 break;
             }

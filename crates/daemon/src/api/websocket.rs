@@ -194,7 +194,6 @@ async fn handle_client_message(
             let session_access: Arc<dyn SessionAccess> = session.clone();
             let ctx = RequestContext::with_session(
                 session.get_authenticated_user(),
-                None,
                 state.pool.clone(),
                 session_access,
             );

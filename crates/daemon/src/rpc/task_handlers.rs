@@ -147,7 +147,7 @@ mod tests {
         let response = router
             .dispatch(
                 request,
-                RequestContext::new(Some("user-1".to_string()), None, pool),
+                RequestContext::new(Some("user-1".to_string()), pool),
             )
             .await
             .unwrap();

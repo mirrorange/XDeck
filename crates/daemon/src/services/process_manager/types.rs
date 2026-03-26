@@ -205,6 +205,14 @@ pub struct InstanceInfo {
     pub exit_code: Option<i32>,
 }
 
+pub(super) struct ProcessStatusChange<'a> {
+    pub status: &'a str,
+    pub pid: Option<u32>,
+    pub exit_code: Option<i32>,
+    pub pty_session_id: Option<&'a str>,
+    pub message: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProcessInfo {
     #[serde(flatten)]

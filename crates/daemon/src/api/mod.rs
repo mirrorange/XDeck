@@ -36,15 +36,12 @@ use crate::services::upload_manager::{self, SharedUploadManager};
 /// Shared application state accessible by all handlers.
 #[derive(Clone)]
 pub struct AppState {
-    pub config: AppConfig,
     pub pool: SqlitePool,
     pub rpc_router: Arc<RpcRouter>,
     pub event_bus: SharedEventBus,
     pub auth_service: Arc<AuthService>,
     pub pty_manager: Arc<PtyManager>,
     pub process_manager: Arc<ProcessManager>,
-    pub docker_manager: Arc<DockerManager>,
-    pub task_manager: SharedTaskManager,
     pub upload_manager: SharedUploadManager,
 }
 
@@ -84,15 +81,12 @@ impl AppState {
         ));
 
         Self {
-            config,
             pool,
             rpc_router,
             event_bus,
             auth_service,
             pty_manager,
             process_manager,
-            docker_manager,
-            task_manager,
             upload_manager,
         }
     }

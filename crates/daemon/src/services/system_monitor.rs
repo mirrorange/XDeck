@@ -133,7 +133,7 @@ impl SystemMonitor {
         // sysinfo provides per-process disk_usage() which gives delta read/write bytes.
         let mut disk_read: u64 = 0;
         let mut disk_write: u64 = 0;
-        for (_pid, process) in state.sys.processes() {
+        for process in state.sys.processes().values() {
             let du = process.disk_usage();
             disk_read += du.read_bytes;
             disk_write += du.written_bytes;

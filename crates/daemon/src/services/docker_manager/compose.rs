@@ -46,7 +46,8 @@ impl DockerManager {
         project_dir: &str,
         file: Option<&str>,
     ) -> Result<String, AppError> {
-        self.run_compose_command(project_dir, file, &["up", "-d"]).await
+        self.run_compose_command(project_dir, file, &["up", "-d"])
+            .await
     }
 
     pub async fn compose_down(
@@ -62,7 +63,8 @@ impl DockerManager {
         project_dir: &str,
         file: Option<&str>,
     ) -> Result<String, AppError> {
-        self.run_compose_command(project_dir, file, &["restart"]).await
+        self.run_compose_command(project_dir, file, &["restart"])
+            .await
     }
 
     pub async fn compose_pull(
@@ -175,7 +177,10 @@ impl DockerManager {
 
         let mut projects = Vec::new();
         for (id, name, file_path, cwd, status, created_at, updated_at) in rows {
-            let services = self.compose_ps(&cwd, Some(&file_path)).await.unwrap_or_default();
+            let services = self
+                .compose_ps(&cwd, Some(&file_path))
+                .await
+                .unwrap_or_default();
 
             projects.push(ComposeProjectInfo {
                 id,
@@ -218,7 +223,10 @@ impl DockerManager {
             .await
             .map_err(AppError::Database)?;
 
-        let services = self.compose_ps(cwd, Some(file_path)).await.unwrap_or_default();
+        let services = self
+            .compose_ps(cwd, Some(file_path))
+            .await
+            .unwrap_or_default();
         let now = Utc::now().to_rfc3339();
 
         Ok(ComposeProjectInfo {

@@ -265,7 +265,10 @@ async fn test_session_exit_publishes_event() {
     let manager = manager_for_test();
     let mut events = manager.event_bus.subscribe();
 
-    let created = manager.create_session(exit_command_request(7)).await.unwrap();
+    let created = manager
+        .create_session(exit_command_request(7))
+        .await
+        .unwrap();
 
     let exit_event = tokio::time::timeout(Duration::from_secs(3), async {
         loop {
@@ -289,7 +292,10 @@ async fn test_terminal_session_exit_closes_session() {
     let manager = manager_for_test();
     let mut events = manager.event_bus.subscribe();
 
-    let created = manager.create_session(exit_command_request(0)).await.unwrap();
+    let created = manager
+        .create_session(exit_command_request(0))
+        .await
+        .unwrap();
 
     let closed_session_id = tokio::time::timeout(Duration::from_secs(3), async {
         loop {

@@ -190,7 +190,7 @@ mod tests {
     async fn test_ctx() -> RequestContext {
         let pool = crate::db::connect_in_memory().await.unwrap();
         crate::db::run_migrations(&pool).await.unwrap();
-        RequestContext::new(Some("user-1".to_string()), None, pool)
+        RequestContext::new(Some("user-1".to_string()), pool)
     }
 
     fn test_pty_mgr() -> Arc<PtyManager> {

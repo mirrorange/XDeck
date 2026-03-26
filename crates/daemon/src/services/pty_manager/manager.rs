@@ -111,10 +111,8 @@ impl PtyManager {
                     .iter()
                     .filter_map(|entry| {
                         let session = entry.value();
-                        let is_terminal = matches!(
-                            session.session_type,
-                            super::types::PtySessionType::Terminal
-                        );
+                        let is_terminal =
+                            matches!(session.session_type, super::types::PtySessionType::Terminal);
                         if is_terminal && session.is_idle_timeout(manager.idle_timeout) {
                             Some(entry.key().clone())
                         } else {

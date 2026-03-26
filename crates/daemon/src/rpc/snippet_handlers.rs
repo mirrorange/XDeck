@@ -80,16 +80,30 @@ struct UpdateSnippetParams {
 
 // ── Helpers ─────────────────────────────────────────────────────
 
+type SnippetRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+);
+
 fn row_to_snippet(
-    id: String,
-    name: String,
-    command: String,
-    tags_json: String,
-    execution_mode: String,
-    store_snippet_id: Option<String>,
-    store_version: Option<String>,
-    created_at: String,
-    updated_at: String,
+    (
+        id,
+        name,
+        command,
+        tags_json,
+        execution_mode,
+        store_snippet_id,
+        store_version,
+        created_at,
+        updated_at,
+    ): SnippetRow,
 ) -> SnippetInfo {
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
     SnippetInfo {
@@ -109,7 +123,7 @@ fn row_to_snippet(
 
 pub fn register(router: &mut RpcRouter) {
     router.register("snippet.list", move |_params, ctx| async move {
-        let rows = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, Option<String>, String, String)>(
+        let rows = sqlx::query_as::<_, SnippetRow>(
             "SELECT id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at FROM snippets ORDER BY updated_at DESC",
         )
         .fetch_all(&ctx.pool)
@@ -118,9 +132,7 @@ pub fn register(router: &mut RpcRouter) {
 
         let snippets: Vec<SnippetInfo> = rows
             .into_iter()
-            .map(|(id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at)| {
-                row_to_snippet(id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at)
-            })
+            .map(row_to_snippet)
             .collect();
 
         Ok(serde_json::json!({ "snippets": snippets }))
@@ -155,7 +167,7 @@ pub fn register(router: &mut RpcRouter) {
         .await
         .map_err(crate::error::AppError::Database)?;
 
-        let row = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, Option<String>, String, String)>(
+        let row = sqlx::query_as::<_, SnippetRow>(
             "SELECT id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at FROM snippets WHERE id = ?",
         )
         .bind(&id)
@@ -163,7 +175,7 @@ pub fn register(router: &mut RpcRouter) {
         .await
         .map_err(crate::error::AppError::Database)?;
 
-        let snippet = row_to_snippet(row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8);
+        let snippet = row_to_snippet(row);
         Ok(serde_json::to_value(&snippet).unwrap())
     });
 
@@ -232,7 +244,7 @@ pub fn register(router: &mut RpcRouter) {
             .map_err(crate::error::AppError::Database)?;
         }
 
-        let row = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, Option<String>, String, String)>(
+        let row = sqlx::query_as::<_, SnippetRow>(
             "SELECT id, name, command, tags, execution_mode, store_snippet_id, store_version, created_at, updated_at FROM snippets WHERE id = ?",
         )
         .bind(&params.id)
@@ -240,7 +252,7 @@ pub fn register(router: &mut RpcRouter) {
         .await
         .map_err(crate::error::AppError::Database)?;
 
-        let snippet = row_to_snippet(row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8);
+        let snippet = row_to_snippet(row);
         Ok(serde_json::to_value(&snippet).unwrap())
     });
 
@@ -295,7 +307,7 @@ mod tests {
         let response = router
             .dispatch(
                 request,
-                RequestContext::new(Some("user-1".to_string()), None, pool),
+                RequestContext::new(Some("user-1".to_string()), pool),
             )
             .await
             .unwrap();

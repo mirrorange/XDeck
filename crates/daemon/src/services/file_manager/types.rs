@@ -12,14 +12,6 @@ pub enum ArchiveFormat {
 }
 
 impl ArchiveFormat {
-    /// Get the file extension for this format.
-    pub fn extension(&self) -> &str {
-        match self {
-            ArchiveFormat::Zip => ".zip",
-            ArchiveFormat::TarGz => ".tar.gz",
-        }
-    }
-
     /// Detect format from file extension.
     pub fn from_path(path: &Path) -> Option<Self> {
         let name = path.file_name()?.to_string_lossy().to_lowercase();

@@ -44,8 +44,6 @@ pub type RpcHandler = Arc<
 pub struct RequestContext {
     /// Authenticated user ID (None if not yet authenticated)
     pub user_id: Option<String>,
-    /// Client IP address
-    pub ip_address: Option<String>,
     /// Database pool handle
     pub pool: SqlitePool,
     /// Session access for WebSocket contexts.
@@ -54,10 +52,9 @@ pub struct RequestContext {
 
 impl RequestContext {
     #[cfg(test)]
-    pub fn new(user_id: Option<String>, ip_address: Option<String>, pool: SqlitePool) -> Self {
+    pub fn new(user_id: Option<String>, pool: SqlitePool) -> Self {
         Self {
             user_id,
-            ip_address,
             pool,
             session: None,
         }
@@ -65,13 +62,11 @@ impl RequestContext {
 
     pub fn with_session(
         user_id: Option<String>,
-        ip_address: Option<String>,
         pool: SqlitePool,
         session: Arc<dyn SessionAccess>,
     ) -> Self {
         Self {
             user_id,
-            ip_address,
             pool,
             session: Some(session),
         }
@@ -204,11 +199,6 @@ impl RpcRouter {
             }
         })
     }
-
-    /// Get list of registered method names.
-    pub fn methods(&self) -> Vec<&str> {
-        self.handlers.keys().map(|s| s.as_str()).collect()
-    }
 }
 
 #[cfg(test)]
@@ -217,7 +207,7 @@ mod tests {
 
     async fn test_ctx(user_id: Option<String>) -> RequestContext {
         let pool = crate::db::connect_in_memory().await.unwrap();
-        RequestContext::new(user_id, None, pool)
+        RequestContext::new(user_id, pool)
     }
 
     #[tokio::test]

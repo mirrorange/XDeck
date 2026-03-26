@@ -200,7 +200,6 @@ mod tests {
         let session = Arc::new(MockSession::default());
         let ctx = RequestContext::with_session(
             Some("user-1".to_string()),
-            None,
             test_pool().await,
             session.clone(),
         );
@@ -233,7 +232,7 @@ mod tests {
         let mut router = RpcRouter::new();
         register(&mut router);
 
-        let ctx = RequestContext::new(Some("user-1".to_string()), None, test_pool().await);
+        let ctx = RequestContext::new(Some("user-1".to_string()), test_pool().await);
 
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),

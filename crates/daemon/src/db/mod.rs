@@ -23,6 +23,7 @@ pub async fn connect(path: &Path) -> Result<SqlitePool> {
 }
 
 /// Create an in-memory SQLite pool (for testing).
+#[cfg(test)]
 pub async fn connect_in_memory() -> Result<SqlitePool> {
     let options = SqliteConnectOptions::from_str("sqlite::memory:")?
         .journal_mode(SqliteJournalMode::Wal)

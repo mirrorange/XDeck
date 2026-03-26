@@ -162,7 +162,7 @@ mod tests {
         register(&mut router, auth);
 
         let session = Arc::new(MockSession::default());
-        let ctx = RequestContext::with_session(None, None, pool, session.clone());
+        let ctx = RequestContext::with_session(None, pool, session.clone());
 
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),
@@ -192,7 +192,7 @@ mod tests {
         let mut router = RpcRouter::new();
         register(&mut router, auth);
 
-        let ctx = RequestContext::new(None, None, pool);
+        let ctx = RequestContext::new(None, pool);
 
         let req = JsonRpcRequest {
             jsonrpc: "2.0".to_string(),

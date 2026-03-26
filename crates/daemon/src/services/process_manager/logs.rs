@@ -11,10 +11,10 @@ use tracing::{error, warn};
 use crate::error::AppError;
 use crate::services::event_bus::SharedEventBus;
 
-use super::log_utils::{rotate_log_files, stream_to_file_and_bus};
+use super::log_utils::{rotate_log_files, stream_to_file_and_bus, LogStreamContext};
 use super::{
-    GetLogsRequest, LogLine, LogsResponse, ProcessLogConfig, ProcessManager, PtyReplayRequest,
-    PtyReplayResponse,
+    GetLogsRequest, LogLine, LogsResponse, ProcessLogConfig, ProcessManager, ProcessStatusChange,
+    PtyReplayRequest, PtyReplayResponse,
 };
 
 impl ProcessManager {
@@ -35,13 +35,15 @@ impl ProcessManager {
             tokio::spawn(async move {
                 stream_to_file_and_bus(
                     stdout,
-                    &bus,
-                    &pid_str,
-                    instance_idx,
-                    "stdout",
-                    &log_path,
-                    max_size,
-                    max_files,
+                    bus,
+                    LogStreamContext {
+                        process_id: pid_str,
+                        instance_idx,
+                        stream_name: "stdout",
+                        log_path,
+                        max_file_size: max_size,
+                        max_files,
+                    },
                 )
                 .await;
             });
@@ -55,13 +57,15 @@ impl ProcessManager {
             tokio::spawn(async move {
                 stream_to_file_and_bus(
                     stderr,
-                    &bus,
-                    &pid_str,
-                    instance_idx,
-                    "stderr",
-                    &log_path,
-                    max_size,
-                    max_files,
+                    bus,
+                    LogStreamContext {
+                        process_id: pid_str,
+                        instance_idx,
+                        stream_name: "stderr",
+                        log_path,
+                        max_file_size: max_size,
+                        max_files,
+                    },
                 )
                 .await;
             });
@@ -214,22 +218,18 @@ impl ProcessManager {
         &self,
         process_id: &str,
         instance_idx: u32,
-        status: &str,
-        pid: Option<u32>,
-        exit_code: Option<i32>,
-        pty_session_id: Option<&str>,
-        message: Option<&str>,
+        change: ProcessStatusChange<'_>,
     ) {
         self.event_bus.publish(
             "process.status_changed",
             serde_json::json!({
                 "process_id": process_id,
                 "instance": instance_idx,
-                "status": status,
-                "pid": pid,
-                "exit_code": exit_code,
-                "pty_session_id": pty_session_id,
-                "message": message,
+                "status": change.status,
+                "pid": change.pid,
+                "exit_code": change.exit_code,
+                "pty_session_id": change.pty_session_id,
+                "message": change.message,
             }),
         );
     }
@@ -290,11 +290,7 @@ impl ProcessManager {
         } else {
             0
         };
-        let end = if total > req.offset {
-            total - req.offset
-        } else {
-            0
-        };
+        let end = total.saturating_sub(req.offset);
 
         Ok(LogsResponse {
             process_id: req.id,

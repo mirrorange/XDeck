@@ -45,6 +45,7 @@ impl TaskHandle {
     }
 
     /// Check if this task has been cancelled.
+    #[cfg(test)]
     pub async fn is_cancelled(&self) -> bool {
         self.manager.is_cancelled(&self.task_id).await
     }
@@ -162,6 +163,7 @@ impl TaskManager {
     }
 
     /// Check if a task has been cancelled.
+    #[cfg(test)]
     pub async fn is_cancelled(&self, task_id: &str) -> bool {
         let tasks = self.tasks.lock().await;
         tasks

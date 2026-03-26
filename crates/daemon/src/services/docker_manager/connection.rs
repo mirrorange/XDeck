@@ -1,5 +1,5 @@
-use bollard::Docker;
 use crate::error::AppError;
+use bollard::Docker;
 
 use super::manager::DockerManager;
 use super::types::{ContainerRuntime, DockerStatus};

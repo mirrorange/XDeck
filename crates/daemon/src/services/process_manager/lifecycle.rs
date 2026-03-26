@@ -15,7 +15,10 @@ use crate::services::pty_manager::{
 #[cfg(unix)]
 use super::log_utils::resolve_username;
 use super::runtime::RunningProcess;
-use super::{ProcessDefinition, ProcessManager, ProcessMode, ProcessStatus, RestartStrategy};
+use super::{
+    ProcessDefinition, ProcessManager, ProcessMode, ProcessStatus, ProcessStatusChange,
+    RestartStrategy,
+};
 
 impl ProcessManager {
     pub async fn start_process(self: &Arc<Self>, id: &str) -> Result<(), AppError> {
@@ -201,11 +204,13 @@ impl ProcessManager {
                     self.publish_status_changed(
                         &def.id,
                         instance_idx,
-                        "running",
-                        session_info.pid,
-                        None,
-                        Some(&session_info.session_id),
-                        None,
+                        ProcessStatusChange {
+                            status: "running",
+                            pid: session_info.pid,
+                            exit_code: None,
+                            pty_session_id: Some(&session_info.session_id),
+                            message: None,
+                        },
                     );
 
                     info!(
@@ -265,11 +270,13 @@ impl ProcessManager {
                 self.publish_status_changed(
                     &def.id,
                     instance_idx,
-                    "running",
-                    pid,
-                    None,
-                    None,
-                    None,
+                    ProcessStatusChange {
+                        status: "running",
+                        pid,
+                        exit_code: None,
+                        pty_session_id: None,
+                        message: None,
+                    },
                 );
 
                 info!(
@@ -404,25 +411,27 @@ impl ProcessManager {
                 self.publish_status_changed(
                     &id,
                     instance_idx,
-                    &format!("{:?}", proc.status).to_lowercase(),
-                    None,
-                    exit_code,
-                    None,
-                    None,
+                    ProcessStatusChange {
+                        status: &format!("{:?}", proc.status).to_lowercase(),
+                        pid: None,
+                        exit_code,
+                        pty_session_id: None,
+                        message: None,
+                    },
                 );
 
                 let policy = &def.restart_policy;
                 match policy.strategy {
                     RestartStrategy::Always => policy
                         .max_retries
-                        .map_or(true, |max| proc.restart_count < max),
+                        .is_none_or(|max| proc.restart_count < max),
                     RestartStrategy::OnFailure => {
                         if success {
                             false
                         } else {
                             policy
                                 .max_retries
-                                .map_or(true, |max| proc.restart_count < max)
+                                .is_none_or(|max| proc.restart_count < max)
                         }
                     }
                     RestartStrategy::Never => false,
@@ -439,11 +448,13 @@ impl ProcessManager {
                         self.publish_status_changed(
                             &id,
                             instance_idx,
-                            "failed",
-                            None,
-                            proc.exit_code,
-                            None,
-                            Some("Max restart retries exceeded"),
+                            ProcessStatusChange {
+                                status: "failed",
+                                pid: None,
+                                exit_code: proc.exit_code,
+                                pty_session_id: None,
+                                message: Some("Max restart retries exceeded"),
+                            },
                         );
                     }
                 }
@@ -547,11 +558,13 @@ impl ProcessManager {
                     self.publish_status_changed(
                         &id,
                         instance_idx,
-                        "running",
-                        session_info.pid,
-                        None,
-                        Some(&session_info.session_id),
-                        None,
+                        ProcessStatusChange {
+                            status: "running",
+                            pid: session_info.pid,
+                            exit_code: None,
+                            pty_session_id: Some(&session_info.session_id),
+                            message: None,
+                        },
                     );
 
                     info!(
@@ -645,25 +658,27 @@ impl ProcessManager {
                 self.publish_status_changed(
                     &id,
                     instance_idx,
-                    &format!("{:?}", proc.status).to_lowercase(),
-                    None,
-                    exit_code,
-                    None,
-                    None,
+                    ProcessStatusChange {
+                        status: &format!("{:?}", proc.status).to_lowercase(),
+                        pid: None,
+                        exit_code,
+                        pty_session_id: None,
+                        message: None,
+                    },
                 );
 
                 let policy = &def.restart_policy;
                 match policy.strategy {
                     RestartStrategy::Always => policy
                         .max_retries
-                        .map_or(true, |max| proc.restart_count < max),
+                        .is_none_or(|max| proc.restart_count < max),
                     RestartStrategy::OnFailure => {
                         if success {
                             false
                         } else {
                             policy
                                 .max_retries
-                                .map_or(true, |max| proc.restart_count < max)
+                                .is_none_or(|max| proc.restart_count < max)
                         }
                     }
                     RestartStrategy::Never => false,
@@ -680,11 +695,13 @@ impl ProcessManager {
                         self.publish_status_changed(
                             &id,
                             instance_idx,
-                            "failed",
-                            None,
-                            proc.exit_code,
-                            None,
-                            Some("Max restart retries exceeded"),
+                            ProcessStatusChange {
+                                status: "failed",
+                                pid: None,
+                                exit_code: proc.exit_code,
+                                pty_session_id: None,
+                                message: Some("Max restart retries exceeded"),
+                            },
                         );
                     }
                 }
@@ -749,11 +766,13 @@ impl ProcessManager {
                     self.publish_status_changed(
                         &id,
                         instance_idx,
-                        "running",
-                        pid,
-                        None,
-                        None,
-                        None,
+                        ProcessStatusChange {
+                            status: "running",
+                            pid,
+                            exit_code: None,
+                            pty_session_id: None,
+                            message: None,
+                        },
                     );
 
                     info!(
@@ -822,7 +841,17 @@ impl ProcessManager {
             let _ = self.pty_manager.close_session(&session_id).await;
         }
 
-        self.publish_status_changed(id, instance_idx, "stopped", None, None, None, None);
+        self.publish_status_changed(
+            id,
+            instance_idx,
+            ProcessStatusChange {
+                status: "stopped",
+                pid: None,
+                exit_code: None,
+                pty_session_id: None,
+                message: None,
+            },
+        );
         Ok(())
     }
 

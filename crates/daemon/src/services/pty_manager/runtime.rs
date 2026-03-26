@@ -15,7 +15,9 @@ use crate::services::event_bus::SharedEventBus;
 
 use super::manager::PtyManager;
 use super::session::{PtySession, ScrollbackBuffer};
-use super::types::{CreatePtyRequest, PtySessionExitedEvent, PtySessionType, PTY_SESSION_EXITED_TOPIC};
+use super::types::{
+    CreatePtyRequest, PtySessionExitedEvent, PtySessionType, PTY_SESSION_EXITED_TOPIC,
+};
 
 const DEFAULT_OUTPUT_CHANNEL_CAPACITY: usize = 512;
 const DEFAULT_SCROLLBACK_CAPACITY: usize = 64 * 1024;

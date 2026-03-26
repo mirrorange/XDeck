@@ -70,25 +70,6 @@ pub mod error_codes {
     pub const TOKEN_EXPIRED: i64 = 1002;
     pub const INVALID_CREDENTIALS: i64 = 1003;
     pub const SETUP_REQUIRED: i64 = 1004;
-
-    // Process management errors (2000-2999)
-    pub const PROCESS_NOT_FOUND: i64 = 2001;
-    pub const PROCESS_ALREADY_RUNNING: i64 = 2002;
-    pub const PROCESS_START_FAILED: i64 = 2003;
-
-    // Nginx/Site errors (3000-3999)
-    pub const CONFIG_INVALID: i64 = 3001;
-    pub const PORT_CONFLICT: i64 = 3002;
-
-    // Docker errors (4000-4999)
-    pub const DOCKER_NOT_AVAILABLE: i64 = 4001;
-    pub const CONTAINER_NOT_FOUND: i64 = 4002;
-
-    // Certificate errors (5000-5999)
-    pub const ACME_CHALLENGE_FAILED: i64 = 5001;
-
-    // Node errors (6000-6999)
-    pub const NODE_UNREACHABLE: i64 = 6001;
 }
 
 impl AppError {
