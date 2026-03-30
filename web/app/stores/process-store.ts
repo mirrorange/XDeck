@@ -83,7 +83,7 @@ export interface ProcessInfo {
   cwd: string;
   env: Record<string, string>;
   restart_policy: RestartPolicy;
-  auto_start: boolean;
+  enabled: boolean;
   group_name: string | null;
   log_config: ProcessLogConfig;
   run_as: string | null;
@@ -105,7 +105,7 @@ export interface CreateProcessRequest {
   cwd: string;
   env?: Record<string, string>;
   restart_policy?: Partial<RestartPolicy>;
-  auto_start?: boolean;
+  enabled?: boolean;
   group_name?: string;
   log_config?: Partial<ProcessLogConfig>;
   run_as?: string;
@@ -124,7 +124,7 @@ export interface UpdateProcessRequest {
   cwd?: string;
   env?: Record<string, string>;
   restart_policy?: RestartPolicy;
-  auto_start?: boolean;
+  enabled?: boolean;
   group_name?: string | null;
   log_config?: ProcessLogConfig;
   run_as?: string | null;
@@ -199,7 +199,7 @@ interface ProcessState {
   stopProcess: (id: string) => Promise<void>;
   restartProcess: (id: string) => Promise<void>;
   deleteProcess: (id: string) => Promise<void>;
-  startGroup: (groupName: string) => Promise<void>;
+  startGroup: (groupName: string, scheduleTrigger?: "skip" | "trigger_once") => Promise<void>;
   stopGroup: (groupName: string) => Promise<void>;
   fetchLogs: (
     id: string,
@@ -293,10 +293,11 @@ export const useProcessStore = create<ProcessState>((set) => ({
     });
   },
 
-  startGroup: async (groupName) => {
+  startGroup: async (groupName, scheduleTrigger = "skip") => {
     const rpc = getRpcClient();
     const result = await rpc.call<GroupActionResponse>("process.group.start", {
       group_name: groupName,
+      schedule_trigger: scheduleTrigger,
     });
     ensureGroupActionSuccess(result, groupName);
   },

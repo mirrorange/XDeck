@@ -32,6 +32,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "~/components/ui/dropdown-menu";
+import { Switch } from "~/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "~/components/ui/tooltip";
 import {
   getAggregateStatus,
   type ProcessInfo,
@@ -115,11 +121,13 @@ export function ProcessRow({
   process,
   onAction,
   onViewLogs,
+  onToggleEnabled,
   showGroupBadge = false,
 }: {
   process: ProcessInfo;
   onAction: (action: string, id: string) => void;
   onViewLogs: (id: string) => void;
+  onToggleEnabled?: (id: string, enabled: boolean) => void;
   showGroupBadge?: boolean;
 }) {
   const aggregateStatus = getAggregateStatus(process.instances);
@@ -140,6 +148,22 @@ export function ProcessRow({
 
   return (
     <div className="group flex items-center gap-4 rounded-lg border px-4 py-3 transition-all hover:bg-muted/50 hover:shadow-sm">
+      {onToggleEnabled && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div>
+              <Switch
+                size="sm"
+                checked={process.enabled}
+                onCheckedChange={(checked) => onToggleEnabled(process.id, checked)}
+              />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="text-xs">
+            {process.enabled ? "Enabled — auto-starts with daemon" : "Disabled — manual start only"}
+          </TooltipContent>
+        </Tooltip>
+      )}
       <div className="flex min-w-0 flex-1 items-center gap-3">
         <div className="flex min-w-0 flex-col gap-0.5">
           <div className="flex items-center gap-2">
@@ -301,6 +325,8 @@ export function ProcessGroup({
   onViewLogs,
   onStartGroup,
   onStopGroup,
+  onToggleEnabled,
+  onToggleGroupEnabled,
 }: {
   groupName: string | null;
   processes: ProcessInfo[];
@@ -308,6 +334,8 @@ export function ProcessGroup({
   onViewLogs: (id: string) => void;
   onStartGroup?: (name: string) => void;
   onStopGroup?: (name: string) => void;
+  onToggleEnabled?: (id: string, enabled: boolean) => void;
+  onToggleGroupEnabled?: (groupName: string, enabled: boolean) => void;
 }) {
   const [open, setOpen] = useState(true);
   const isUngrouped = groupName === null;
@@ -316,6 +344,10 @@ export function ProcessGroup({
   const runningCount = processes.filter(
     (p) => getAggregateStatus(p.instances) === "running"
   ).length;
+
+  const allEnabled = processes.every((p) => p.enabled);
+  const someEnabled = processes.some((p) => p.enabled);
+  const groupEnabled = allEnabled;
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -343,29 +375,50 @@ export function ProcessGroup({
               )}
             </div>
 
-            {!isUngrouped && onStartGroup && onStopGroup && (
+            {!isUngrouped && (
               <div
-                className="flex items-center gap-1"
+                className="flex items-center gap-2"
                 onClick={(e) => e.stopPropagation()}
               >
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 text-xs text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700"
-                  onClick={() => onStartGroup(groupName!)}
-                >
-                  <Play className="mr-1 size-3" />
-                  Start All
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 text-xs text-destructive hover:bg-destructive/10"
-                  onClick={() => onStopGroup(groupName!)}
-                >
-                  <Square className="mr-1 size-3" />
-                  Stop All
-                </Button>
+                {onToggleGroupEnabled && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div className="flex items-center gap-1.5">
+                        <Switch
+                          size="sm"
+                          checked={groupEnabled}
+                          className={!allEnabled && someEnabled ? "data-[state=unchecked]:bg-primary/40" : ""}
+                          onCheckedChange={(checked) => onToggleGroupEnabled(groupName!, checked)}
+                        />
+                      </div>
+                    </TooltipTrigger>
+                    <TooltipContent side="left" className="text-xs">
+                      {groupEnabled ? "All processes enabled" : "Enable all processes in group"}
+                    </TooltipContent>
+                  </Tooltip>
+                )}
+                {onStartGroup && onStopGroup && (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-700"
+                      onClick={() => onStartGroup(groupName!)}
+                    >
+                      <Play className="mr-1 size-3" />
+                      Start All
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs text-destructive hover:bg-destructive/10"
+                      onClick={() => onStopGroup(groupName!)}
+                    >
+                      <Square className="mr-1 size-3" />
+                      Stop All
+                    </Button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -379,6 +432,7 @@ export function ProcessGroup({
                 process={process}
                 onAction={onAction}
                 onViewLogs={onViewLogs}
+                onToggleEnabled={onToggleEnabled}
               />
             ))}
           </div>

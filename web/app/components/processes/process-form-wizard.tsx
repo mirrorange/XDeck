@@ -237,7 +237,7 @@ export function ProcessFormSections({
           />
           <div>
             <Label htmlFor={fieldId("autostart")} className="cursor-pointer">
-              Auto Start
+              Enabled
             </Label>
             <p className="text-xs text-muted-foreground">
               Automatically start this process when the daemon starts.

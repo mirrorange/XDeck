@@ -160,7 +160,7 @@ export function buildCreateRequest(form: ProcessFormState, isWindows: boolean): 
       delay_ms: Number(form.delayMs) || 1000,
       backoff_multiplier: Number(form.backoffMultiplier) || 2.0,
     },
-    auto_start: form.autoStart,
+    enabled: form.autoStart,
     group_name: form.groupName.trim() || undefined,
     log_config: {
       max_file_size: (Number(form.logMaxFileSize) || 10) * 1024 * 1024,
@@ -229,7 +229,7 @@ export function buildEditRequestDiff(
     };
   }
 
-  if (target.auto_start !== form.autoStart) req.auto_start = form.autoStart;
+  if (target.enabled !== form.autoStart) req.enabled = form.autoStart;
   if (target.group_name !== nextGroupName) req.group_name = nextGroupName;
 
   if (
@@ -293,7 +293,7 @@ export function toFormState(process: ProcessInfo): ProcessFormState {
     maxRetries: process.restart_policy.max_retries === null ? "" : String(process.restart_policy.max_retries),
     delayMs: String(process.restart_policy.delay_ms),
     backoffMultiplier: String(process.restart_policy.backoff_multiplier),
-    autoStart: process.auto_start,
+    autoStart: process.enabled,
     groupName: process.group_name ?? "",
     logMaxFileSize: String(process.log_config.max_file_size / (1024 * 1024)),
     logMaxFiles: String(process.log_config.max_files),
