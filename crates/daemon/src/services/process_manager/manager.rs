@@ -12,7 +12,10 @@ use crate::error::AppError;
 use crate::services::event_bus::SharedEventBus;
 use crate::services::pty_manager::PtyManager;
 
-use super::runtime::{process_identity_is_alive, RunningProcess, ScheduleTaskHandle};
+use super::runtime::{
+    kill_process_identity, process_identity_is_alive, wait_for_process_identity_exit,
+    RunningProcess, ScheduleTaskHandle,
+};
 use super::{
     CreateProcessRequest, InstanceInfo, ProcessDefinition, ProcessInfo, ProcessMode, ProcessStatus,
     ScheduleState, UpdateProcessRequest,
@@ -106,15 +109,33 @@ impl ProcessManager {
         for instance_idx in 0..def.instance_count {
             if let Some(identity) = persisted.get(&instance_idx).cloned() {
                 if process_identity_is_alive(&identity) {
-                    self.attach_runtime_instance(def, instance_idx, identity)
-                        .await?;
-                    continue;
+                    warn!(
+                        "Found orphaned runtime for {} instance {} (PID {}); terminating before restart",
+                        def.name, instance_idx, identity.pid
+                    );
+                    if !kill_process_identity(&identity) {
+                        start_errors.push(format!(
+                            "instance {}: failed to terminate orphaned runtime PID {}",
+                            instance_idx, identity.pid
+                        ));
+                        continue;
+                    }
+                    if !wait_for_process_identity_exit(&identity, std::time::Duration::from_secs(3))
+                        .await
+                    {
+                        start_errors.push(format!(
+                            "instance {}: timed out waiting for orphaned runtime PID {} to exit",
+                            instance_idx, identity.pid
+                        ));
+                        continue;
+                    }
+                } else {
+                    warn!(
+                        "Discarding stale runtime identity for {} instance {} (PID {})",
+                        def.name, instance_idx, identity.pid
+                    );
                 }
 
-                warn!(
-                    "Discarding stale runtime identity for {} instance {} (PID {})",
-                    def.name, instance_idx, identity.pid
-                );
                 self.clear_runtime_identity(&def.id, instance_idx).await?;
             }
 

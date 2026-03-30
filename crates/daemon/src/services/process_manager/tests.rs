@@ -876,7 +876,7 @@ async fn test_restore_processes_arms_scheduled_processes() {
 }
 
 #[tokio::test]
-async fn test_restore_processes_reuses_matching_runtime_identity() {
+async fn test_restore_processes_kills_orphaned_runtime_and_starts_new_child() {
     let pool = crate::db::connect_in_memory().await.unwrap();
     crate::db::run_migrations(&pool).await.unwrap();
     let data_dir =
@@ -886,7 +886,7 @@ async fn test_restore_processes_reuses_matching_runtime_identity() {
     let pty_manager_1 = PtyManager::new(event_bus_1.clone(), Duration::from_secs(30 * 60));
     let pm_1 = ProcessManager::new(pool.clone(), event_bus_1, pty_manager_1, &data_dir);
 
-    let mut req = sleep_process_request("restore-runtime-match");
+    let mut req = sleep_process_request("restore-runtime-orphan");
     req.auto_start = true;
     let created = pm_1.create_process(req).await.unwrap();
     let process_id = created.definition.id.clone();
@@ -900,15 +900,22 @@ async fn test_restore_processes_reuses_matching_runtime_identity() {
     let pty_manager_2 = PtyManager::new(event_bus_2.clone(), Duration::from_secs(30 * 60));
     let pm_2 = ProcessManager::new(pool.clone(), event_bus_2, pty_manager_2, &data_dir);
     pm_2.restore_processes().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
 
     let restored = pm_2.get_process(&process_id).await.unwrap();
     assert_eq!(instance(&restored, 0).status, ProcessStatus::Running);
-    assert_eq!(instance(&restored, 0).pid, Some(identity.pid));
+    let new_pid = instance(&restored, 0)
+        .pid
+        .expect("restored process should have pid");
+    assert_ne!(new_pid, identity.pid);
 
-    pm_2.stop_process(&process_id).await.unwrap();
+    let persisted = pm_2.load_runtime_identities(&process_id).await.unwrap();
+    assert_eq!(persisted.get(&0).map(|item| item.pid), Some(new_pid));
+
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert!(external_child.try_wait().unwrap().is_some());
+
+    pm_2.stop_process(&process_id).await.unwrap();
 }
 
 #[tokio::test]

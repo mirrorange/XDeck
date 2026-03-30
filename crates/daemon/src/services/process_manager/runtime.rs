@@ -24,7 +24,6 @@ pub(super) struct RunningProcess {
     pub child: Option<Child>,
     pub pty_session_id: Option<String>,
     pub runtime_identity: Option<ProcessRuntimeIdentity>,
-    pub attached: bool,
     pub status: ProcessStatus,
     pub pid: Option<u32>,
     pub restart_count: u32,
