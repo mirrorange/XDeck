@@ -1,10 +1,13 @@
+use std::collections::HashMap;
+
 use sqlx::{sqlite::SqliteRow, Row};
 
 use crate::error::AppError;
 
 use super::{
-    default_instance_count, ProcessDefinition, ProcessLogConfig, ProcessManager, ProcessMode,
-    RestartPolicy, ScheduleConfig, ScheduleOverlapPolicy, ScheduleState,
+    default_instance_count, runtime::ProcessRuntimeIdentity, ProcessDefinition, ProcessLogConfig,
+    ProcessManager, ProcessMode, RestartPolicy, ScheduleConfig, ScheduleOverlapPolicy,
+    ScheduleState,
 };
 
 fn process_definition_from_row(row: &SqliteRow) -> ProcessDefinition {
@@ -129,5 +132,97 @@ impl ProcessManager {
             .into_iter()
             .map(|row| process_definition_from_row(&row))
             .collect())
+    }
+
+    pub(super) async fn save_runtime_identity(
+        &self,
+        id: &str,
+        instance_idx: u32,
+        identity: &ProcessRuntimeIdentity,
+    ) -> Result<(), AppError> {
+        sqlx::query(
+            "INSERT INTO process_runtime_instances (process_id, instance_idx, pid, start_time) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(process_id, instance_idx) DO UPDATE SET pid = excluded.pid, start_time = excluded.start_time",
+        )
+        .bind(id)
+        .bind(instance_idx as i64)
+        .bind(identity.pid as i64)
+        .bind(identity.start_time as i64)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub(super) async fn clear_runtime_identity(
+        &self,
+        id: &str,
+        instance_idx: u32,
+    ) -> Result<(), AppError> {
+        sqlx::query(
+            "DELETE FROM process_runtime_instances WHERE process_id = ?1 AND instance_idx = ?2",
+        )
+        .bind(id)
+        .bind(instance_idx as i64)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub(super) async fn clear_runtime_identities_for_process(
+        &self,
+        id: &str,
+    ) -> Result<(), AppError> {
+        sqlx::query("DELETE FROM process_runtime_instances WHERE process_id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub(super) async fn clear_runtime_identities_after_instance(
+        &self,
+        id: &str,
+        instance_count: u32,
+    ) -> Result<(), AppError> {
+        sqlx::query(
+            "DELETE FROM process_runtime_instances WHERE process_id = ?1 AND instance_idx >= ?2",
+        )
+        .bind(id)
+        .bind(instance_count as i64)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub(super) async fn load_runtime_identities(
+        &self,
+        id: &str,
+    ) -> Result<HashMap<u32, ProcessRuntimeIdentity>, AppError> {
+        let rows = sqlx::query(
+            "SELECT instance_idx, pid, start_time FROM process_runtime_instances WHERE process_id = ?1",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut identities = HashMap::with_capacity(rows.len());
+        for row in rows {
+            let instance_idx = u32::try_from(row.get::<i64, _>("instance_idx")).map_err(|err| {
+                AppError::Internal(format!("Invalid instance_idx in runtime table: {}", err))
+            })?;
+            let pid = u32::try_from(row.get::<i64, _>("pid")).map_err(|err| {
+                AppError::Internal(format!("Invalid pid in runtime table: {}", err))
+            })?;
+            let start_time = u64::try_from(row.get::<i64, _>("start_time")).map_err(|err| {
+                AppError::Internal(format!("Invalid start_time in runtime table: {}", err))
+            })?;
+            identities.insert(instance_idx, ProcessRuntimeIdentity { pid, start_time });
+        }
+
+        Ok(identities)
     }
 }

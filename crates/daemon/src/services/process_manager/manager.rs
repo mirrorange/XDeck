@@ -5,14 +5,14 @@ use std::sync::Arc;
 use chrono::Utc;
 use sqlx::SqlitePool;
 use tokio::sync::{Mutex, RwLock};
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::services::event_bus::SharedEventBus;
 use crate::services::pty_manager::PtyManager;
 
-use super::runtime::{RunningProcess, ScheduleTaskHandle};
+use super::runtime::{process_identity_is_alive, RunningProcess, ScheduleTaskHandle};
 use super::{
     CreateProcessRequest, InstanceInfo, ProcessDefinition, ProcessInfo, ProcessMode, ProcessStatus,
     ScheduleState, UpdateProcessRequest,
@@ -79,7 +79,7 @@ impl ProcessManager {
 
         info!("Auto-starting {} daemon processes", daemon_defs.len());
         for def in daemon_defs {
-            if let Err(e) = self.start_process_internal(&def.id).await {
+            if let Err(e) = self.restore_daemon_process(&def).await {
                 error!("Failed to restore daemon process {}: {}", def.id, e);
             }
         }
@@ -89,6 +89,63 @@ impl ProcessManager {
             if let Err(e) = self.ensure_schedule_task(&def.id).await {
                 error!("Failed to arm schedule for process {}: {}", def.id, e);
             }
+        }
+
+        Ok(())
+    }
+
+    async fn restore_daemon_process(
+        self: &Arc<Self>,
+        def: &ProcessDefinition,
+    ) -> Result<(), AppError> {
+        let persisted = self.load_runtime_identities(&def.id).await?;
+        self.clear_runtime_identities_after_instance(&def.id, def.instance_count)
+            .await?;
+
+        let mut start_errors = Vec::new();
+        for instance_idx in 0..def.instance_count {
+            if let Some(identity) = persisted.get(&instance_idx).cloned() {
+                if process_identity_is_alive(&identity) {
+                    self.attach_runtime_instance(def, instance_idx, identity)
+                        .await?;
+                    continue;
+                }
+
+                warn!(
+                    "Discarding stale runtime identity for {} instance {} (PID {})",
+                    def.name, instance_idx, identity.pid
+                );
+                self.clear_runtime_identity(&def.id, instance_idx).await?;
+            }
+
+            if let Err(err) = self.start_instance(def, instance_idx).await {
+                start_errors.push(format!("instance {}: {}", instance_idx, err));
+            }
+        }
+
+        if start_errors.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Internal(format!(
+                "Failed to restore all instances for {}: {}",
+                def.id,
+                start_errors.join("; ")
+            )))
+        }
+    }
+
+    pub async fn shutdown(self: &Arc<Self>) -> Result<(), AppError> {
+        let schedule_ids = {
+            let tasks = self.schedule_tasks.read().await;
+            tasks.keys().cloned().collect::<Vec<_>>()
+        };
+        for id in schedule_ids {
+            self.cancel_schedule_task(&id).await;
+        }
+
+        let definitions = self.load_all_definitions().await?;
+        for def in definitions {
+            let _ = self.stop_process(&def.id).await;
         }
 
         Ok(())

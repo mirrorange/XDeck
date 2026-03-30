@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
+use std::process::Child as StdChild;
 use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
 
+use super::runtime::{lookup_process_identity, ProcessRuntimeIdentity};
 use super::*;
 use crate::services::event_bus::{Event, EventBus};
 use crate::services::pty_manager::PtyManager;
@@ -96,6 +98,26 @@ async fn recv_process_status_event(
 
         return event;
     }
+}
+
+async fn spawn_external_sleep() -> (StdChild, ProcessRuntimeIdentity) {
+    let child = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("failed to spawn external sleep");
+    let pid = child.id();
+
+    for _ in 0..10 {
+        if let Some(identity) = lookup_process_identity(pid) {
+            return (child, identity);
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    panic!(
+        "failed to resolve runtime identity for external sleep {}",
+        pid
+    );
 }
 
 #[tokio::test]
@@ -851,6 +873,127 @@ async fn test_restore_processes_arms_scheduled_processes() {
         .lines
         .iter()
         .any(|line| line.line.contains("restore-schedule")));
+}
+
+#[tokio::test]
+async fn test_restore_processes_reuses_matching_runtime_identity() {
+    let pool = crate::db::connect_in_memory().await.unwrap();
+    crate::db::run_migrations(&pool).await.unwrap();
+    let data_dir =
+        std::env::temp_dir().join(format!("xdeck-runtime-restore-{}", uuid::Uuid::new_v4()));
+
+    let event_bus_1 = Arc::new(EventBus::default());
+    let pty_manager_1 = PtyManager::new(event_bus_1.clone(), Duration::from_secs(30 * 60));
+    let pm_1 = ProcessManager::new(pool.clone(), event_bus_1, pty_manager_1, &data_dir);
+
+    let mut req = sleep_process_request("restore-runtime-match");
+    req.auto_start = true;
+    let created = pm_1.create_process(req).await.unwrap();
+    let process_id = created.definition.id.clone();
+
+    let (mut external_child, identity) = spawn_external_sleep().await;
+    pm_1.save_runtime_identity(&process_id, 0, &identity)
+        .await
+        .unwrap();
+
+    let event_bus_2 = Arc::new(EventBus::default());
+    let pty_manager_2 = PtyManager::new(event_bus_2.clone(), Duration::from_secs(30 * 60));
+    let pm_2 = ProcessManager::new(pool.clone(), event_bus_2, pty_manager_2, &data_dir);
+    pm_2.restore_processes().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let restored = pm_2.get_process(&process_id).await.unwrap();
+    assert_eq!(instance(&restored, 0).status, ProcessStatus::Running);
+    assert_eq!(instance(&restored, 0).pid, Some(identity.pid));
+
+    pm_2.stop_process(&process_id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(external_child.try_wait().unwrap().is_some());
+}
+
+#[tokio::test]
+async fn test_restore_processes_rejects_stale_runtime_identity() {
+    let pool = crate::db::connect_in_memory().await.unwrap();
+    crate::db::run_migrations(&pool).await.unwrap();
+    let data_dir =
+        std::env::temp_dir().join(format!("xdeck-runtime-stale-{}", uuid::Uuid::new_v4()));
+
+    let event_bus_1 = Arc::new(EventBus::default());
+    let pty_manager_1 = PtyManager::new(event_bus_1.clone(), Duration::from_secs(30 * 60));
+    let pm_1 = ProcessManager::new(pool.clone(), event_bus_1, pty_manager_1, &data_dir);
+
+    let mut req = sleep_process_request("restore-runtime-stale");
+    req.auto_start = true;
+    let created = pm_1.create_process(req).await.unwrap();
+    let process_id = created.definition.id.clone();
+
+    let (mut external_child, identity) = spawn_external_sleep().await;
+    pm_1.save_runtime_identity(
+        &process_id,
+        0,
+        &ProcessRuntimeIdentity {
+            pid: identity.pid,
+            start_time: identity.start_time.saturating_add(1),
+        },
+    )
+    .await
+    .unwrap();
+
+    let event_bus_2 = Arc::new(EventBus::default());
+    let pty_manager_2 = PtyManager::new(event_bus_2.clone(), Duration::from_secs(30 * 60));
+    let pm_2 = ProcessManager::new(pool.clone(), event_bus_2, pty_manager_2, &data_dir);
+    pm_2.restore_processes().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let restored = pm_2.get_process(&process_id).await.unwrap();
+    assert_eq!(instance(&restored, 0).status, ProcessStatus::Running);
+    let new_pid = instance(&restored, 0)
+        .pid
+        .expect("restored process should have pid");
+    assert_ne!(new_pid, identity.pid);
+
+    let persisted = pm_2.load_runtime_identities(&process_id).await.unwrap();
+    assert_eq!(persisted.get(&0).map(|item| item.pid), Some(new_pid));
+
+    pm_2.stop_process(&process_id).await.unwrap();
+    let _ = external_child.kill();
+    let _ = external_child.wait();
+}
+
+#[tokio::test]
+async fn test_shutdown_stops_processes_and_clears_runtime_identity() {
+    let (pm, _pool) = test_pm().await;
+    let created = pm
+        .create_process(sleep_process_request("shutdown-cleanup"))
+        .await
+        .unwrap();
+    let process_id = created.definition.id.clone();
+
+    pm.start_process(&process_id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    let running = pm.get_process(&process_id).await.unwrap();
+    let pid = instance(&running, 0)
+        .pid
+        .expect("running process should have pid");
+    assert!(pm
+        .load_runtime_identities(&process_id)
+        .await
+        .unwrap()
+        .contains_key(&0));
+
+    pm.shutdown().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let stopped = pm.get_process(&process_id).await.unwrap();
+    assert_eq!(instance(&stopped, 0).status, ProcessStatus::Stopped);
+    assert!(instance(&stopped, 0).pid.is_none());
+    assert!(pm
+        .load_runtime_identities(&process_id)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(lookup_process_identity(pid).is_none());
 }
 
 #[cfg(unix)]

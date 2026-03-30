@@ -14,7 +14,10 @@ use crate::services::pty_manager::{
 
 #[cfg(unix)]
 use super::log_utils::resolve_username;
-use super::runtime::RunningProcess;
+use super::runtime::{
+    kill_process_identity, lookup_process_identity, process_identity_is_alive,
+    wait_for_process_identity_exit, ProcessRuntimeIdentity, RunningProcess,
+};
 use super::{
     ProcessDefinition, ProcessManager, ProcessMode, ProcessStatus, ProcessStatusChange,
     RestartStrategy,
@@ -88,6 +91,100 @@ impl ProcessManager {
         cmd
     }
 
+    async fn capture_process_identity(pid: Option<u32>) -> Option<ProcessRuntimeIdentity> {
+        let pid = pid?;
+        for _ in 0..5 {
+            if let Some(identity) = lookup_process_identity(pid) {
+                return Some(identity);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
+    }
+
+    async fn persist_runtime_identity_or_cleanup(
+        self: &Arc<Self>,
+        id: &str,
+        instance_idx: u32,
+        identity: &ProcessRuntimeIdentity,
+    ) -> Result<(), AppError> {
+        self.save_runtime_identity(id, instance_idx, identity)
+            .await
+            .map_err(|err| {
+                AppError::Internal(format!(
+                    "Failed to persist runtime identity for {} instance {}: {}",
+                    id, instance_idx, err
+                ))
+            })
+    }
+
+    async fn clear_runtime_identity_with_log(&self, id: &str, instance_idx: u32) {
+        if let Err(err) = self.clear_runtime_identity(id, instance_idx).await {
+            warn!(
+                "Failed to clear runtime identity for {} instance {}: {}",
+                id, instance_idx, err
+            );
+        }
+    }
+
+    pub(super) async fn attach_runtime_instance(
+        self: &Arc<Self>,
+        def: &ProcessDefinition,
+        instance_idx: u32,
+        identity: ProcessRuntimeIdentity,
+    ) -> Result<(), AppError> {
+        self.ensure_runtime_instance_slot(&def.id, instance_idx, false)
+            .await;
+
+        let key = (def.id.clone(), instance_idx);
+        let instances = self.instances.read().await;
+        let instance_mutex = instances
+            .get(&key)
+            .ok_or_else(|| AppError::NotFound(format!("Process {} not found", def.id)))?;
+        let mut proc = instance_mutex.lock().await;
+
+        if proc.status == ProcessStatus::Running
+            && proc.runtime_identity.as_ref() == Some(&identity)
+        {
+            return Ok(());
+        }
+
+        proc.child = None;
+        proc.pty_session_id = None;
+        proc.runtime_identity = Some(identity.clone());
+        proc.attached = true;
+        proc.pid = Some(identity.pid);
+        proc.status = ProcessStatus::Running;
+        proc.started_at = identity.started_at();
+        proc.exit_code = None;
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        proc.cancel_tx = Some(cancel_tx);
+
+        self.publish_status_changed(
+            &def.id,
+            instance_idx,
+            ProcessStatusChange {
+                status: "running",
+                pid: Some(identity.pid),
+                exit_code: None,
+                pty_session_id: None,
+                message: None,
+            },
+        );
+
+        info!(
+            "Re-attached process: {} instance={} (PID: {})",
+            def.name, instance_idx, identity.pid
+        );
+        drop(proc);
+        drop(instances);
+
+        let mgr = self.clone();
+        let proc_id = def.id.clone();
+        tokio::spawn(mgr.supervise_attached_process(proc_id, instance_idx, identity, cancel_rx));
+        Ok(())
+    }
+
     pub(super) async fn start_process_internal(self: &Arc<Self>, id: &str) -> Result<(), AppError> {
         let def = self
             .load_definition(id)
@@ -113,7 +210,7 @@ impl ProcessManager {
         }
     }
 
-    async fn start_instance(
+    pub(super) async fn start_instance(
         self: &Arc<Self>,
         def: &ProcessDefinition,
         instance_idx: u32,
@@ -172,6 +269,7 @@ impl ProcessManager {
                 .await
             {
                 Ok(session_info) => {
+                    let runtime_identity = Self::capture_process_identity(session_info.pid).await;
                     let session = self
                         .pty_manager
                         .get_session_handle(&session_info.session_id)
@@ -184,9 +282,14 @@ impl ProcessManager {
 
                     proc.child = None;
                     proc.pty_session_id = Some(session_info.session_id.clone());
+                    proc.runtime_identity = runtime_identity.clone();
+                    proc.attached = false;
                     proc.pid = session_info.pid;
                     proc.status = ProcessStatus::Running;
-                    proc.started_at = Some(Utc::now());
+                    proc.started_at = runtime_identity
+                        .as_ref()
+                        .and_then(ProcessRuntimeIdentity::started_at)
+                        .or_else(|| Some(Utc::now()));
                     proc.exit_code = None;
                     let (cancel_tx, cancel_rx) = oneshot::channel();
                     proc.cancel_tx = Some(cancel_tx);
@@ -231,6 +334,15 @@ impl ProcessManager {
                         cancel_rx,
                         event_rx,
                     ));
+                    if let Some(identity) = runtime_identity.as_ref() {
+                        if let Err(err) = self
+                            .persist_runtime_identity_or_cleanup(&def.id, instance_idx, identity)
+                            .await
+                        {
+                            let _ = self.stop_instance(&def.id, instance_idx).await;
+                            return Err(err);
+                        }
+                    }
                     return Ok(());
                 }
                 Err(e) => {
@@ -251,10 +363,16 @@ impl ProcessManager {
         match cmd.spawn() {
             Ok(mut child) => {
                 let pid = child.id();
+                let runtime_identity = Self::capture_process_identity(pid).await;
                 proc.pty_session_id = None;
+                proc.runtime_identity = runtime_identity.clone();
+                proc.attached = false;
                 proc.pid = pid;
                 proc.status = ProcessStatus::Running;
-                proc.started_at = Some(Utc::now());
+                proc.started_at = runtime_identity
+                    .as_ref()
+                    .and_then(ProcessRuntimeIdentity::started_at)
+                    .or_else(|| Some(Utc::now()));
                 proc.exit_code = None;
 
                 Self::spawn_log_tasks(
@@ -292,6 +410,15 @@ impl ProcessManager {
                 let mgr = self.clone();
                 let proc_id = def.id.clone();
                 tokio::spawn(mgr.supervise_process(proc_id, instance_idx, cancel_rx));
+                if let Some(identity) = runtime_identity.as_ref() {
+                    if let Err(err) = self
+                        .persist_runtime_identity_or_cleanup(&def.id, instance_idx, identity)
+                        .await
+                    {
+                        let _ = self.stop_instance(&def.id, instance_idx).await;
+                        return Err(err);
+                    }
+                }
                 Ok(())
             }
             Err(e) => {
@@ -399,6 +526,8 @@ impl ProcessManager {
 
                 proc.child = None;
                 proc.pty_session_id = None;
+                proc.runtime_identity = None;
+                proc.attached = false;
                 proc.pid = None;
                 proc.exit_code = exit_code;
 
@@ -437,6 +566,8 @@ impl ProcessManager {
                     RestartStrategy::Never => false,
                 }
             };
+            self.clear_runtime_identity_with_log(&id, instance_idx)
+                .await;
 
             if !should_restart {
                 let instances = self.instances.read().await;
@@ -507,6 +638,7 @@ impl ProcessManager {
                 .await
             {
                 Ok(session_info) => {
+                    let runtime_identity = Self::capture_process_identity(session_info.pid).await;
                     let session = match self
                         .pty_manager
                         .get_session_handle(&session_info.session_id)
@@ -539,9 +671,14 @@ impl ProcessManager {
                         let mut proc = proc_mutex.lock().await;
                         proc.child = None;
                         proc.pty_session_id = Some(session_info.session_id.clone());
+                        proc.runtime_identity = runtime_identity.clone();
+                        proc.attached = false;
                         proc.pid = session_info.pid;
                         proc.status = ProcessStatus::Running;
-                        proc.started_at = Some(Utc::now());
+                        proc.started_at = runtime_identity
+                            .as_ref()
+                            .and_then(ProcessRuntimeIdentity::started_at)
+                            .or_else(|| Some(Utc::now()));
                         proc.exit_code = None;
                         proc.cancel_tx = Some(new_cancel_tx);
                     }
@@ -571,6 +708,20 @@ impl ProcessManager {
                         "Restarted PTY process: {} instance={} (pty_session_id={})",
                         def.name, instance_idx, session_info.session_id
                     );
+
+                    if let Some(identity) = runtime_identity.as_ref() {
+                        if let Err(err) = self
+                            .persist_runtime_identity_or_cleanup(&id, instance_idx, identity)
+                            .await
+                        {
+                            error!(
+                                "Failed to persist restarted PTY runtime identity for {} instance {}: {}",
+                                def.name, instance_idx, err
+                            );
+                            let _ = self.stop_instance(&id, instance_idx).await;
+                            return;
+                        }
+                    }
 
                     session_id = session_info.session_id;
                     cancel_rx = new_cancel_rx;
@@ -646,6 +797,8 @@ impl ProcessManager {
                 };
                 let mut proc = proc_mutex.lock().await;
                 proc.child = None;
+                proc.runtime_identity = None;
+                proc.attached = false;
                 proc.pid = None;
                 proc.exit_code = exit_code;
 
@@ -684,6 +837,8 @@ impl ProcessManager {
                     RestartStrategy::Never => false,
                 }
             };
+            self.clear_runtime_identity_with_log(&id, instance_idx)
+                .await;
 
             if !should_restart {
                 let instances = self.instances.read().await;
@@ -738,6 +893,7 @@ impl ProcessManager {
             match cmd.spawn() {
                 Ok(mut child) => {
                     let pid = child.id();
+                    let runtime_identity = Self::capture_process_identity(pid).await;
 
                     Self::spawn_log_tasks(
                         &self.event_bus,
@@ -755,9 +911,14 @@ impl ProcessManager {
                         if let Some(proc_mutex) = instances.get(&key) {
                             let mut proc = proc_mutex.lock().await;
                             proc.child = Some(child);
+                            proc.runtime_identity = runtime_identity.clone();
+                            proc.attached = false;
                             proc.pid = pid;
                             proc.status = ProcessStatus::Running;
-                            proc.started_at = Some(Utc::now());
+                            proc.started_at = runtime_identity
+                                .as_ref()
+                                .and_then(ProcessRuntimeIdentity::started_at)
+                                .or_else(|| Some(Utc::now()));
                             proc.exit_code = None;
                             proc.cancel_tx = Some(new_cancel_tx);
                         }
@@ -780,6 +941,20 @@ impl ProcessManager {
                         def.name, instance_idx, pid
                     );
 
+                    if let Some(identity) = runtime_identity.as_ref() {
+                        if let Err(err) = self
+                            .persist_runtime_identity_or_cleanup(&id, instance_idx, identity)
+                            .await
+                        {
+                            error!(
+                                "Failed to persist restarted runtime identity for {} instance {}: {}",
+                                def.name, instance_idx, err
+                            );
+                            let _ = self.stop_instance(&id, instance_idx).await;
+                            return;
+                        }
+                    }
+
                     cancel_rx = new_cancel_rx;
                 }
                 Err(e) => {
@@ -796,6 +971,149 @@ impl ProcessManager {
                     return;
                 }
             }
+        }
+    }
+
+    async fn supervise_attached_process(
+        self: Arc<Self>,
+        id: String,
+        instance_idx: u32,
+        identity: ProcessRuntimeIdentity,
+        mut cancel_rx: oneshot::Receiver<()>,
+    ) {
+        loop {
+            tokio::select! {
+                _ = &mut cancel_rx => {
+                    debug!(
+                        "Attached supervisor cancelled for process {} instance {}",
+                        id, instance_idx
+                    );
+                    return;
+                }
+                _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+            }
+
+            if process_identity_is_alive(&identity) {
+                continue;
+            }
+
+            info!(
+                "Attached process {} instance {} is no longer running",
+                id, instance_idx
+            );
+
+            let def = match self.load_definition(&id).await {
+                Ok(Some(d)) => d,
+                _ => return,
+            };
+
+            let should_restart = {
+                let instances = self.instances.read().await;
+                let key = (id.clone(), instance_idx);
+                let Some(proc_mutex) = instances.get(&key) else {
+                    return;
+                };
+                let mut proc = proc_mutex.lock().await;
+
+                if proc.runtime_identity.as_ref() != Some(&identity) {
+                    return;
+                }
+
+                proc.child = None;
+                proc.pty_session_id = None;
+                proc.runtime_identity = None;
+                proc.attached = false;
+                proc.pid = None;
+                proc.exit_code = None;
+                proc.status = ProcessStatus::Errored;
+
+                self.publish_status_changed(
+                    &id,
+                    instance_idx,
+                    ProcessStatusChange {
+                        status: "errored",
+                        pid: None,
+                        exit_code: None,
+                        pty_session_id: None,
+                        message: Some("Detached runtime exited"),
+                    },
+                );
+
+                let policy = &def.restart_policy;
+                match policy.strategy {
+                    RestartStrategy::Always => policy
+                        .max_retries
+                        .is_none_or(|max| proc.restart_count < max),
+                    RestartStrategy::OnFailure => policy
+                        .max_retries
+                        .is_none_or(|max| proc.restart_count < max),
+                    RestartStrategy::Never => false,
+                }
+            };
+
+            self.clear_runtime_identity_with_log(&id, instance_idx)
+                .await;
+
+            if !should_restart {
+                let instances = self.instances.read().await;
+                let key = (id.clone(), instance_idx);
+                if let Some(proc_mutex) = instances.get(&key) {
+                    let mut proc = proc_mutex.lock().await;
+                    if proc.status == ProcessStatus::Errored {
+                        proc.status = ProcessStatus::Failed;
+                        self.publish_status_changed(
+                            &id,
+                            instance_idx,
+                            ProcessStatusChange {
+                                status: "failed",
+                                pid: None,
+                                exit_code: None,
+                                pty_session_id: None,
+                                message: Some(
+                                    "Attached runtime exited and no restart was performed",
+                                ),
+                            },
+                        );
+                    }
+                }
+                return;
+            }
+
+            let delay = {
+                let instances = self.instances.read().await;
+                let key = (id.clone(), instance_idx);
+                let Some(proc_mutex) = instances.get(&key) else {
+                    return;
+                };
+                let mut proc = proc_mutex.lock().await;
+                proc.restart_count += 1;
+                let base_delay = def.restart_policy.delay_ms;
+                let multiplier = def.restart_policy.backoff_multiplier;
+                let delay_ms = (base_delay as f64
+                    * multiplier.powi(proc.restart_count.saturating_sub(1) as i32))
+                    as u64;
+                Duration::from_millis(delay_ms.min(30_000))
+            };
+
+            info!(
+                "Restarting attached process {} instance {} in {:?}",
+                def.name, instance_idx, delay
+            );
+            tokio::time::sleep(delay).await;
+
+            if let Err(err) = self.start_instance_with_mode(&def, instance_idx).await {
+                error!(
+                    "Failed to restart attached process {} instance {}: {}",
+                    def.name, instance_idx, err
+                );
+                let instances = self.instances.read().await;
+                let key = (id.clone(), instance_idx);
+                if let Some(proc_mutex) = instances.get(&key) {
+                    let mut proc = proc_mutex.lock().await;
+                    proc.status = ProcessStatus::Failed;
+                }
+            }
+            return;
         }
     }
 
@@ -821,6 +1139,7 @@ impl ProcessManager {
             .ok_or_else(|| AppError::NotFound(format!("Process {} not found", id)))?;
         let mut proc = instance_mutex.lock().await;
         let pty_session_id = proc.pty_session_id.clone();
+        let attached_runtime = proc.attached;
 
         if let Some(cancel_tx) = proc.cancel_tx.take() {
             let _ = cancel_tx.send(());
@@ -830,16 +1149,39 @@ impl ProcessManager {
             let _ = child.kill().await;
         }
 
+        let runtime_identity = proc.runtime_identity.clone();
+
         proc.child = None;
         proc.pty_session_id = None;
+        proc.runtime_identity = None;
+        proc.attached = false;
         proc.pid = None;
         proc.status = ProcessStatus::Stopped;
         drop(proc);
         drop(instances);
 
-        if let Some(session_id) = pty_session_id {
+        if let Some(session_id) = pty_session_id.as_ref() {
             let _ = self.pty_manager.close_session(&session_id).await;
         }
+
+        if attached_runtime && pty_session_id.is_none() {
+            if let Some(identity) = runtime_identity {
+                if !kill_process_identity(&identity) {
+                    return Err(AppError::Internal(format!(
+                        "Failed to terminate process {} instance {} (PID {})",
+                        id, instance_idx, identity.pid
+                    )));
+                }
+                if !wait_for_process_identity_exit(&identity, Duration::from_secs(3)).await {
+                    return Err(AppError::Internal(format!(
+                        "Timed out waiting for process {} instance {} (PID {}) to exit",
+                        id, instance_idx, identity.pid
+                    )));
+                }
+            }
+        }
+
+        self.clear_runtime_identity_with_log(id, instance_idx).await;
 
         self.publish_status_changed(
             id,
@@ -877,6 +1219,8 @@ impl ProcessManager {
                 Mutex::new(RunningProcess {
                     child: None,
                     pty_session_id: None,
+                    runtime_identity: None,
+                    attached: false,
                     status: ProcessStatus::Created,
                     pid: None,
                     restart_count: 0,
@@ -901,6 +1245,8 @@ impl ProcessManager {
             Mutex::new(RunningProcess {
                 child: None,
                 pty_session_id: None,
+                runtime_identity: None,
+                attached: false,
                 status: ProcessStatus::Created,
                 pid: None,
                 restart_count: 0,
@@ -924,6 +1270,16 @@ impl ProcessManager {
 
         for (_, idx) in &keys_to_remove {
             let _ = self.stop_instance(id, *idx).await;
+        }
+
+        if let Err(err) = self
+            .clear_runtime_identities_after_instance(id, instance_count)
+            .await
+        {
+            warn!(
+                "Failed to clear trimmed runtime identities for {} after {} instances: {}",
+                id, instance_count, err
+            );
         }
 
         let mut instances = self.instances.write().await;
@@ -980,6 +1336,7 @@ impl ProcessManager {
             .bind(id)
             .execute(&self.pool)
             .await?;
+        let _ = self.clear_runtime_identities_for_process(id).await;
 
         let log_dir = self.log_dir.join(id);
         if log_dir.exists() {

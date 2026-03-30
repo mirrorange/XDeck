@@ -72,13 +72,42 @@ async fn main() -> Result<()> {
     }
 
     // Build and start the server
-    let app = api::build_router(app_state);
+    let app = api::build_router(app_state.clone());
 
     let listener =
         tokio::net::TcpListener::bind(format!("{}:{}", config.bind, config.port)).await?;
     info!("Server started successfully");
 
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(app_state.clone()))
+        .await?;
 
     Ok(())
+}
+
+async fn shutdown_signal(app_state: api::AppState) {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut stream) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            let _ = stream.recv().await;
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => info!("Received shutdown signal: SIGINT"),
+        _ = terminate => info!("Received shutdown signal: SIGTERM"),
+    }
+
+    if let Err(err) = app_state.process_manager.shutdown().await {
+        error!("Failed to shut down managed processes cleanly: {}", err);
+    }
 }
