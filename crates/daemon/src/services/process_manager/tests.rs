@@ -33,7 +33,7 @@ fn sleep_process_request(name: &str) -> CreateProcessRequest {
             strategy: RestartStrategy::Never,
             ..Default::default()
         },
-        auto_start: false,
+        enabled: false,
         group_name: None,
         log_config: ProcessLogConfig::default(),
         run_as: None,
@@ -59,7 +59,7 @@ fn scheduled_sleep_process_request(
             strategy: RestartStrategy::Never,
             ..Default::default()
         },
-        auto_start: false,
+        enabled: false,
         group_name: None,
         log_config: ProcessLogConfig::default(),
         run_as: None,
@@ -132,7 +132,7 @@ async fn test_create_process() {
             cwd: "/tmp".to_string(),
             env: HashMap::new(),
             restart_policy: RestartPolicy::default(),
-            auto_start: false,
+            enabled: false,
             group_name: None,
             log_config: ProcessLogConfig::default(),
             run_as: None,
@@ -160,7 +160,7 @@ async fn test_multi_instance_create() {
             cwd: "/tmp".to_string(),
             env: HashMap::new(),
             restart_policy: RestartPolicy::default(),
-            auto_start: false,
+            enabled: false,
             group_name: None,
             log_config: ProcessLogConfig::default(),
             run_as: None,
@@ -255,7 +255,7 @@ async fn test_instance_logs_isolation() {
                 strategy: RestartStrategy::Never,
                 ..Default::default()
             },
-            auto_start: false,
+            enabled: false,
             group_name: None,
             log_config: ProcessLogConfig::default(),
             run_as: None,
@@ -362,7 +362,7 @@ async fn test_update_name_only_when_running_does_not_restart() {
             cwd: None,
             env: None,
             restart_policy: None,
-            auto_start: None,
+            enabled: None,
             group_name: None,
             log_config: None,
             run_as: None,
@@ -405,7 +405,7 @@ async fn test_update_launch_params_when_running_triggers_restart() {
             cwd: None,
             env: None,
             restart_policy: None,
-            auto_start: None,
+            enabled: None,
             group_name: None,
             log_config: None,
             run_as: None,
@@ -454,7 +454,7 @@ async fn test_update_daemon_config_when_running_does_not_restart() {
                 delay_ms: 500,
                 backoff_multiplier: 2.0,
             }),
-            auto_start: Some(true),
+            enabled: Some(true),
             group_name: Some(Some("svc".to_string())),
             log_config: None,
             run_as: None,
@@ -495,7 +495,7 @@ async fn test_update_process_can_clear_group_name() {
             cwd: None,
             env: None,
             restart_policy: None,
-            auto_start: None,
+            enabled: None,
             group_name: Some(None),
             log_config: None,
             run_as: None,
@@ -531,7 +531,7 @@ async fn test_update_stopped_process_only_saves_definition() {
             cwd: None,
             env: None,
             restart_policy: None,
-            auto_start: None,
+            enabled: None,
             group_name: None,
             log_config: None,
             run_as: None,
@@ -567,7 +567,7 @@ async fn test_update_process_publishes_config_updated_event() {
         cwd: None,
         env: None,
         restart_policy: None,
-        auto_start: None,
+        enabled: None,
         group_name: None,
         log_config: None,
         run_as: None,
@@ -619,7 +619,7 @@ async fn test_update_instance_count_when_running_triggers_restart() {
             cwd: None,
             env: None,
             restart_policy: None,
-            auto_start: None,
+            enabled: None,
             group_name: None,
             log_config: None,
             run_as: None,
@@ -652,7 +652,7 @@ async fn test_schedule_once_auto_triggers_and_updates_state() {
                 strategy: RestartStrategy::Never,
                 ..Default::default()
             },
-            auto_start: true,
+            enabled: true,
             group_name: None,
             log_config: ProcessLogConfig::default(),
             run_as: None,
@@ -824,7 +824,7 @@ async fn test_restore_processes_arms_scheduled_processes() {
                 strategy: RestartStrategy::Never,
                 ..Default::default()
             },
-            auto_start: false,
+            enabled: false,
             group_name: None,
             log_config: ProcessLogConfig::default(),
             run_as: None,
@@ -840,7 +840,7 @@ async fn test_restore_processes_arms_scheduled_processes() {
     let id = created.definition.id.clone();
 
     let mut definition = pm_1.load_definition(&id).await.unwrap().unwrap();
-    definition.auto_start = true;
+    definition.enabled = true;
     definition.schedule_state.next_run_at =
         Some((chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339());
     pm_1.save_definition(&definition).await.unwrap();
@@ -887,7 +887,7 @@ async fn test_restore_processes_kills_orphaned_runtime_and_starts_new_child() {
     let pm_1 = ProcessManager::new(pool.clone(), event_bus_1, pty_manager_1, &data_dir);
 
     let mut req = sleep_process_request("restore-runtime-orphan");
-    req.auto_start = true;
+    req.enabled = true;
     let created = pm_1.create_process(req).await.unwrap();
     let process_id = created.definition.id.clone();
 
@@ -930,7 +930,7 @@ async fn test_restore_processes_rejects_stale_runtime_identity() {
     let pm_1 = ProcessManager::new(pool.clone(), event_bus_1, pty_manager_1, &data_dir);
 
     let mut req = sleep_process_request("restore-runtime-stale");
-    req.auto_start = true;
+    req.enabled = true;
     let created = pm_1.create_process(req).await.unwrap();
     let process_id = created.definition.id.clone();
 
@@ -1083,7 +1083,7 @@ async fn test_pty_mode_process_exits_updates_status() {
                 strategy: RestartStrategy::Never,
                 ..Default::default()
             },
-            auto_start: false,
+            enabled: false,
             group_name: None,
             log_config: ProcessLogConfig::default(),
             run_as: None,
@@ -1132,7 +1132,7 @@ async fn test_pty_mode_restart_publishes_new_session_id() {
                 delay_ms: 10,
                 backoff_multiplier: 1.0,
             },
-            auto_start: false,
+            enabled: false,
             group_name: None,
             log_config: ProcessLogConfig::default(),
             run_as: None,
@@ -1187,7 +1187,7 @@ async fn test_pty_output_flows_to_logs() {
                 strategy: RestartStrategy::Never,
                 ..Default::default()
             },
-            auto_start: false,
+            enabled: false,
             group_name: None,
             log_config: ProcessLogConfig::default(),
             run_as: None,
@@ -1250,7 +1250,7 @@ async fn test_start_stop_group() {
     let p1 = pm.create_process(req1).await.unwrap();
     let p2 = pm.create_process(req2).await.unwrap();
 
-    let start_errors = pm.start_group("svc-b").await.unwrap();
+    let start_errors = pm.start_group("svc-b", true).await.unwrap();
     assert!(start_errors.is_empty());
     tokio::time::sleep(Duration::from_millis(250)).await;
 
@@ -1295,7 +1295,7 @@ async fn test_group_partial_failure() {
         .await
         .unwrap();
 
-    let errors = pm.start_group("svc-c").await.unwrap();
+    let errors = pm.start_group("svc-c", true).await.unwrap();
     assert_eq!(errors.len(), 1);
     assert!(errors[0].contains(&bad.definition.id));
 

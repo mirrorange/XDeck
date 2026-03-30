@@ -220,7 +220,7 @@ impl ProcessManager {
             return Ok(());
         };
 
-        if definition.mode != ProcessMode::Schedule || !definition.auto_start {
+        if definition.mode != ProcessMode::Schedule || !definition.enabled {
             return Ok(());
         }
 

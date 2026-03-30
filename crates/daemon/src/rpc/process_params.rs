@@ -26,7 +26,7 @@ struct CreateProcessParams {
     #[serde(default)]
     restart_policy: RestartPolicy,
     #[serde(default = "default_true")]
-    auto_start: bool,
+    enabled: bool,
     group_name: Option<String>,
     #[serde(default)]
     log_config: ProcessLogConfig,
@@ -51,7 +51,7 @@ struct UpdateProcessParams {
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
     restart_policy: Option<RestartPolicy>,
-    auto_start: Option<bool>,
+    enabled: Option<bool>,
     #[serde(default, deserialize_with = "deserialize_patch_nullable_string")]
     group_name: Option<Option<String>>,
     log_config: Option<ProcessLogConfig>,
@@ -212,7 +212,7 @@ fn parse_create_payload(raw: CreateProcessParams) -> Result<CreateProcessRequest
         cwd,
         env,
         restart_policy,
-        auto_start,
+        enabled,
         group_name,
         log_config,
         run_as,
@@ -263,7 +263,7 @@ fn parse_create_payload(raw: CreateProcessParams) -> Result<CreateProcessRequest
         cwd: cwd.expect("cwd is present when issues is empty"),
         env,
         restart_policy: restart_policy.expect("restart_policy is present when issues is empty"),
-        auto_start,
+        enabled: enabled,
         group_name: group_name.and_then(trimmed_non_empty),
         log_config: log_config.expect("log_config is present when issues is empty"),
         run_as: run_as.and_then(trimmed_non_empty),
@@ -284,7 +284,7 @@ fn parse_update_payload(raw: UpdateProcessParams) -> Result<UpdateProcessRequest
         cwd,
         env,
         restart_policy,
-        auto_start,
+        enabled,
         group_name,
         log_config,
         run_as,
@@ -348,7 +348,7 @@ fn parse_update_payload(raw: UpdateProcessParams) -> Result<UpdateProcessRequest
         cwd: cwd.expect("cwd is present when issues is empty"),
         env,
         restart_policy: restart_policy.expect("restart_policy is present when issues is empty"),
-        auto_start,
+        enabled: enabled,
         group_name: group_name.map(|v| v.and_then(trimmed_non_empty)),
         log_config: log_config.expect("log_config is present when issues is empty"),
         run_as: run_as.map(|v| v.and_then(trimmed_non_empty)),
@@ -728,7 +728,7 @@ mod tests {
                 "delay_ms": 1000,
                 "backoff_multiplier": 2.0
             },
-            "auto_start": false,
+            "enabled": false,
             "group_name": null,
             "log_config": {
                 "max_file_size": 1048576,
@@ -881,7 +881,7 @@ mod tests {
                 "delay_ms": 0,
                 "backoff_multiplier": 0.5
             },
-            "auto_start": false,
+            "enabled": false,
             "group_name": null,
             "log_config": {
                 "max_file_size": 100,

@@ -74,8 +74,8 @@ impl ProcessManager {
 
         for def in definitions {
             match def.mode {
-                ProcessMode::Daemon if def.auto_start => daemon_defs.push(def),
-                ProcessMode::Schedule if def.auto_start => scheduled_defs.push(def),
+                ProcessMode::Daemon if def.enabled => daemon_defs.push(def),
+                ProcessMode::Schedule if def.enabled => scheduled_defs.push(def),
                 _ => {}
             }
         }
@@ -198,7 +198,7 @@ impl ProcessManager {
             cwd: req.cwd,
             env: req.env,
             restart_policy: req.restart_policy,
-            auto_start: req.auto_start,
+            enabled: req.enabled,
             group_name: req.group_name,
             log_config: req.log_config,
             run_as: req.run_as,
@@ -218,7 +218,7 @@ impl ProcessManager {
         self.ensure_runtime_instances(&id, definition.instance_count)
             .await;
 
-        if definition.mode == ProcessMode::Schedule && definition.auto_start {
+        if definition.mode == ProcessMode::Schedule && definition.enabled {
             self.ensure_schedule_task(&id).await?;
         }
 
@@ -284,10 +284,10 @@ impl ProcessManager {
                 changed_fields.push("restart_policy");
             }
         }
-        if let Some(auto_start) = req.auto_start {
-            if updated.auto_start != auto_start {
-                updated.auto_start = auto_start;
-                changed_fields.push("auto_start");
+        if let Some(enabled) = req.enabled {
+            if updated.enabled != enabled {
+                updated.enabled = enabled;
+                changed_fields.push("enabled");
             }
         }
         if let Some(group_name) = req.group_name {
@@ -360,7 +360,7 @@ impl ProcessManager {
         updated.updated_at = Utc::now().to_rfc3339();
         self.save_definition(&updated).await?;
 
-        if updated.mode == ProcessMode::Schedule && updated.auto_start {
+        if updated.mode == ProcessMode::Schedule && updated.enabled {
             self.ensure_schedule_task(&updated.id).await?;
         } else {
             self.cancel_schedule_task(&updated.id).await;
@@ -471,7 +471,11 @@ impl ProcessManager {
         Ok(rows.into_iter().map(|(name,)| name).collect())
     }
 
-    pub async fn start_group(self: &Arc<Self>, group_name: &str) -> Result<Vec<String>, AppError> {
+    pub async fn start_group(
+        self: &Arc<Self>,
+        group_name: &str,
+        trigger_schedules: bool,
+    ) -> Result<Vec<String>, AppError> {
         let group_name = trimmed_non_empty(group_name.to_string())
             .ok_or_else(|| AppError::BadRequest("group_name must not be empty".to_string()))?;
         let definitions = self.load_definitions_in_group(&group_name).await?;
@@ -484,6 +488,10 @@ impl ProcessManager {
 
         let mut errors = Vec::new();
         for def in definitions {
+            if def.mode == ProcessMode::Schedule && !trigger_schedules {
+                // Skip scheduled processes when the user chose not to trigger them
+                continue;
+            }
             if let Err(err) = self.start_process(&def.id).await {
                 errors.push(format!("{} ({}): {}", def.name, def.id, err));
             }

@@ -950,6 +950,7 @@ impl ProcessManager {
         proc.runtime_identity = None;
         proc.pid = None;
         proc.status = ProcessStatus::Stopped;
+        proc.restart_count = 0;
         drop(proc);
         drop(instances);
 

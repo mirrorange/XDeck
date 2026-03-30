@@ -21,6 +21,21 @@ struct GroupParams {
     group_name: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GroupStartParams {
+    group_name: String,
+    /// Controls scheduled process behavior when starting a group.
+    /// - "skip" (default): do not trigger scheduled processes, only start daemons
+    /// - "trigger_once": trigger each scheduled process once immediately
+    #[serde(default = "default_schedule_trigger")]
+    schedule_trigger: String,
+}
+
+fn default_schedule_trigger() -> String {
+    "skip".to_string()
+}
+
 pub fn register(router: &mut RpcRouter, process_mgr: Arc<ProcessManager>) {
     let pm = process_mgr.clone();
     router.register("process.list", move |_params, _ctx| {
@@ -134,8 +149,18 @@ pub fn register(router: &mut RpcRouter, process_mgr: Arc<ProcessManager>) {
     router.register("process.group.start", move |params, _ctx| {
         let pm = pm.clone();
         async move {
-            let params = parse_required_params::<GroupParams>(params)?;
-            let errors = pm.start_group(&params.group_name).await?;
+            let params = parse_required_params::<GroupStartParams>(params)?;
+            let trigger_schedules = match params.schedule_trigger.as_str() {
+                "skip" => false,
+                "trigger_once" => true,
+                other => {
+                    return Err(crate::error::AppError::BadRequest(format!(
+                        "Invalid schedule_trigger value: '{}'. Must be 'skip' or 'trigger_once'",
+                        other
+                    )));
+                }
+            };
+            let errors = pm.start_group(&params.group_name, trigger_schedules).await?;
             Ok(serde_json::json!({
                 "success": errors.is_empty(),
                 "errors": if errors.is_empty() { serde_json::Value::Null } else { serde_json::json!(errors) }
@@ -203,7 +228,7 @@ mod tests {
                 "cwd": "/tmp",
                 "env": HashMap::<String, String>::new(),
                 "restart_policy": RestartPolicy::default(),
-                "auto_start": false,
+                "enabled": false,
                 "group_name": null,
                 "log_config": ProcessLogConfig::default(),
                 "run_as": null
@@ -263,7 +288,7 @@ mod tests {
                 "cwd": "/tmp",
                 "env": HashMap::<String, String>::new(),
                 "restart_policy": RestartPolicy::default(),
-                "auto_start": false,
+                "enabled": false,
                 "group_name": "svc",
                 "log_config": ProcessLogConfig::default(),
                 "run_as": null

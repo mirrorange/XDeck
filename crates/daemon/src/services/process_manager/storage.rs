@@ -24,7 +24,7 @@ fn process_definition_from_row(row: &SqliteRow) -> ProcessDefinition {
             &row.get::<String, _>("restart_policy"),
         )
         .unwrap_or_default(),
-        auto_start: row.get::<i32, _>("auto_start") != 0,
+        enabled: row.get::<i32, _>("enabled") != 0,
         group_name: row.get("group_name"),
         log_config: serde_json::from_str::<ProcessLogConfig>(&row.get::<String, _>("log_config"))
             .unwrap_or_default(),
@@ -54,7 +54,7 @@ impl ProcessManager {
         group_name: &str,
     ) -> Result<Vec<ProcessDefinition>, AppError> {
         let rows = sqlx::query(
-            "SELECT id, name, mode, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at FROM processes WHERE group_name = ?1 ORDER BY created_at",
+            "SELECT id, name, mode, command, args, cwd, env, restart_policy, enabled, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at FROM processes WHERE group_name = ?1 ORDER BY created_at",
         )
         .bind(group_name)
         .fetch_all(&self.pool)
@@ -80,7 +80,7 @@ impl ProcessManager {
         let schedule_state_json = serde_json::to_string(&def.schedule_state).unwrap();
 
         sqlx::query(
-            "INSERT OR REPLACE INTO processes (id, name, mode, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            "INSERT OR REPLACE INTO processes (id, name, mode, command, args, cwd, env, restart_policy, enabled, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         )
         .bind(&def.id)
         .bind(&def.name)
@@ -90,7 +90,7 @@ impl ProcessManager {
         .bind(&def.cwd)
         .bind(&env_json)
         .bind(&policy_json)
-        .bind(def.auto_start as i32)
+        .bind(def.enabled as i32)
         .bind(&def.group_name)
         .bind(&log_config_json)
         .bind(&def.run_as)
@@ -112,7 +112,7 @@ impl ProcessManager {
         id: &str,
     ) -> Result<Option<ProcessDefinition>, AppError> {
         let row = sqlx::query(
-            "SELECT id, name, mode, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at FROM processes WHERE id = ?1",
+            "SELECT id, name, mode, command, args, cwd, env, restart_policy, enabled, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at FROM processes WHERE id = ?1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -123,7 +123,7 @@ impl ProcessManager {
 
     pub(super) async fn load_all_definitions(&self) -> Result<Vec<ProcessDefinition>, AppError> {
         let rows = sqlx::query(
-            "SELECT id, name, mode, command, args, cwd, env, restart_policy, auto_start, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at FROM processes ORDER BY created_at",
+            "SELECT id, name, mode, command, args, cwd, env, restart_policy, enabled, group_name, log_config, run_as, instance_count, pty_mode, schedule, schedule_overlap_policy, schedule_state, created_at, updated_at FROM processes ORDER BY created_at",
         )
         .fetch_all(&self.pool)
         .await?;
