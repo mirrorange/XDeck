@@ -16,9 +16,9 @@ import { useSystemStore } from "~/stores/system-store";
 import {
   buildCreateRequest,
   defaultForm,
+  getWizardSteps,
   type ProcessFormState,
   validateProcessFormStep,
-  wizardSteps,
 } from "./process-form-state";
 import {
   ProcessFormSections,
@@ -36,6 +36,7 @@ export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
   const [form, setForm] = useState<ProcessFormState>({ ...defaultForm });
 
   const isWindows = daemonInfo?.os_type === "windows";
+  const steps = getWizardSteps(form.mode);
 
   const updateForm = (field: keyof ProcessFormState, value: unknown) => {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -64,7 +65,7 @@ export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
       return;
     }
     setError(null);
-    setStep((prev) => Math.min(prev + 1, wizardSteps.length - 1));
+    setStep((prev) => Math.min(prev + 1, steps.length - 1));
   };
 
   const prevStep = () => {
@@ -79,7 +80,7 @@ export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
   };
 
   const handleSubmit = async () => {
-    for (let i = 0; i < wizardSteps.length; i += 1) {
+    for (let i = 0; i < steps.length; i += 1) {
       const validationError = validateProcessFormStep(form, i);
       if (validationError) {
         setError(validationError);
@@ -127,7 +128,7 @@ export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
         </ResponsiveModalHeader>
 
         <div className="px-4 md:px-0">
-          <StepIndicator steps={wizardSteps} current={step} />
+          <StepIndicator steps={steps} current={step} />
           <div className="min-h-[250px]">
             <ProcessFormSections
               form={form}
@@ -150,8 +151,9 @@ export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
 
         <WizardFooter
           step={step}
+          totalSteps={steps.length}
           isSubmitting={isSubmitting}
-          submitLabel="Create Process"
+          submitLabel={form.mode === "schedule" ? "Create Scheduled Task" : "Create Process"}
           onBack={prevStep}
           onNext={nextStep}
           onSubmit={handleSubmit}

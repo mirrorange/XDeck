@@ -1,15 +1,19 @@
 import { useState } from "react";
 import {
+  Calendar,
   ChevronDown,
+  Clock,
   FolderOpen,
   MoreHorizontal,
   Pencil,
   Play,
+  Repeat,
   RotateCcw,
   ScrollText,
   Square,
   Terminal,
   TerminalSquare,
+  Timer,
   Trash2,
 } from "lucide-react";
 
@@ -32,6 +36,7 @@ import {
   getAggregateStatus,
   type ProcessInfo,
   type ProcessStatus,
+  type Schedule,
 } from "~/stores/process-store";
 
 const statusConfig: Record<
@@ -56,6 +61,54 @@ function StatusBadge({ status }: { status: ProcessStatus }) {
       {config.label}
     </Badge>
   );
+}
+
+function formatScheduleLabel(schedule: Schedule): string {
+  switch (schedule.type) {
+    case "once":
+      return `Once at ${new Date(schedule.run_at).toLocaleString()}`;
+    case "daily":
+      return `Daily at ${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
+    case "weekly": {
+      const days = schedule.weekdays.map((d) => d.slice(0, 3)).join(", ");
+      return `${days} at ${String(schedule.hour).padStart(2, "0")}:${String(schedule.minute).padStart(2, "0")}`;
+    }
+    case "interval": {
+      const s = schedule.every_seconds;
+      if (s >= 3600) return `Every ${Math.floor(s / 3600)}h${s % 3600 >= 60 ? ` ${Math.floor((s % 3600) / 60)}m` : ""}`;
+      if (s >= 60) return `Every ${Math.floor(s / 60)}m${s % 60 > 0 ? ` ${s % 60}s` : ""}`;
+      return `Every ${s}s`;
+    }
+  }
+}
+
+function ScheduleIcon({ type }: { type: Schedule["type"] }) {
+  switch (type) {
+    case "once": return <Clock className="size-3" />;
+    case "daily": return <Repeat className="size-3" />;
+    case "weekly": return <Calendar className="size-3" />;
+    case "interval": return <Timer className="size-3" />;
+  }
+}
+
+function formatRelativeTime(isoString: string): string {
+  const date = new Date(isoString);
+  const now = Date.now();
+  const diff = date.getTime() - now;
+  const absDiff = Math.abs(diff);
+  const isPast = diff < 0;
+
+  if (absDiff < 60_000) return isPast ? "just now" : "in <1m";
+  if (absDiff < 3600_000) {
+    const m = Math.floor(absDiff / 60_000);
+    return isPast ? `${m}m ago` : `in ${m}m`;
+  }
+  if (absDiff < 86400_000) {
+    const h = Math.floor(absDiff / 3600_000);
+    return isPast ? `${h}h ago` : `in ${h}h`;
+  }
+  const d = Math.floor(absDiff / 86400_000);
+  return isPast ? `${d}d ago` : `in ${d}d`;
 }
 
 export function ProcessRow({
@@ -92,6 +145,12 @@ export function ProcessRow({
           <div className="flex items-center gap-2">
             <span className="truncate font-medium">{process.name}</span>
             <StatusBadge status={aggregateStatus} />
+            {process.mode === "schedule" && process.schedule && (
+              <Badge variant="outline" className="text-xs border-blue-500/30 text-blue-500">
+                <ScheduleIcon type={process.schedule.type} />
+                <span className="ml-1">Schedule</span>
+              </Badge>
+            )}
             {process.instance_count > 1 && (
               <Badge variant="outline" className="text-xs font-mono tabular-nums">
                 ×{process.instance_count}
@@ -114,11 +173,27 @@ export function ProcessRow({
             <span className="truncate font-mono">
               {process.command} {process.args.join(" ")}
             </span>
+            {process.mode === "schedule" && process.schedule && (
+              <>
+                <span className="text-muted-foreground/50">·</span>
+                <span className="truncate">{formatScheduleLabel(process.schedule)}</span>
+              </>
+            )}
           </div>
         </div>
       </div>
 
       <div className="hidden items-center gap-6 text-sm text-muted-foreground tabular-nums md:flex">
+        {process.mode === "schedule" && process.schedule_state?.next_run_at && (
+          <span className="text-blue-500" title={`Next: ${new Date(process.schedule_state.next_run_at).toLocaleString()}`}>
+            Next {formatRelativeTime(process.schedule_state.next_run_at)}
+          </span>
+        )}
+        {process.mode === "schedule" && process.schedule_state && process.schedule_state.trigger_count > 0 && (
+          <span title={`Last triggered: ${process.schedule_state.last_triggered_at ? new Date(process.schedule_state.last_triggered_at).toLocaleString() : "never"}`}>
+            ⚡ {process.schedule_state.trigger_count}
+          </span>
+        )}
         {pids.length > 0 && (
           <span className="font-mono">
             PID {pids.length <= 2 ? pids.join(",") : `${pids[0]}…+${pids.length - 1}`}

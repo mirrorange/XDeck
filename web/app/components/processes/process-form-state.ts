@@ -2,12 +2,24 @@ import {
   getAggregateStatus,
   type CreateProcessRequest,
   type ProcessInfo,
+  type ProcessMode,
+  type Schedule,
+  type ScheduleOverlapPolicy,
+  type ScheduleType,
   type UpdateProcessRequest,
+  type Weekday,
 } from "~/stores/process-store";
 
-export const wizardSteps = ["Basic Info", "Restart Policy", "Advanced"];
+export const wizardStepsDaemon = ["Basic Info", "Restart Policy", "Advanced"];
+export const wizardStepsSchedule = ["Basic Info", "Schedule", "Advanced"];
+export const wizardSteps = wizardStepsDaemon; // default for backward compat
+
+export function getWizardSteps(mode: ProcessMode): string[] {
+  return mode === "schedule" ? wizardStepsSchedule : wizardStepsDaemon;
+}
 
 export interface ProcessFormState {
+  mode: ProcessMode;
   name: string;
   command: string;
   args: string;
@@ -25,9 +37,18 @@ export interface ProcessFormState {
   runAs: string;
   instanceCount: string;
   ptyMode: boolean;
+  // Schedule fields
+  scheduleType: ScheduleType;
+  scheduleRunAt: string;
+  scheduleHour: string;
+  scheduleMinute: string;
+  scheduleWeekdays: Weekday[];
+  scheduleEverySeconds: string;
+  scheduleOverlapPolicy: ScheduleOverlapPolicy;
 }
 
 export const defaultForm: ProcessFormState = {
+  mode: "daemon",
   name: "",
   command: "",
   args: "",
@@ -45,6 +66,13 @@ export const defaultForm: ProcessFormState = {
   runAs: "",
   instanceCount: "1",
   ptyMode: false,
+  scheduleType: "daily",
+  scheduleRunAt: "",
+  scheduleHour: "9",
+  scheduleMinute: "0",
+  scheduleWeekdays: ["monday"],
+  scheduleEverySeconds: "300",
+  scheduleOverlapPolicy: "ignore",
 };
 
 function buildEnvFromForm(form: ProcessFormState): Record<string, string> {
@@ -67,7 +95,7 @@ export function validateProcessFormStep(form: ProcessFormState, step: number): s
     if (!form.command.trim()) return "Command is required";
   }
 
-  if (step === 1) {
+  if (step === 1 && form.mode === "daemon") {
     if (form.maxRetries && Number.isNaN(Number(form.maxRetries))) return "Max retries must be a number";
     if (form.delayMs && Number.isNaN(Number(form.delayMs))) return "Delay must be a number";
     if (form.backoffMultiplier && Number.isNaN(Number(form.backoffMultiplier))) {
@@ -75,7 +103,46 @@ export function validateProcessFormStep(form: ProcessFormState, step: number): s
     }
   }
 
+  if (step === 1 && form.mode === "schedule") {
+    if (form.scheduleType === "once") {
+      if (!form.scheduleRunAt.trim()) return "Run time is required for one-time schedule";
+    }
+    if (form.scheduleType === "daily" || form.scheduleType === "weekly") {
+      const hour = Number(form.scheduleHour);
+      const minute = Number(form.scheduleMinute);
+      if (Number.isNaN(hour) || hour < 0 || hour > 23) return "Hour must be between 0 and 23";
+      if (Number.isNaN(minute) || minute < 0 || minute > 59) return "Minute must be between 0 and 59";
+    }
+    if (form.scheduleType === "weekly") {
+      if (form.scheduleWeekdays.length === 0) return "Select at least one weekday";
+    }
+    if (form.scheduleType === "interval") {
+      const seconds = Number(form.scheduleEverySeconds);
+      if (Number.isNaN(seconds) || seconds < 1) return "Interval must be at least 1 second";
+    }
+  }
+
   return null;
+}
+
+function buildScheduleFromForm(form: ProcessFormState): Schedule | undefined {
+  if (form.mode !== "schedule") return undefined;
+
+  switch (form.scheduleType) {
+    case "once":
+      return { type: "once", run_at: form.scheduleRunAt };
+    case "daily":
+      return { type: "daily", hour: Number(form.scheduleHour), minute: Number(form.scheduleMinute) };
+    case "weekly":
+      return {
+        type: "weekly",
+        weekdays: form.scheduleWeekdays,
+        hour: Number(form.scheduleHour),
+        minute: Number(form.scheduleMinute),
+      };
+    case "interval":
+      return { type: "interval", every_seconds: Number(form.scheduleEverySeconds) };
+  }
 }
 
 export function buildCreateRequest(form: ProcessFormState, isWindows: boolean): CreateProcessRequest {
@@ -102,6 +169,9 @@ export function buildCreateRequest(form: ProcessFormState, isWindows: boolean): 
     run_as: !isWindows && form.runAs.trim() ? form.runAs.trim() : undefined,
     instance_count: Math.max(1, Math.min(100, Number(form.instanceCount) || 1)),
     pty_mode: form.ptyMode || undefined,
+    mode: form.mode,
+    schedule: buildScheduleFromForm(form),
+    schedule_overlap_policy: form.mode === "schedule" ? form.scheduleOverlapPolicy : undefined,
   };
 }
 
@@ -179,6 +249,21 @@ export function buildEditRequestDiff(
 
   if (target.pty_mode !== form.ptyMode) req.pty_mode = form.ptyMode;
 
+  // Mode change
+  const targetMode = target.mode ?? "daemon";
+  if (targetMode !== form.mode) req.mode = form.mode;
+
+  // Schedule fields
+  const nextSchedule = buildScheduleFromForm(form);
+  if (JSON.stringify(target.schedule) !== JSON.stringify(nextSchedule ?? null)) {
+    req.schedule = nextSchedule;
+  }
+
+  const targetOverlapPolicy = target.schedule_overlap_policy ?? "ignore";
+  if (form.mode === "schedule" && targetOverlapPolicy !== form.scheduleOverlapPolicy) {
+    req.schedule_overlap_policy = form.scheduleOverlapPolicy;
+  }
+
   const willRestart =
     getAggregateStatus(target.instances) === "running" &&
     (req.command !== undefined ||
@@ -186,14 +271,18 @@ export function buildEditRequestDiff(
       req.cwd !== undefined ||
       req.env !== undefined ||
       req.run_as !== undefined ||
-      req.instance_count !== undefined);
+      req.instance_count !== undefined ||
+      req.mode !== undefined);
 
   return { req, hasChanges: Object.keys(req).length > 1, willRestart };
 }
 
 export function toFormState(process: ProcessInfo): ProcessFormState {
   const envEntries = Object.entries(process.env);
+  const schedule = process.schedule;
+
   return {
+    mode: process.mode ?? "daemon",
     name: process.name,
     command: process.command,
     args: process.args.join(" "),
@@ -211,5 +300,18 @@ export function toFormState(process: ProcessInfo): ProcessFormState {
     runAs: process.run_as ?? "",
     instanceCount: String(process.instance_count),
     ptyMode: process.pty_mode ?? false,
+    scheduleType: schedule?.type ?? "daily",
+    scheduleRunAt: schedule?.type === "once" ? schedule.run_at : "",
+    scheduleHour:
+      schedule?.type === "daily" || schedule?.type === "weekly"
+        ? String(schedule.hour)
+        : "9",
+    scheduleMinute:
+      schedule?.type === "daily" || schedule?.type === "weekly"
+        ? String(schedule.minute)
+        : "0",
+    scheduleWeekdays: schedule?.type === "weekly" ? schedule.weekdays : ["monday"],
+    scheduleEverySeconds: schedule?.type === "interval" ? String(schedule.every_seconds) : "300",
+    scheduleOverlapPolicy: process.schedule_overlap_policy ?? "ignore",
   };
 }

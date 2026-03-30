@@ -1,4 +1,4 @@
-import { ChevronLeft, ChevronRight, Layers, Loader2, Plus, X } from "lucide-react";
+import { Calendar, ChevronLeft, ChevronRight, Clock, Layers, Loader2, Plus, Repeat, Shield, Timer, X } from "lucide-react";
 
 import {
   Combobox,
@@ -14,8 +14,9 @@ import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { ResponsiveModalFooter } from "~/components/responsive-modal";
+import type { ProcessMode, ScheduleOverlapPolicy, ScheduleType, Weekday } from "~/stores/process-store";
 
-import { type ProcessFormState, wizardSteps } from "./process-form-state";
+import { type ProcessFormState, getWizardSteps, wizardSteps } from "./process-form-state";
 
 export function StepIndicator({
   steps,
@@ -78,12 +79,40 @@ export function ProcessFormSections({
     return (
       <div className="space-y-4">
         <div className="space-y-2">
+          <Label>Process Mode</Label>
+          <div className="grid grid-cols-2 gap-3">
+            {([
+              { value: "daemon" as ProcessMode, label: "Daemon", icon: Shield, desc: "Long-running process with auto-restart" },
+              { value: "schedule" as ProcessMode, label: "Scheduled Task", icon: Calendar, desc: "Run on a schedule or at specific times" },
+            ]).map(({ value, label, icon: Icon, desc }) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => updateForm("mode", value)}
+                className={`flex flex-col items-start gap-1.5 rounded-lg border p-3 text-left transition-all ${
+                  form.mode === value
+                    ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                    : "hover:bg-muted/50"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Icon className={`size-4 ${form.mode === value ? "text-primary" : "text-muted-foreground"}`} />
+                  <span className={`text-sm font-medium ${form.mode === value ? "text-primary" : ""}`}>
+                    {label}
+                  </span>
+                </div>
+                <span className="text-xs text-muted-foreground">{desc}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="space-y-2">
           <Label htmlFor={fieldId("name")}>Name *</Label>
           <Input
             id={fieldId("name")}
             value={form.name}
             onChange={(e) => updateForm("name", e.target.value)}
-            placeholder="my-app"
+            placeholder={form.mode === "schedule" ? "backup-job" : "my-app"}
             required
           />
         </div>
@@ -93,7 +122,7 @@ export function ProcessFormSections({
             id={fieldId("command")}
             value={form.command}
             onChange={(e) => updateForm("command", e.target.value)}
-            placeholder="node"
+            placeholder={form.mode === "schedule" ? "/usr/local/bin/backup.sh" : "node"}
             className="font-mono"
             required
           />
@@ -123,6 +152,10 @@ export function ProcessFormSections({
         </div>
       </div>
     );
+  }
+
+  if (step === 1 && form.mode === "schedule") {
+    return <ScheduleFormSection form={form} updateForm={updateForm} fieldId={fieldId} />;
   }
 
   if (step === 1) {
@@ -398,8 +431,222 @@ export function ProcessFormSections({
   );
 }
 
+const allWeekdays: { value: Weekday; label: string; short: string }[] = [
+  { value: "monday", label: "Monday", short: "Mon" },
+  { value: "tuesday", label: "Tuesday", short: "Tue" },
+  { value: "wednesday", label: "Wednesday", short: "Wed" },
+  { value: "thursday", label: "Thursday", short: "Thu" },
+  { value: "friday", label: "Friday", short: "Fri" },
+  { value: "saturday", label: "Saturday", short: "Sat" },
+  { value: "sunday", label: "Sunday", short: "Sun" },
+];
+
+const scheduleTypeOptions: { value: ScheduleType; label: string; icon: typeof Clock; desc: string }[] = [
+  { value: "once", label: "Once", icon: Clock, desc: "Run once at a specific time" },
+  { value: "daily", label: "Daily", icon: Repeat, desc: "Run at a fixed time every day" },
+  { value: "weekly", label: "Weekly", icon: Calendar, desc: "Run on selected weekdays" },
+  { value: "interval", label: "Interval", icon: Timer, desc: "Run every N seconds" },
+];
+
+const overlapPolicyOptions: { value: ScheduleOverlapPolicy; label: string; desc: string }[] = [
+  { value: "ignore", label: "Skip", desc: "Skip this trigger if still running" },
+  { value: "restart", label: "Restart", desc: "Stop the old run, start a new one" },
+  { value: "start_new", label: "Start New", desc: "Keep old running, start another" },
+];
+
+function ScheduleFormSection({
+  form,
+  updateForm,
+  fieldId,
+}: {
+  form: ProcessFormState;
+  updateForm: (field: keyof ProcessFormState, value: unknown) => void;
+  fieldId: (field: string) => string;
+}) {
+  const toggleWeekday = (day: Weekday) => {
+    const current = form.scheduleWeekdays;
+    const next = current.includes(day) ? current.filter((d) => d !== day) : [...current, day];
+    updateForm("scheduleWeekdays", next);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="space-y-2">
+        <Label>Schedule Type</Label>
+        <div className="grid grid-cols-2 gap-2">
+          {scheduleTypeOptions.map(({ value, label, icon: Icon, desc }) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => updateForm("scheduleType", value)}
+              className={`flex flex-col items-start gap-1 rounded-lg border p-2.5 text-left transition-all ${
+                form.scheduleType === value
+                  ? "border-primary bg-primary/5 ring-1 ring-primary/20"
+                  : "hover:bg-muted/50"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Icon className={`size-3.5 ${form.scheduleType === value ? "text-primary" : "text-muted-foreground"}`} />
+                <span className={`text-sm font-medium ${form.scheduleType === value ? "text-primary" : ""}`}>
+                  {label}
+                </span>
+              </div>
+              <span className="text-[11px] text-muted-foreground">{desc}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {form.scheduleType === "once" && (
+        <div className="space-y-2">
+          <Label htmlFor={fieldId("run-at")}>Run At *</Label>
+          <Input
+            id={fieldId("run-at")}
+            type="datetime-local"
+            value={form.scheduleRunAt ? form.scheduleRunAt.slice(0, 16) : ""}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val) {
+                const date = new Date(val);
+                updateForm("scheduleRunAt", date.toISOString());
+              } else {
+                updateForm("scheduleRunAt", "");
+              }
+            }}
+          />
+          <p className="text-xs text-muted-foreground">
+            The exact date and time to run this task once.
+          </p>
+        </div>
+      )}
+
+      {(form.scheduleType === "daily" || form.scheduleType === "weekly") && (
+        <div className="space-y-4">
+          {form.scheduleType === "weekly" && (
+            <div className="space-y-2">
+              <Label>Weekdays *</Label>
+              <div className="flex flex-wrap gap-1.5">
+                {allWeekdays.map(({ value, short }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => toggleWeekday(value)}
+                    className={`rounded-md border px-2.5 py-1.5 text-xs font-medium transition-all ${
+                      form.scheduleWeekdays.includes(value)
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "hover:bg-muted/50"
+                    }`}
+                  >
+                    {short}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="space-y-2">
+            <Label>Time</Label>
+            <div className="flex items-center gap-2">
+              <div className="space-y-1 flex-1">
+                <Label htmlFor={fieldId("hour")} className="text-xs text-muted-foreground">
+                  Hour (0–23)
+                </Label>
+                <Input
+                  id={fieldId("hour")}
+                  type="number"
+                  min="0"
+                  max="23"
+                  value={form.scheduleHour}
+                  onChange={(e) => updateForm("scheduleHour", e.target.value)}
+                  placeholder="9"
+                />
+              </div>
+              <span className="mt-5 text-lg font-medium text-muted-foreground">:</span>
+              <div className="space-y-1 flex-1">
+                <Label htmlFor={fieldId("minute")} className="text-xs text-muted-foreground">
+                  Minute (0–59)
+                </Label>
+                <Input
+                  id={fieldId("minute")}
+                  type="number"
+                  min="0"
+                  max="59"
+                  value={form.scheduleMinute}
+                  onChange={(e) => updateForm("scheduleMinute", e.target.value)}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Time is interpreted in the daemon's local timezone.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {form.scheduleType === "interval" && (
+        <div className="space-y-2">
+          <Label htmlFor={fieldId("interval")}>Interval (seconds) *</Label>
+          <Input
+            id={fieldId("interval")}
+            type="number"
+            min="1"
+            value={form.scheduleEverySeconds}
+            onChange={(e) => updateForm("scheduleEverySeconds", e.target.value)}
+            placeholder="300"
+          />
+          <p className="text-xs text-muted-foreground">
+            {Number(form.scheduleEverySeconds) >= 60
+              ? `Every ${Math.floor(Number(form.scheduleEverySeconds) / 60)} min${Number(form.scheduleEverySeconds) % 60 > 0 ? ` ${Number(form.scheduleEverySeconds) % 60} sec` : ""}`
+              : `Every ${form.scheduleEverySeconds || 0} seconds`}
+          </p>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        <Label>Overlap Policy</Label>
+        <div className="grid grid-cols-3 gap-2">
+          {overlapPolicyOptions.map(({ value, label, desc }) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => updateForm("scheduleOverlapPolicy", value)}
+              className={`flex flex-col items-start gap-0.5 rounded-lg border p-2.5 text-left transition-all ${
+                form.scheduleOverlapPolicy === value
+                  ? "border-primary bg-primary/5 text-primary font-medium ring-1 ring-primary/20"
+                  : "hover:bg-muted/50"
+              }`}
+            >
+              <span className="text-sm">{label}</span>
+              <span className="text-[11px] text-muted-foreground font-normal">{desc}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 rounded-lg border p-3">
+        <input
+          type="checkbox"
+          id={fieldId("autostart-schedule")}
+          checked={form.autoStart}
+          onChange={(e) => updateForm("autoStart", e.target.checked)}
+          className="size-4 rounded"
+        />
+        <div>
+          <Label htmlFor={fieldId("autostart-schedule")} className="cursor-pointer">
+            Enable Schedule
+          </Label>
+          <p className="text-xs text-muted-foreground">
+            Automatically activate this schedule when the daemon starts.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function WizardFooter({
   step,
+  totalSteps,
   isSubmitting,
   submitLabel,
   onBack,
@@ -407,12 +654,14 @@ export function WizardFooter({
   onSubmit,
 }: {
   step: number;
+  totalSteps?: number;
   isSubmitting: boolean;
   submitLabel: string;
   onBack: () => void;
   onNext: () => void;
   onSubmit: () => void;
 }) {
+  const lastStep = (totalSteps ?? wizardSteps.length) - 1;
   return (
     <ResponsiveModalFooter className="gap-2">
       {step > 0 && (
@@ -422,7 +671,7 @@ export function WizardFooter({
         </Button>
       )}
       <div className="flex-1" />
-      {step < wizardSteps.length - 1 ? (
+      {step < lastStep ? (
         <Button type="button" onClick={onNext} disabled={isSubmitting}>
           Next
           <ChevronRight className="ml-1 size-4" />

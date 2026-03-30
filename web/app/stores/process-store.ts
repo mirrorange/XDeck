@@ -13,6 +13,46 @@ export type ProcessStatus =
 
 export type RestartStrategy = "always" | "on_failure" | "never";
 
+export type ProcessMode = "daemon" | "schedule";
+
+export type ScheduleType = "once" | "daily" | "weekly" | "interval";
+
+export type Weekday = "monday" | "tuesday" | "wednesday" | "thursday" | "friday" | "saturday" | "sunday";
+
+export type ScheduleOverlapPolicy = "ignore" | "restart" | "start_new";
+
+export interface ScheduleOnce {
+  type: "once";
+  run_at: string;
+}
+
+export interface ScheduleDaily {
+  type: "daily";
+  hour: number;
+  minute: number;
+}
+
+export interface ScheduleWeekly {
+  type: "weekly";
+  weekdays: Weekday[];
+  hour: number;
+  minute: number;
+}
+
+export interface ScheduleInterval {
+  type: "interval";
+  every_seconds: number;
+}
+
+export type Schedule = ScheduleOnce | ScheduleDaily | ScheduleWeekly | ScheduleInterval;
+
+export interface ScheduleState {
+  next_run_at: string | null;
+  last_triggered_at: string | null;
+  last_skipped_at: string | null;
+  trigger_count: number;
+}
+
 export interface RestartPolicy {
   strategy: RestartStrategy;
   max_retries: number | null;
@@ -49,6 +89,10 @@ export interface ProcessInfo {
   run_as: string | null;
   instance_count: number;
   pty_mode: boolean;
+  mode: ProcessMode;
+  schedule: Schedule | null;
+  schedule_overlap_policy: ScheduleOverlapPolicy;
+  schedule_state: ScheduleState | null;
   created_at: string;
   updated_at: string;
   instances: InstanceInfo[];
@@ -67,6 +111,9 @@ export interface CreateProcessRequest {
   run_as?: string;
   instance_count?: number;
   pty_mode?: boolean;
+  mode?: ProcessMode;
+  schedule?: Schedule;
+  schedule_overlap_policy?: ScheduleOverlapPolicy;
 }
 
 export interface UpdateProcessRequest {
@@ -83,6 +130,9 @@ export interface UpdateProcessRequest {
   run_as?: string | null;
   instance_count?: number;
   pty_mode?: boolean;
+  mode?: ProcessMode;
+  schedule?: Schedule;
+  schedule_overlap_policy?: ScheduleOverlapPolicy;
 }
 
 export interface LogLine {
@@ -362,9 +412,43 @@ export const useProcessStore = create<ProcessState>((set) => ({
       }
     );
 
+    const unsubSchedule = rpc.on(
+      "event.process.schedule_triggered",
+      (params: unknown) => {
+        const data = params as {
+          process_id: string;
+          action: string;
+          next_run_at?: string | null;
+          triggered_at?: string;
+          instance?: number;
+        };
+        set((state) => ({
+          processes: state.processes.map((process) => {
+            if (process.id !== data.process_id) return process;
+            return {
+              ...process,
+              schedule_state: process.schedule_state
+                ? {
+                    ...process.schedule_state,
+                    next_run_at: data.next_run_at ?? process.schedule_state.next_run_at,
+                    last_triggered_at: data.triggered_at ?? process.schedule_state.last_triggered_at,
+                    last_skipped_at:
+                      data.action === "ignored"
+                        ? data.triggered_at ?? process.schedule_state.last_skipped_at
+                        : process.schedule_state.last_skipped_at,
+                    trigger_count: process.schedule_state.trigger_count + 1,
+                  }
+                : null,
+            };
+          }),
+        }));
+      }
+    );
+
     return () => {
       unsubStatus();
       unsubConfig();
+      unsubSchedule();
     };
   },
 }));

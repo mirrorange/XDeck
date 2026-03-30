@@ -27,10 +27,10 @@ import { useSystemStore } from "~/stores/system-store";
 import {
   buildEditRequestDiff,
   defaultForm,
+  getWizardSteps,
   type ProcessFormState,
   toFormState,
   validateProcessFormStep,
-  wizardSteps,
 } from "./process-form-state";
 import {
   ProcessFormSections,
@@ -61,6 +61,7 @@ export function EditProcessDialog({
   );
 
   const isWindows = daemonInfo?.os_type === "windows";
+  const steps = getWizardSteps(form.mode);
 
   useEffect(() => {
     if (!open || !process) return;
@@ -100,7 +101,7 @@ export function EditProcessDialog({
       return;
     }
     setError(null);
-    setStep((prev) => Math.min(prev + 1, wizardSteps.length - 1));
+    setStep((prev) => Math.min(prev + 1, steps.length - 1));
   };
 
   const prevStep = () => {
@@ -111,7 +112,7 @@ export function EditProcessDialog({
   const handleSubmit = () => {
     if (!process) return;
 
-    for (let i = 0; i < wizardSteps.length; i += 1) {
+    for (let i = 0; i < steps.length; i += 1) {
       const validationError = validateProcessFormStep(form, i);
       if (validationError) {
         setError(validationError);
@@ -177,7 +178,7 @@ export function EditProcessDialog({
           </ResponsiveModalHeader>
 
           <div className="px-4 md:px-0">
-            <StepIndicator steps={wizardSteps} current={step} />
+            <StepIndicator steps={steps} current={step} />
             <div className="min-h-[250px]">
               <ProcessFormSections
                 form={form}
@@ -200,6 +201,7 @@ export function EditProcessDialog({
 
           <WizardFooter
             step={step}
+            totalSteps={steps.length}
             isSubmitting={isSubmitting}
             submitLabel="Save Changes"
             onBack={prevStep}
