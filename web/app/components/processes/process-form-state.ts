@@ -10,9 +10,13 @@ import {
   type Weekday,
 } from "~/stores/process-store";
 
+export const formTabs = ["General", "Execution", "Behavior", "System"] as const;
+export type FormTab = (typeof formTabs)[number];
+
+// Legacy wizard step names kept for backward compat
 export const wizardStepsDaemon = ["Basic Info", "Restart Policy", "Advanced"];
 export const wizardStepsSchedule = ["Basic Info", "Schedule", "Advanced"];
-export const wizardSteps = wizardStepsDaemon; // default for backward compat
+export const wizardSteps = wizardStepsDaemon;
 
 export function getWizardSteps(mode: ProcessMode): string[] {
   return mode === "schedule" ? wizardStepsSchedule : wizardStepsDaemon;
@@ -90,12 +94,18 @@ function splitArgs(input: string): string[] {
 }
 
 export function validateProcessFormStep(form: ProcessFormState, step: number): string | null {
+  // Step 0 (General): name required
   if (step === 0) {
     if (!form.name.trim()) return "Name is required";
+  }
+
+  // Step 1 (Execution): command required
+  if (step === 1) {
     if (!form.command.trim()) return "Command is required";
   }
 
-  if (step === 1 && form.mode === "daemon") {
+  // Step 2 (Behavior): mode-specific validation
+  if (step === 2 && form.mode === "daemon") {
     if (form.maxRetries && Number.isNaN(Number(form.maxRetries))) return "Max retries must be a number";
     if (form.delayMs && Number.isNaN(Number(form.delayMs))) return "Delay must be a number";
     if (form.backoffMultiplier && Number.isNaN(Number(form.backoffMultiplier))) {
@@ -103,7 +113,7 @@ export function validateProcessFormStep(form: ProcessFormState, step: number): s
     }
   }
 
-  if (step === 1 && form.mode === "schedule") {
+  if (step === 2 && form.mode === "schedule") {
     if (form.scheduleType === "once") {
       if (!form.scheduleRunAt.trim()) return "Run time is required for one-time schedule";
     }

@@ -27,15 +27,15 @@ import { useSystemStore } from "~/stores/system-store";
 import {
   buildEditRequestDiff,
   defaultForm,
-  getWizardSteps,
+  type FormTab,
+  formTabs,
   type ProcessFormState,
   toFormState,
   validateProcessFormStep,
 } from "./process-form-state";
 import {
-  ProcessFormSections,
-  StepIndicator,
-  WizardFooter,
+  ProcessFormTabs,
+  TabFormFooter,
 } from "./process-form-wizard";
 
 export function EditProcessDialog({
@@ -53,7 +53,7 @@ export function EditProcessDialog({
   const { daemonInfo } = useSystemStore();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [step, setStep] = useState(0);
+  const [activeTab, setActiveTab] = useState<FormTab>("General");
   const [form, setForm] = useState<ProcessFormState>({ ...defaultForm });
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingUpdate, setPendingUpdate] = useState<{ req: UpdateProcessRequest; willRestart: boolean } | null>(
@@ -61,13 +61,12 @@ export function EditProcessDialog({
   );
 
   const isWindows = daemonInfo?.os_type === "windows";
-  const steps = getWizardSteps(form.mode);
 
   useEffect(() => {
     if (!open || !process) return;
 
     setForm(toFormState(process));
-    setStep(0);
+    setActiveTab("General");
     setError(null);
     setIsSubmitting(false);
     setConfirmOpen(false);
@@ -94,29 +93,14 @@ export function EditProcessDialog({
     }));
   };
 
-  const nextStep = () => {
-    const validationError = validateProcessFormStep(form, step);
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-    setError(null);
-    setStep((prev) => Math.min(prev + 1, steps.length - 1));
-  };
-
-  const prevStep = () => {
-    setError(null);
-    setStep((prev) => Math.max(prev - 1, 0));
-  };
-
   const handleSubmit = () => {
     if (!process) return;
 
-    for (let i = 0; i < steps.length; i += 1) {
+    for (let i = 0; i < formTabs.length; i += 1) {
       const validationError = validateProcessFormStep(form, i);
       if (validationError) {
         setError(validationError);
-        setStep(i);
+        setActiveTab(formTabs[i]);
         return;
       }
     }
@@ -178,11 +162,11 @@ export function EditProcessDialog({
           </ResponsiveModalHeader>
 
           <div className="px-4 md:px-0">
-            <StepIndicator steps={steps} current={step} />
-            <div className="min-h-[250px]">
-              <ProcessFormSections
+            <div className="min-h-[300px]">
+              <ProcessFormTabs
                 form={form}
-                step={step}
+                activeTab={activeTab}
+                onTabChange={setActiveTab}
                 isWindows={isWindows}
                 idPrefix="edit-proc"
                 existingGroups={groups}
@@ -193,19 +177,15 @@ export function EditProcessDialog({
             </div>
 
             {error && (
-              <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <div className="mt-3 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
                 {error}
               </div>
             )}
           </div>
 
-          <WizardFooter
-            step={step}
-            totalSteps={steps.length}
+          <TabFormFooter
             isSubmitting={isSubmitting}
             submitLabel="Save Changes"
-            onBack={prevStep}
-            onNext={nextStep}
             onSubmit={handleSubmit}
           />
         </ResponsiveModalContent>
