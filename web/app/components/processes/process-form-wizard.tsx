@@ -2,6 +2,8 @@ import { useState } from "react";
 import {
   Calendar,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Cog,
   Layers,
@@ -59,6 +61,7 @@ export function ProcessFormTabs({
   updateForm,
   addEnvVar,
   removeEnvVar,
+  wizardMode,
 }: {
   form: ProcessFormState;
   activeTab: FormTab;
@@ -69,20 +72,30 @@ export function ProcessFormTabs({
   updateForm: (field: keyof ProcessFormState, value: unknown) => void;
   addEnvVar: () => void;
   removeEnvVar: (index: number) => void;
+  /** When true, tabs act as step indicators and cannot be freely clicked. */
+  wizardMode?: boolean;
 }) {
   const fieldId = (field: string) => `${idPrefix}-${field}`;
+  const activeIndex = formTabs.indexOf(activeTab);
 
   return (
     <Tabs
       value={activeTab}
-      onValueChange={(v) => onTabChange(v as FormTab)}
+      onValueChange={(v) => {
+        if (!wizardMode) onTabChange(v as FormTab);
+      }}
       className="w-full"
     >
       <TabsList className="w-full">
-        {formTabs.map((tab) => {
+        {formTabs.map((tab, i) => {
           const { icon: Icon, label } = tabMeta[tab];
           return (
-            <TabsTrigger key={tab} value={tab} className="gap-1.5">
+            <TabsTrigger
+              key={tab}
+              value={tab}
+              className="gap-1.5"
+              disabled={wizardMode && i !== activeIndex}
+            >
               <Icon className="size-3.5" />
               <span className="hidden sm:inline">{label}</span>
             </TabsTrigger>
@@ -809,8 +822,7 @@ export function TabFormFooter({
   );
 }
 
-/** @deprecated Use TabFormFooter instead */
-export function WizardFooter({
+export function WizardFormFooter({
   step,
   totalSteps,
   isSubmitting,
@@ -820,18 +832,34 @@ export function WizardFooter({
   onSubmit,
 }: {
   step: number;
-  totalSteps?: number;
+  totalSteps: number;
   isSubmitting: boolean;
   submitLabel: string;
   onBack: () => void;
   onNext: () => void;
   onSubmit: () => void;
 }) {
+  const isLast = step >= totalSteps - 1;
   return (
-    <TabFormFooter
-      isSubmitting={isSubmitting}
-      submitLabel={submitLabel}
-      onSubmit={onSubmit}
-    />
+    <ResponsiveModalFooter className="gap-2">
+      {step > 0 && (
+        <Button type="button" variant="outline" onClick={onBack} disabled={isSubmitting}>
+          <ChevronLeft className="mr-1 size-4" />
+          Back
+        </Button>
+      )}
+      <div className="flex-1" />
+      {isLast ? (
+        <Button type="button" onClick={onSubmit} disabled={isSubmitting}>
+          {isSubmitting && <Loader2 className="mr-2 size-4 animate-spin" />}
+          {submitLabel}
+        </Button>
+      ) : (
+        <Button type="button" onClick={onNext} disabled={isSubmitting}>
+          Next
+          <ChevronRight className="ml-1 size-4" />
+        </Button>
+      )}
+    </ResponsiveModalFooter>
   );
 }

@@ -23,7 +23,7 @@ import {
 } from "./process-form-state";
 import {
   ProcessFormTabs,
-  TabFormFooter,
+  WizardFormFooter,
 } from "./process-form-wizard";
 
 export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
@@ -32,10 +32,11 @@ export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
   const { daemonInfo } = useSystemStore();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<FormTab>("General");
+  const [step, setStep] = useState(0);
   const [form, setForm] = useState<ProcessFormState>({ ...defaultForm });
 
   const isWindows = daemonInfo?.os_type === "windows";
+  const activeTab = formTabs[step];
 
   const updateForm = (field: keyof ProcessFormState, value: unknown) => {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -57,9 +58,24 @@ export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
     }));
   };
 
+  const nextStep = () => {
+    const validationError = validateProcessFormStep(form, step);
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    setError(null);
+    setStep((prev) => Math.min(prev + 1, formTabs.length - 1));
+  };
+
+  const prevStep = () => {
+    setError(null);
+    setStep((prev) => Math.max(prev - 1, 0));
+  };
+
   const resetDialog = () => {
     setForm({ ...defaultForm });
-    setActiveTab("General");
+    setStep(0);
     setError(null);
   };
 
@@ -68,7 +84,7 @@ export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
       const validationError = validateProcessFormStep(form, i);
       if (validationError) {
         setError(validationError);
-        setActiveTab(formTabs[i]);
+        setStep(i);
         return;
       }
     }
@@ -107,7 +123,7 @@ export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
         <ResponsiveModalHeader>
           <ResponsiveModalTitle>Create New Process</ResponsiveModalTitle>
           <ResponsiveModalDescription>
-            Configure your process across the tabs below.
+            Follow the steps to configure your process.
           </ResponsiveModalDescription>
         </ResponsiveModalHeader>
 
@@ -116,7 +132,8 @@ export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
             <ProcessFormTabs
               form={form}
               activeTab={activeTab}
-              onTabChange={setActiveTab}
+              onTabChange={() => {}}
+              wizardMode
               isWindows={isWindows}
               idPrefix="create-proc"
               existingGroups={groups}
@@ -133,9 +150,13 @@ export function CreateProcessDialog({ onCreated }: { onCreated: () => void }) {
           )}
         </div>
 
-        <TabFormFooter
+        <WizardFormFooter
+          step={step}
+          totalSteps={formTabs.length}
           isSubmitting={isSubmitting}
           submitLabel={form.mode === "schedule" ? "Create Scheduled Task" : "Create Process"}
+          onBack={prevStep}
+          onNext={nextStep}
           onSubmit={handleSubmit}
         />
       </ResponsiveModalContent>
