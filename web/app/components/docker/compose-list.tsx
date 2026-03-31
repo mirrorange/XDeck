@@ -50,6 +50,7 @@ import {
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import { PathPicker } from "~/components/path-picker";
 import { useDockerStore, type ComposeProjectInfo } from "~/stores/docker-store";
 
 function statusColor(status: string): string {
@@ -336,20 +337,22 @@ export function ComposeList() {
             </div>
             <div className="space-y-2">
               <Label htmlFor="compose-file">Compose File Path</Label>
-              <Input
+              <PathPicker
                 id="compose-file"
-                placeholder="/path/to/docker-compose.yml"
                 value={filePath}
-                onChange={(e) => setFilePath(e.target.value)}
+                onChange={setFilePath}
+                mode="file"
+                placeholder="/path/to/docker-compose.yml"
               />
             </div>
             <div className="space-y-2">
               <Label htmlFor="compose-cwd">Working Directory</Label>
-              <Input
+              <PathPicker
                 id="compose-cwd"
-                placeholder="/path/to/project"
                 value={cwd}
-                onChange={(e) => setCwd(e.target.value)}
+                onChange={setCwd}
+                mode="directory"
+                placeholder="/path/to/project"
               />
             </div>
           </div>

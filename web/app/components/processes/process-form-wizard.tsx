@@ -35,6 +35,7 @@ import { Label } from "~/components/ui/label";
 import { Separator } from "~/components/ui/separator";
 import { Switch } from "~/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
+import { PathPicker } from "~/components/path-picker";
 import { ResponsiveModalFooter } from "~/components/responsive-modal";
 import type { ProcessMode, ScheduleOverlapPolicy, ScheduleType, Weekday } from "~/stores/process-store";
 
@@ -188,13 +189,12 @@ export function ProcessFormTabs({
         <div className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor={fieldId("command")}>Command *</Label>
-            <Input
+            <PathPicker
               id={fieldId("command")}
               value={form.command}
-              onChange={(e) => updateForm("command", e.target.value)}
+              onChange={(v) => updateForm("command", v)}
+              mode="file"
               placeholder={form.mode === "schedule" ? "/usr/local/bin/backup.sh" : "node"}
-              className="font-mono"
-              required
             />
             <p className="text-xs text-muted-foreground">
               Executable or command to run. Must exist in PATH or be an absolute path.
@@ -214,12 +214,12 @@ export function ProcessFormTabs({
 
           <div className="space-y-2">
             <Label htmlFor={fieldId("cwd")}>Working Directory</Label>
-            <Input
+            <PathPicker
               id={fieldId("cwd")}
               value={form.cwd}
-              onChange={(e) => updateForm("cwd", e.target.value)}
+              onChange={(v) => updateForm("cwd", v)}
+              mode="directory"
               placeholder="/home/user/app"
-              className="font-mono"
             />
           </div>
 
